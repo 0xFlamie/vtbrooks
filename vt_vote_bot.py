@@ -760,7 +760,8 @@ def make_chart(result, plan):
         from matplotlib import font_manager
         # macOS 系统中文字体, 按优先级选第一个可用的
         available = {f.name for f in font_manager.fontManager.ttflist}
-        for fname in ["PingFang SC", "Hiragino Sans GB", "Arial Unicode MS", "Heiti SC", "STHeiti"]:
+        for fname in ["PingFang SC", "Hiragino Sans GB", "WenQuanYi Zen Hei",
+                       "Noto Sans CJK SC", "Arial Unicode MS", "Heiti SC", "STHeiti", "DejaVu Sans"]:
             if fname in available:
                 plt.rcParams["font.sans-serif"] = [fname]
                 break
