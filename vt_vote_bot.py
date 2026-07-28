@@ -11,7 +11,13 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 
-VT_PKG = "/Users/flamie/coding/vt-venv/lib/python3.11/site-packages"
+VT_PKG = None
+for p in sys.path:
+    if p.endswith("site-packages"):
+        VT_PKG = p
+        break
+if not VT_PKG:
+    VT_PKG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../vt-venv/lib/python3.11/site-packages")
 sys.path.insert(0, VT_PKG)
 
 # ── 配置 (优先环境变量) ──
