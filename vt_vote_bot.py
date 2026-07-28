@@ -391,6 +391,7 @@ def vote(symbol, config):
     for name, mod_name, ic_sign, display in config:
         values = compute_factor_value(mod_name, panel)
         if values is None or len(values) < 30:
+            print(f"  因子失效跳过: {display} ({mod_name})")
             continue
 
         current = values[-1]
