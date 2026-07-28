@@ -650,7 +650,11 @@ def verify_predictions():
     return messages
 
 
-def get_win_rate_stats():
+def get_signal_number():
+    h = load_history()
+    h["signal_counter"] = h.get("signal_counter", 0) + 1
+    save_history(h)
+    return h["signal_counter"]
     h = load_history()
     recent20 = h["win_rate"].get("recent20", [])
     recent10 = recent20[-10:] if len(recent20) >= 10 else recent20[-5:] if recent20 else []
@@ -832,7 +836,7 @@ def make_chart(result, plan):
         return None
 
 
-def format_message(result, plan, is_emergency=False):
+def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from=""):
     if result["signal"] == "NEUTRAL":
         return None
     sym = result["symbol"]; sig = result["signal"]
@@ -850,12 +854,19 @@ def format_message(result, plan, is_emergency=False):
     drivers = [d for d in result["details"] if (d["direction"] == "🟢") == (sig == "LONG")]
     oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
 
-    L = []
+    # ── 信号序号 ──
+    sig_num = get_signal_number()
+    prev_dir = last_15m_signal.get(sym, (None,))[0]
+    reverse_info = ""
+    if prev_dir and prev_dir != sig:
+        reverse_info = f" (反转#{(sig_num-1) if sig_num > 1 else 0}的{prev_dir})"
+
     L.append("=" * 40)
     if is_emergency:
-        L.append("🔄 <b>紧急翻转信号</b> — 5分钟监控检测到方向变化")
+        L.append(f"🔄 <b>紧急翻转 #{sig_num}</b> — 从 #{sig_num-1} 反转")
         L.append("")
-    L.append(f"{emoji} <b>{sym} 建议{dir_cn}</b> | {'⚡强信号' if votes_n >= STRONG else '📡信号'} {votes_n}/{votes_total}票")
+    reverse_tag = f" (反转#{sig_num-1}的{reverse_from})" if reverse_from else ""
+    L.append(f"{emoji} <b>{sym} 建议{dir_cn} #{sig_num}</b> | {'⚡强信号' if votes_n >= STRONG else '📡信号'} {votes_n}/{votes_total}票{reverse_tag}")
     L.append(f"强度 {pct}% {bar}")
     # Clean market context
     market_line = f"市场: {state_cn}"
@@ -1104,7 +1115,10 @@ def main():
                             last_emergency[sym] = now_ts
 
                         plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
-                        msg = format_message(result, plan, is_emergency=(not is_15m))
+                        sig_num = get_signal_number()
+                        prev_dir = last_15m_signal.get(sym, (None,))[0]
+                        rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
+                        msg = format_message(result, plan, is_emergency=(not is_15m), sig_num=sig_num, reverse_from=rev_from)
                         if msg:
                             if not args.test:
                                 img = make_chart(result, plan)
