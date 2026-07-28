@@ -604,18 +604,25 @@ def verify_predictions():
 
         # Walk bars: which hit first?
         result = "timeout"
-        exit_px = float(bars["close"].iloc[-1])
+        try:
+            exit_px = float(bars["close"].iloc[-1])
+        except Exception:
+            exit_px = entry  # fallback
         for _, bar in bars.iterrows():
-            h, l = float(bar["high"]), float(bar["low"])
+            try:
+                hi = float(bar["high"]) if "high" in bar.index else float(bar.iloc[1]) if len(bar) > 1 else entry
+                lo = float(bar["low"]) if "low" in bar.index else float(bar.iloc[2]) if len(bar) > 2 else entry
+            except Exception:
+                continue
             if direction == "LONG":
-                if l <= sl:
+                if lo <= sl:
                     result = "sl"; exit_px = sl; break
-                if h >= tp2:
+                if hi >= tp2:
                     result = "tp2"; exit_px = tp2; break
             else:
-                if h >= sl:
+                if hi >= sl:
                     result = "sl"; exit_px = sl; break
-                if l <= tp2:
+                if lo <= tp2:
                     result = "tp2"; exit_px = tp2; break
 
         pnl = (exit_px - entry) / entry * 100
@@ -853,13 +860,6 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="")
 
     drivers = [d for d in result["details"] if (d["direction"] == "🟢") == (sig == "LONG")]
     oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
-
-    # ── 信号序号 ──
-    sig_num = get_signal_number()
-    prev_dir = last_15m_signal.get(sym, (None,))[0]
-    reverse_info = ""
-    if prev_dir and prev_dir != sig:
-        reverse_info = f" (反转#{(sig_num-1) if sig_num > 1 else 0}的{prev_dir})"
 
     L.append("=" * 40)
     if is_emergency:
