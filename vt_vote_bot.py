@@ -826,6 +826,7 @@ def format_message(result, plan, is_emergency=False):
     oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
 
     L = []
+    L.append("=" * 40)
     if is_emergency:
         L.append("🔄 <b>紧急翻转信号</b> — 5分钟监控检测到方向变化")
         L.append("")
@@ -1053,14 +1054,25 @@ def main():
                 if result["signal"] != "NEUTRAL" and result["votes"]:
                     vn = int(result["votes"].split("/")[0])
                     if vn >= MIN_VOTES:
-                        # 5分钟检查: 方向翻转才紧急推送, 且10分钟内不重复
+                        # 反转确认: 非15分钟扫描, 需要连续3次同向才触发紧急推送
                         if not is_15m:
                             prev = last_15m_signal.get(sym)
                             if not prev or prev[0] == result["signal"]:
+                                reversal_count.pop(sym, None)
                                 print(f"方向未变跳过")
                                 continue
+                            # 新方向, 累积确认计数
+                            rc = reversal_count.get(sym, {"dir": result["signal"], "count": 0})
+                            if rc["dir"] != result["signal"]:
+                                rc = {"dir": result["signal"], "count": 0}
+                            rc["count"] += 1
+                            reversal_count[sym] = rc
+                            if rc["count"] < 3:
+                                print(f"反转确认 {rc['count']}/3 跳过")
+                                continue
+                            reversal_count[sym] = {"dir": result["signal"], "count": 0}
                             now_ts = time.time()
-                            if sym in last_emergency and now_ts - last_emergency[sym] < 600:
+                            if sym in last_emergency and now_ts - last_emergency[sym] < 900:
                                 print(f"紧急冷却跳过")
                                 continue
                             last_emergency[sym] = now_ts
@@ -1089,11 +1101,11 @@ def main():
 
         if args.loop == 0:
             break
-        # 睡到下一个5分钟整点
+        # 睡到下一个3分钟整点 (每15分钟扫5次)
         now = time.localtime()
-        seconds_to_next = 300 - ((now.tm_min % 5) * 60 + now.tm_sec)
-        if seconds_to_next < 5:
-            seconds_to_next += 300
+        seconds_to_next = 180 - ((now.tm_min % 3) * 60 + now.tm_sec)
+        if seconds_to_next < 3:
+            seconds_to_next += 180
         time.sleep(seconds_to_next)
 
 
