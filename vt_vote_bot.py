@@ -861,6 +861,7 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="")
     drivers = [d for d in result["details"] if (d["direction"] == "🟢") == (sig == "LONG")]
     oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
 
+    L = []
     L.append("=" * 40)
     if is_emergency:
         L.append(f"🔄 <b>紧急翻转 #{sig_num}</b> — 从 #{sig_num-1} 反转")
