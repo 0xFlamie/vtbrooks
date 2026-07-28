@@ -86,14 +86,19 @@ def z_word(z):
 
 
 def fetch_klines(symbol, interval="15m", limit=200):
-    """Fetch klines — Binance first, fallback to yfinance (US-friendly)"""
-    # Try Binance
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    result = subprocess.run(["curl", "-s", "--max-time", "10", url], capture_output=True, text=True, timeout=15)
-    data = json.loads(result.stdout) if result.stdout else None
-    if isinstance(data, dict) or not data:
-        return _fetch_yfinance(symbol, interval, limit)
-    return _parse_binance(data)
+    """Binance.US → Binance Global → yfinance"""
+    for api_url in [
+        f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+    ]:
+        result = subprocess.run(["curl", "-s", "--max-time", "8", api_url], capture_output=True, text=True, timeout=12)
+        try:
+            data = json.loads(result.stdout)
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                return _parse_binance(data)
+        except Exception:
+            continue
+    return _fetch_yfinance(symbol, interval, limit)
 def _parse_binance(data):
     df = pd.DataFrame(data, columns=[
         "open_time","open","high","low","close","volume",
