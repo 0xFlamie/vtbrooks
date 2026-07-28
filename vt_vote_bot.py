@@ -1050,8 +1050,9 @@ def main():
     preload_factors()
     print("OK")
 
-    last_15m_signal = {}  # sym → (dir, time, px) — 上一次15分钟信号
-    last_emergency = {}   # sym → timestamp — 5分钟紧急推送冷却
+    last_15m_signal = {}  # sym → (dir, time, px)
+    last_emergency = {}   # sym → timestamp
+    reversal_count = {}   # sym → {"dir": str, "count": int}
 
     while True:
         now = pd.Timestamp.now()
@@ -1092,7 +1093,7 @@ def main():
                                 rc = {"dir": result["signal"], "count": 0}
                             rc["count"] += 1
                             reversal_count[sym] = rc
-                            if rc["count"] < 3:
+                            if rc["count"] < 2:
                                 print(f"反转确认 {rc['count']}/3 跳过")
                                 continue
                             reversal_count[sym] = {"dir": result["signal"], "count": 0}
