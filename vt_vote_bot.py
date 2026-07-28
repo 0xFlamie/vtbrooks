@@ -20,10 +20,10 @@ if not VT_PKG:
     VT_PKG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../vt-venv/lib/python3.11/site-packages")
 sys.path.insert(0, VT_PKG)
 
-# ── 配置 (优先环境变量) ──
-TELEGRAM_TOKEN = os.environ.get("VT_TELEGRAM_TOKEN", "8782698579:AAFpjnaaAo9so0_N28VLL8Sx-q75FxycHqQ")
-TELEGRAM_CHAT_ID = os.environ.get("VT_TELEGRAM_CHAT", "8304004098")
-DS_API_KEY = os.environ.get("VT_DS_API_KEY", "sk-5f398d49367c41d39d7d1bb58980af3d")
+# ── 配置 (仅环境变量, 密钥不入库) ──
+TELEGRAM_TOKEN = os.environ.get("VT_TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("VT_TELEGRAM_CHAT", "")
+DS_API_KEY = os.environ.get("VT_DS_API_KEY", "")
 DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
@@ -662,6 +662,9 @@ def get_signal_number():
     h["signal_counter"] = h.get("signal_counter", 0) + 1
     save_history(h)
     return h["signal_counter"]
+
+
+def get_win_rate_stats():
     h = load_history()
     recent20 = h["win_rate"].get("recent20", [])
     recent10 = recent20[-10:] if len(recent20) >= 10 else recent20[-5:] if recent20 else []
@@ -1054,6 +1057,9 @@ def main():
     if args.test:
         global send_telegram
         send_telegram = lambda x: print(f"\n[Telegram]\n{x}\n")
+
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
 
     print(f"VT投票信号机器人 v2.1 | VT8+NOFX4+Brooks6=18票 | ≥{MIN_VOTES}票触发 ≥{STRONG}强 | 每{args.loop}分钟")
     print(f"{'='*60}")

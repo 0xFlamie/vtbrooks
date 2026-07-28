@@ -27,6 +27,18 @@ echo "安装依赖..."
 source "$VENV/bin/activate"
 pip install -q numpy pandas
 
+# 密钥只保存在服务器本地 .env, 不入库
+ENV_FILE="$APP_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "WARN: $ENV_FILE 不存在，已创建空模板，请填入真实密钥后重启服务"
+    cat > "$ENV_FILE" << 'ENVEOF'
+VT_TELEGRAM_TOKEN=
+VT_TELEGRAM_CHAT=
+VT_DS_API_KEY=
+ENVEOF
+    chmod 600 "$ENV_FILE"
+fi
+
 # 安装 systemd 服务
 cat > "/etc/systemd/system/$SERVICE" << SYSTEMD
 [Unit]
@@ -37,9 +49,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$APP_DIR
-Environment="VT_TELEGRAM_TOKEN=8782698579:AAFpjnaaAo9so0_N28VLL8Sx-q75FxycHqQ"
-Environment="VT_TELEGRAM_CHAT=8304004098"
-Environment="VT_DS_API_KEY=sk-5f398d49367c41d39d7d1bb58980af3d"
+EnvironmentFile=$ENV_FILE
 ExecStart=$APP_DIR/venv/bin/python vt_vote_bot.py
 Restart=always
 RestartSec=10
