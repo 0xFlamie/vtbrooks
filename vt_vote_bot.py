@@ -869,17 +869,19 @@ def format_message(result, plan, is_emergency=False):
     L.append(f"├ 止盈1: ${plan['tp1']:.2f} (赚1倍风险先落袋一半)")
     L.append(f"└ 止盈2: ${plan['tp2']:.2f} (测量目标，盈亏比1:{plan['rr']:.1f})")
 
-    # 50x 杠杆短线建议
-    tight_sl = px * 0.005   # 0.5% 窄止损
-    quick_tp = px * 0.01   # 1% 快止盈
-    sl_50x = px - tight_sl if sig == "LONG" else px + tight_sl
-    tp_50x = px + quick_tp if sig == "LONG" else px - quick_tp
+    # 50x 杠杆短线建议 — 分段止盈
+    risk_pct = 0.005  # 0.5% 单次风险
+    sl_50x = px - risk_pct * px if sig == "LONG" else px + risk_pct * px
+    tp1_50x = px + risk_pct * px if sig == "LONG" else px - risk_pct * px      # 1:1 先保本
+    tp2_50x = px + risk_pct * 2 * px if sig == "LONG" else px - risk_pct * 2 * px  # 1:2
+    tp3_50x = px + risk_pct * 3 * px if sig == "LONG" else px - risk_pct * 3 * px  # 1:3
     L.append("")
-    L.append(f"50x短线建议 (风险自控)")
-    L.append(f"├ 不追现价: 等5分钟回踩{'EMA20' if sig=='LONG' else '反弹'}再入场，追进去容易被打止损")
-    L.append(f"├ 窄止损: ${sl_50x:.2f} (现价{'下方' if sig=='LONG' else '上方'}0.5%以内)")
-    L.append(f"├ 快止盈: ${tp_50x:.2f} (赚0.8-1%就走，不贪)")
-    L.append(f"└ 如果5分钟内不回头，放弃这单等下次信号")
+    L.append(f"50x分段止盈 (风险自控, 每段{risk_pct*100:.1f}%)")
+    L.append(f"├ 不追现价: 等5分钟回踩再入场")
+    L.append(f"├ 止损: ${sl_50x:.2f} ({'下方' if sig=='LONG' else '上方'}{risk_pct*100:.1f}%)")
+    L.append(f"├ TP1: ${tp1_50x:.2f} (1:1先保本, 到这个价位减半仓)")
+    L.append(f"├ TP2: ${tp2_50x:.2f} (1:2, 剩半仓推止损到成本)")
+    L.append(f"└ TP3: ${tp3_50x:.2f} (1:3, 最后仓位博超额)")
 
     stats = get_win_rate_stats()
     if stats["overall"] != "0/0":
@@ -974,9 +976,9 @@ def ai_analyze(result):
 
 内容（纯文本编号，逐条覆盖，每条必须带具体价格）:
 1. 为什么{('做多' if sig=='LONG' else '做空')}（1句说核心逻辑）
-2. 风险在哪（1句，带具体价位说明反弹/回踩风险点）
+2. 风险在哪（1句，带具体价位）
 3. 操作：入场${px:.0f}附近，止损设在{'支撑' if sig=='LONG' else '压力'}位外
-4. 第一目标、第二目标（带具体价格）
+4. 第一目标、第二目标、第三目标（每个都要标注是什么位置，如"近20低点""前期震荡下沿"）
 5. 认错条件（带具体价格）
 格式: 1. xxx  2. xxx ...每条换行"""
 
@@ -1043,11 +1045,10 @@ def main():
         except Exception as e:
             print(f"  验证失败: {e}")
 
-        for sym, config in [("BTCUSDT", BTC_FACTORS), ("ETHUSDT", ETH_FACTORS)]:
+        for sym, config in [("ETHUSDT", ETH_FACTORS)]:  # 只推 ETH
             try:
                 print(f"  {sym}...", end=" ", flush=True)
                 result = vote(sym, config)
-                time.sleep(2)  # Binance 限流
                 if result["signal"] != "NEUTRAL" and result["votes"]:
                     vn = int(result["votes"].split("/")[0])
                     if vn >= MIN_VOTES:
