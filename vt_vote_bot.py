@@ -86,12 +86,15 @@ def z_word(z):
 
 
 def fetch_klines(symbol, interval="15m", limit=200):
+    """Fetch klines — Binance first, fallback to yfinance (US-friendly)"""
+    # Try Binance
     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    result = subprocess.run(
-        ["curl", "-s", "--max-time", "15", url],
-        capture_output=True, text=True, timeout=20
-    )
-    data = json.loads(result.stdout)
+    result = subprocess.run(["curl", "-s", "--max-time", "10", url], capture_output=True, text=True, timeout=15)
+    data = json.loads(result.stdout) if result.stdout else None
+    if isinstance(data, dict) or not data:
+        return _fetch_yfinance(symbol, interval, limit)
+    return _parse_binance(data)
+def _parse_binance(data):
     df = pd.DataFrame(data, columns=[
         "open_time","open","high","low","close","volume",
         "close_time","amount","trades","taker_base","taker_quote","ignore"
@@ -100,6 +103,33 @@ def fetch_klines(symbol, interval="15m", limit=200):
         df[c] = df[c].astype(float)
     df["date"] = pd.to_datetime(df["open_time"], unit="ms")
     return df[["date","open","high","low","close","volume","amount"]].set_index("date").sort_index()
+
+
+def _fetch_yfinance(symbol, interval, limit):
+    """US-friendly data via Yahoo Finance"""
+    try:
+        import yfinance as yf
+        yf_sym = symbol.replace("USDT", "-USD")
+        tf_map = {"5m": "5m", "15m": "15m", "1h": "60m", "4h": "60m", "1d": "1d"}
+        period_map = {"5m": "5d", "15m": "7d", "1h": "30d", "4h": "60d", "1d": "730d"}
+        tf = tf_map.get(interval, "15m")
+        period = period_map.get(interval, "7d")
+        df = yf.download(yf_sym, interval=tf, period=period, progress=False)
+        if df.empty:
+            raise ValueError("no data")
+        # Flatten MultiIndex columns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.lower() for c in df.columns]
+        df.index.name = "date"
+        for c in ["open", "high", "low", "close", "volume"]:
+            if c not in df.columns:
+                df[c] = df["close"]
+        df["amount"] = df["volume"] * df["close"]
+        df = df[["open", "high", "low", "close", "volume", "amount"]]
+        return df.tail(limit).sort_index()
+    except Exception:
+        return pd.DataFrame()
 
 
 def build_panel(df):
