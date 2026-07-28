@@ -1,0 +1,5 @@
+vt_bot.log
+vt_predictions.json
+__pycache__/
+*.pyc
+.DS_Store

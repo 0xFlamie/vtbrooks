@@ -1,0 +1,1058 @@
+"""
+Vibe-Trading 因子投票信号机器人 v2.1
+- VT因子8 + NOFX趋势4 + Brooks价格行为6 = 18票
+- 8+/18 触发推送, 12+/18 强信号
+- Brooks: 市场状态(spike/channel/range) / Always In / H2·L2双腿回调 /
+  三推楔形·双顶底反转 / 假突破陷阱 / 信号K线质量
+- 推送: K线图(图片信号卡) + 结构化文字详解, 全部大白话表达
+"""
+import warnings, sys, os, json, time, argparse, importlib, subprocess, tempfile
+warnings.filterwarnings("ignore")
+import numpy as np
+import pandas as pd
+
+VT_PKG = "/Users/flamie/coding/vt-venv/lib/python3.11/site-packages"
+sys.path.insert(0, VT_PKG)
+
+# ── 配置 (优先环境变量) ──
+TELEGRAM_TOKEN = os.environ.get("VT_TELEGRAM_TOKEN", "8782698579:AAFpjnaaAo9so0_N28VLL8Sx-q75FxycHqQ")
+TELEGRAM_CHAT_ID = os.environ.get("VT_TELEGRAM_CHAT", "8304004098")
+DS_API_KEY = os.environ.get("VT_DS_API_KEY", "sk-5f398d49367c41d39d7d1bb58980af3d")
+DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DS_MODEL = "deepseek-chat"
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
+
+# ── 因子配置: (name, module, ic_sign, display_name)
+# ic_sign = +1 → 因子值高 = 看多, 值低 = 看空
+# ic_sign = -1 → 因子值高 = 看空, 值低 = 看多
+BTC_FACTORS = [
+    ("ma30",     "src.factors.zoo.qlib158.ma30",       +1, "均线偏离30"),
+    ("qtlu20",   "src.factors.zoo.qlib158.qtlu20",     +1, "高位阻力80分位"),
+    ("gtja046",  "src.factors.zoo.gtja191.alpha_046",  +1, "量价加权GT46"),
+    ("gtja134",  "src.factors.zoo.gtja191.alpha_134",  -1, "短周动量GT134"),
+    ("gtja029",  "src.factors.zoo.gtja191.alpha_029",  -1, "日内价差GT29"),
+    ("gtja178",  "src.factors.zoo.gtja191.alpha_178",  -1, "量价动量GT178"),
+    ("resi30",   "src.factors.zoo.qlib158.resi30",     -1, "趋势偏离30日"),
+    ("resi20",   "src.factors.zoo.qlib158.resi20",     -1, "趋势偏离20日"),
+]
+
+ETH_FACTORS = [
+    ("a101084",  "src.factors.zoo.alpha101.alpha_084", +1, "动量结构A84"),
+    ("qtlu20",   "src.factors.zoo.qlib158.qtlu20",     +1, "高位阻力80分位"),
+    ("gtja150",  "src.factors.zoo.gtja191.alpha_150",  +1, "成交量异动GT150"),
+    ("ma30",     "src.factors.zoo.qlib158.ma30",       +1, "均线偏离30"),
+    ("gtja188",  "src.factors.zoo.gtja191.alpha_188",  +1, "波动率结构GT188"),
+    ("a101047",  "src.factors.zoo.alpha101.alpha_047", +1, "量价动量A47"),
+    ("gtja134",  "src.factors.zoo.gtja191.alpha_134",  -1, "短周动量GT134"),
+    ("gtja029",  "src.factors.zoo.gtja191.alpha_029",  -1, "日内价差GT29"),
+]
+
+# ── 因子大白话: 让人看懂每个因子在衡量什么 ──
+FACTOR_DESC = {
+    "均线偏离30":     "价格偏离30均线的程度，看趋势方向和是否过热",
+    "高位阻力80分位": "价格在历史高位区的位置，越靠近高位上方压力越大",
+    "量价加权GT46":   "成交量加权的量价配合强度",
+    "短周动量GT134":  "一两周级别的涨跌动量",
+    "日内价差GT29":   "日内多空力量的价差对比",
+    "量价动量GT178":  "成交量配合下的价格动量",
+    "趋势偏离30日":   "价格偏离30日趋势的程度，偏离过大容易回归",
+    "趋势偏离20日":   "价格偏离20日趋势的程度，偏离过大容易回归",
+    "动量结构A84":    "价格在近期高低点结构中的位置，衡量动量强弱",
+    "成交量异动GT150": "成交量相对平常的异常程度，放大说明有资金动作",
+    "波动率结构GT188": "波动率的结构变化，波动放大往往伴随行情启动",
+    "量价动量A47":    "量价配合的中期动量",
+}
+
+MIN_VOTES = 8   # 至少 N 票触发 (VT8 + NOFX4 + Brooks6 = 18总票)
+STRONG = 12     # N+ 票 = 强信号
+LOOKBACK = 200  # 计算因子用的历史 bar 数
+
+
+def z_word(z):
+    """z分数 → 大白话强弱描述, 避免推送无意义的原始数值"""
+    if z >= 2: return "显著高于"
+    if z >= 1: return "明显高于"
+    if z > 0.3: return "略高于"
+    if z >= -0.3: return "基本持平于"
+    if z >= -1: return "略低于"
+    if z >= -2: return "明显低于"
+    return "显著低于"
+
+
+def fetch_klines(symbol, interval="15m", limit=200):
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    result = subprocess.run(
+        ["curl", "-s", "--max-time", "15", url],
+        capture_output=True, text=True, timeout=20
+    )
+    data = json.loads(result.stdout)
+    df = pd.DataFrame(data, columns=[
+        "open_time","open","high","low","close","volume",
+        "close_time","amount","trades","taker_base","taker_quote","ignore"
+    ])
+    for c in ["open","high","low","close","volume","amount"]:
+        df[c] = df[c].astype(float)
+    df["date"] = pd.to_datetime(df["open_time"], unit="ms")
+    return df[["date","open","high","low","close","volume","amount"]].set_index("date").sort_index()
+
+
+def build_panel(df):
+    idx = df.index
+    syms = ["SELF","DUMMY"]
+    panel = {}
+    for f in ["open","high","low","close","volume","amount"]:
+        pdf = pd.DataFrame(index=idx, columns=syms, dtype=float)
+        pdf["SELF"] = df[f].values
+        pdf["DUMMY"] = df[f].values
+        panel[f] = pdf
+    panel["vwap"] = (panel["high"]+panel["low"]+panel["close"])/3.0
+    return panel
+
+
+def compute_factor_value(mod_name, panel):
+    try:
+        mod = importlib.import_module(mod_name)
+        fv = mod.compute(panel)
+        if isinstance(fv, pd.DataFrame):
+            return fv.iloc[:, 0].values
+        return np.array(fv).flatten()
+    except Exception as e:
+        return None
+
+
+def preload_factors():
+    """Pre-import all factor modules"""
+    all_factors = set(m for _, m, _, _ in BTC_FACTORS + ETH_FACTORS)
+    for mod_name in sorted(all_factors):
+        try:
+            importlib.import_module(mod_name)
+        except Exception:
+            pass
+
+
+# ═══════════ Al Brooks 价格行为 (6票) ═══════════
+# 精髓: 先判状态(趋势/区间)再定打法 —— 趋势里等双腿回调顺势进场(H2/L2),
+# 极值处的三推楔形/双顶底做反转, 突破失败=被套交易者的反向信号,
+# 判断不了就当震荡区间(市场80%时间在区间里)
+
+def _swing_points(arr, n=2):
+    """Fractal 摆动点: ±n 根内的局部极值"""
+    a = np.asarray(arr, float)
+    hi = np.zeros(len(a), bool)
+    lo = np.zeros(len(a), bool)
+    for i in range(n, len(a) - n):
+        seg = a[i - n:i + n + 1]
+        hi[i] = a[i] == seg.max() and a[i] > seg[0] and a[i] > seg[-1]
+        lo[i] = a[i] == seg.min() and a[i] < seg[0] and a[i] < seg[-1]
+    return hi, lo
+
+
+def brooks_analyze(df):
+    """返回 {state, spike, always_in, votes=[(name,±1)], setups=[str], sl={long,short}}"""
+    res = {"state": "range", "spike": 0, "always_in": 0, "votes": [],
+           "setups": [], "sl": {"long": None, "short": None}}
+    c = df["close"].values; h = df["high"].values
+    l = df["low"].values; o = df["open"].values
+    n = len(c)
+    if n < 45:
+        return res
+    atr = float(np.mean(h[-14:] - l[-14:]))
+    if atr <= 0:
+        return res
+    rng = np.maximum(h - l, 1e-9)
+    body = c - o
+    ema20 = pd.Series(c).ewm(span=20, adjust=False).mean().values
+
+    # ── spike: 连续≥3根强趋势K线(实体>60%振幅 且 振幅>0.8ATR) = 突破段 ──
+    strong = np.where(body > 0.6 * rng, 1, np.where(-body > 0.6 * rng, -1, 0))
+    strong = strong * (rng > 0.8 * atr)
+    spike = 0; cur = 0; prev = 0
+    for i in range(n - 30, n):
+        d = strong[i]
+        cur = cur + 1 if d != 0 and d == prev else (1 if d != 0 else 0)
+        if d != 0:
+            prev = d
+        if cur >= 3:
+            spike = d
+    res["spike"] = int(spike)
+
+    # ── 市场状态: HH/HL 结构 或 spike 同向延续 = 趋势; 否则区间 ──
+    seg = c[-20:]
+    hh_hl = seg[10:].max() > seg[:10].max() and seg[10:].min() > seg[:10].min()
+    ll_lh = seg[10:].max() < seg[:10].max() and seg[10:].min() < seg[:10].min()
+    if hh_hl or (spike == 1 and c[-1] > ema20[-1]):
+        res["state"] = "trend_up"
+    elif ll_lh or (spike == -1 and c[-1] < ema20[-1]):
+        res["state"] = "trend_down"
+
+    # ── Always In: 最近25根内 强K线收盘突破前20根极值的方向; 无则价格vs EMA20 ──
+    ai = 0
+    for i in range(n - 1, max(n - 25, 21), -1):
+        if strong[i] == 1 and c[i] > h[i - 20:i].max():
+            ai = 1; break
+        if strong[i] == -1 and c[i] < l[i - 20:i].min():
+            ai = -1; break
+    if ai == 0:
+        ai = 1 if c[-1] >= ema20[-1] else -1
+    res["always_in"] = ai
+
+    sw_hi = np.where(_swing_points(h)[0])[0]
+    sw_lo = np.where(_swing_points(l)[1])[0]
+
+    # ── H2/L2 双腿回调: 趋势中最经典入场。第二腿刚形成且价格转回趋势方向 ──
+    def two_leg(direction):
+        pts = sw_lo if direction == 1 else sw_hi
+        opp = sw_hi if direction == 1 else sw_lo
+        if len(pts) < 2:
+            return None
+        P2, P1 = pts[-1], pts[-2]
+        if n - 1 - P2 > 5 or P2 - P1 < 3:
+            return None
+        if not len(opp[(opp > P1) & (opp < P2)]):  # 两腿之间必须有反弹腿
+            return None
+        prior = opp[opp < P1]
+        if not len(prior) or n - prior[-1] > 30:
+            return None
+        arr_p = l if direction == 1 else h
+        # 第二腿破第一腿太多 = 结构破坏, 可能反转而非回调
+        if direction == 1 and arr_p[P2] < arr_p[P1] - 0.5 * atr:
+            return None
+        if direction == -1 and arr_p[P2] > arr_p[P1] + 0.5 * atr:
+            return None
+        if direction == 1 and c[-1] <= c[-2]:  # 需转强确认
+            return None
+        if direction == -1 and c[-1] >= c[-2]:
+            return None
+        return float(arr_p[P2] - 0.2 * atr) if direction == 1 else float(arr_p[P2] + 0.2 * atr)
+
+    # ── 三推楔形: 三个递推极值但每腿变短 = 动能衰竭, 反转 ──
+    def wedge(direction):
+        pts = sw_hi if direction == -1 else sw_lo  # -1=楔形顶看空
+        if len(pts) < 3:
+            return False
+        P1, P2, P3 = pts[-3:]
+        arr_p = h if direction == -1 else l
+        if n - 1 - P3 > 6:
+            return False
+        if direction == -1:
+            if not (arr_p[P1] < arr_p[P2] < arr_p[P3]):
+                return False
+            if arr_p[P3] - arr_p[P2] > arr_p[P2] - arr_p[P1]:
+                return False
+            return c[-1] < c[-2]
+        if not (arr_p[P1] > arr_p[P2] > arr_p[P3]):
+            return False
+        if arr_p[P1] - arr_p[P2] > arr_p[P2] - arr_p[P3]:
+            return False
+        return c[-1] > c[-2]
+
+    # ── 双顶/双底: 二次测试同一极值不破, 反向确认K线触发 ──
+    def double_tb(direction):
+        pts = sw_hi if direction == -1 else sw_lo
+        if len(pts) < 2:
+            return None
+        P1, P2 = pts[-2], pts[-1]
+        arr_p = h if direction == -1 else l
+        if P2 - P1 < 5 or n - 1 - P2 > 6:
+            return None
+        if abs(arr_p[P2] - arr_p[P1]) > 0.5 * atr:  # 两顶/底必须接近
+            return None
+        if direction == -1 and c[-1] >= l[-2]:  # 跌破前K低点确认
+            return None
+        if direction == 1 and c[-1] <= h[-2]:
+            return None
+        return float(arr_p[P2] + 0.2 * atr) if direction == -1 else float(arr_p[P2] - 0.2 * atr)
+
+    # ── 假突破: 盘中破前20根极值但收回 → 突破者被套, 80%概率反向 ──
+    def failed_breakout():
+        for i in range(max(n - 5, 22), n):
+            phi = h[i - 20:i].max(); plo = l[i - 20:i].min()
+            if h[i] > phi and c[i] < phi and c[-1] < phi:
+                return -1
+            if l[i] < plo and c[i] > plo and c[-1] > plo:
+                return 1
+        return 0
+
+    # ── 信号K线质量: 实体>50%振幅 且 收盘在有利1/3, 且与 Always In 同向 ──
+    i = n - 1
+    qbar = 0
+    if rng[i] > 0.5 * atr:
+        if body[i] > 0.5 * rng[i] and c[i] > l[i] + 0.66 * rng[i]:
+            qbar = 1
+        elif -body[i] > 0.5 * rng[i] and c[i] < l[i] + 0.33 * rng[i]:
+            qbar = -1
+
+    # ══ 汇总6票 ══
+    v = res["votes"]
+    if res["state"] == "trend_up":
+        v.append(("BROOKS_市场状态", 1))
+    elif res["state"] == "trend_down":
+        v.append(("BROOKS_市场状态", -1))
+    v.append(("BROOKS_AlwaysIn", ai))
+
+    sl = two_leg(1)
+    if sl and res["state"] != "trend_down" and ai == 1:
+        v.append(("BROOKS_双腿回调H2", 1))
+        res["setups"].append("H2双腿回调做多")
+        res["sl"]["long"] = sl
+    sl = two_leg(-1)
+    if sl and res["state"] != "trend_up" and ai == -1:
+        v.append(("BROOKS_双腿回调L2", -1))
+        res["setups"].append("L2双腿回调做空")
+        res["sl"]["short"] = sl
+
+    # 反转形态合计1票, 避免楔形+双顶同时出现时的重复计票
+    rev = []
+    if wedge(-1):
+        rev.append(-1); res["setups"].append("三推楔形顶")
+    if wedge(1):
+        rev.append(1); res["setups"].append("三推楔形底")
+    dt = double_tb(-1)
+    if dt:
+        rev.append(-1); res["setups"].append("双顶"); res["sl"]["short"] = dt
+    db = double_tb(1)
+    if db:
+        rev.append(1); res["setups"].append("双底"); res["sl"]["long"] = db
+    if rev:
+        v.append(("BROOKS_反转形态", max(set(rev), key=rev.count)))
+
+    fb = failed_breakout()
+    if fb:
+        v.append(("BROOKS_假突破", fb))
+        res["setups"].append("假突破陷阱→反向")
+
+    if qbar and qbar == ai:
+        v.append(("BROOKS_信号K线", qbar))
+    return res
+
+
+# Brooks 各票的大白话解释
+BROOKS_TXT = {
+    "BROOKS_市场状态":   {1: "市场处于上升趋势，是顺势做多的环境", -1: "市场处于下降趋势，是顺势做空的环境"},
+    "BROOKS_AlwaysIn":  {1: "最近一次强势突破向上，场内方向偏多", -1: "最近一次强势突破向下，场内方向偏空"},
+    "BROOKS_双腿回调H2": {1: "出现H2双腿回调形态，是趋势里胜率最高的做多入场"},
+    "BROOKS_双腿回调L2": {-1: "出现L2双腿回调形态，是趋势里胜率最高的做空入场"},
+    "BROOKS_反转形态":   {1: "底部出现反转形态(楔形底/双底)，跌不动了", -1: "顶部出现反转形态(楔形顶/双顶)，涨不动了"},
+    "BROOKS_假突破":     {1: "向下假突破，追空的人被套，反弹概率大", -1: "向上假突破，追多的人被套，回落概率大"},
+    "BROOKS_信号K线":    {1: "最新K线收得很强，支持做多", -1: "最新K线收得很弱，支持做空"},
+}
+
+
+def vote(symbol, config):
+    """Factor voting for a single symbol"""
+    df = fetch_klines(symbol, "15m", LOOKBACK)
+    panel = build_panel(df)
+
+    results = []
+    bullish = 0
+    bearish = 0
+
+    for name, mod_name, ic_sign, display in config:
+        values = compute_factor_value(mod_name, panel)
+        if values is None or len(values) < 30:
+            continue
+
+        current = values[-1]
+        window = values[-21:-1]
+        mean20 = np.nanmean(window)
+        std20 = np.nanstd(window)
+        if np.isnan(mean20) or mean20 == 0:
+            continue
+        # 原始值量级差异巨大, 用z分数衡量相对强弱, 推送才有意义
+        z = (current - mean20) / std20 if std20 > 0 else 0.0
+
+        if ic_sign == +1:
+            direction = "🟢" if current > mean20 else "🔴"
+            if current > mean20: bullish += 1
+            else: bearish += 1
+        else:
+            direction = "🔴" if current > mean20 else "🟢"
+            if current > mean20: bearish += 1
+            else: bullish += 1
+
+        results.append({
+            "name": display,
+            "z": round(float(z), 2),
+            "txt": f"{z_word(z)}近20期均值",
+            "direction": direction,
+        })
+
+    # ═══ NOFX 风格趋势确认 (4票) ═══
+    try:
+        df4 = fetch_klines(symbol, "4h", 80)
+        df15 = fetch_klines(symbol, "15m", 80)
+        df5 = fetch_klines(symbol, "5m", 80)
+
+        c4 = df4["close"]
+        ema20_4 = c4.ewm(span=20, adjust=False).mean()
+        ema50_4 = c4.ewm(span=50, adjust=False).mean()
+        if ema20_4.iloc[-1] > ema50_4.iloc[-1]:
+            bullish += 1
+            results.append({"name": "NOFX_4H趋势", "txt": "4小时均线多头排列，大级别趋势向上", "direction": "🟢"})
+        else:
+            bearish += 1
+            results.append({"name": "NOFX_4H趋势", "txt": "4小时均线空头排列，大级别趋势向下", "direction": "🔴"})
+
+        c15 = df15["close"]
+        ema20_15 = c15.ewm(span=20, adjust=False).mean()
+        if c15.iloc[-1] > ema20_15.iloc[-1]:
+            bullish += 1
+            results.append({"name": "NOFX_15M方向", "txt": "15分钟价格站上EMA20，短线偏多", "direction": "🟢"})
+        else:
+            bearish += 1
+            results.append({"name": "NOFX_15M方向", "txt": "15分钟价格跌破EMA20，短线偏空", "direction": "🔴"})
+
+        c5 = df5["close"]
+        ema20_5 = c5.ewm(span=20, adjust=False).mean()
+        if c5.iloc[-1] > ema20_5.iloc[-1]:
+            bullish += 1
+            results.append({"name": "NOFX_5M确认", "txt": "5分钟价格站上EMA20，入场时机配合", "direction": "🟢"})
+        else:
+            bearish += 1
+            results.append({"name": "NOFX_5M确认", "txt": "5分钟价格跌破EMA20，入场时机配合空头", "direction": "🔴"})
+
+        macd_15 = c15.ewm(span=12, adjust=False).mean() - c15.ewm(span=26, adjust=False).mean()
+        if len(macd_15) >= 2 and macd_15.iloc[-1] > macd_15.iloc[-2]:
+            bullish += 1
+            results.append({"name": "NOFX_MACD动量", "txt": "15分钟上涨动能在增强", "direction": "🟢"})
+        else:
+            bearish += 1
+            results.append({"name": "NOFX_MACD动量", "txt": "15分钟上涨动能在减弱", "direction": "🔴"})
+    except Exception:
+        pass
+
+    # ═══ Al Brooks 价格行为 (6票) ═══
+    ba = None
+    try:
+        ba = brooks_analyze(fetch_klines(symbol, "15m", 120))
+        for name, d in ba["votes"]:
+            txt = BROOKS_TXT.get(name, {}).get(d, "")
+            if d > 0:
+                bullish += 1
+                results.append({"name": name, "txt": txt, "direction": "🟢"})
+            else:
+                bearish += 1
+                results.append({"name": name, "txt": txt, "direction": "🔴"})
+    except Exception:
+        pass
+
+    total = bullish + bearish
+
+    if bullish > bearish:
+        signal = "LONG"
+        votes = bullish
+    elif bearish > bullish:
+        signal = "SHORT"
+        votes = bearish
+    else:
+        signal = "NEUTRAL"
+        votes = max(bullish, bearish)
+
+    strength = "⚡强" if votes >= STRONG else "📊" if votes >= MIN_VOTES else "❌不够"
+
+    return {
+        "symbol": symbol,
+        "signal": signal,
+        "votes": f"{votes}/{total}",
+        "strength": strength,
+        "bullish": bullish,
+        "bearish": bearish,
+        "price": float(df["close"].iloc[-1]),
+        "details": results,
+        "brooks": ba,
+    }
+
+
+def send_telegram(text):
+    """Send via curl, non-blocking with 12s timeout"""
+    import urllib.parse
+    post_data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"})
+    try:
+        proc = subprocess.Popen(
+            ["curl", "-s", "--max-time", "10", "-X", "POST",
+             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+             "-d", post_data],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        proc.wait(timeout=12)
+        return proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return False
+
+
+def send_photo(path, caption):
+    """Send chart image with compact signal card as caption"""
+    try:
+        proc = subprocess.Popen(
+            ["curl", "-s", "--max-time", "25", "-X", "POST",
+             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+             "-F", f"chat_id={TELEGRAM_CHAT_ID}",
+             "-F", f"photo=@{path}",
+             "-F", f"caption={caption}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        proc.wait(timeout=30)
+        return proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return False
+
+
+def load_history():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {"signals": [], "win_rate": {"total": 0, "wins": 0, "recent20": []}}
+
+
+def save_history(h):
+    with open(STATE_FILE, "w") as f:
+        json.dump(h, f, indent=2)
+
+
+def save_prediction(sym, sig, px):
+    h = load_history()
+    h["signals"].append({
+        "symbol": sym,
+        "direction": sig,
+        "entry": px,
+        "time": pd.Timestamp.now().isoformat(),
+        "verified": False,
+        "correct": None,
+        "exit_px": None,
+        "pnl_pct": None,
+    })
+    # Keep last 100
+    if len(h["signals"]) > 100:
+        h["signals"] = h["signals"][-100:]
+    save_history(h)
+
+
+def verify_predictions():
+    """Check unresolved predictions and update win rate. Returns follow-up messages."""
+    h = load_history()
+    messages = []
+
+    for pred in h["signals"]:
+        if pred["verified"]:
+            continue
+
+        # Check if enough time passed (at least 10 minutes)
+        pred_time = pd.Timestamp(pred["time"])
+        if (pd.Timestamp.now() - pred_time).total_seconds() < 1800:  # 30分钟验证
+            continue
+
+        # Get current price
+        try:
+            df = fetch_klines(pred["symbol"], "4h", 2)
+            current_px = float(df["close"].iloc[-1])
+        except Exception:
+            continue
+
+        dl = "LONG"
+        correct = (pred["direction"] == dl and current_px > pred["entry"]) or \
+                  (pred["direction"] != dl and current_px < pred["entry"])
+        pnl = (current_px - pred["entry"]) / pred["entry"] * 100
+        if pred["direction"] != dl:
+            pnl = -pnl
+
+        pred["verified"] = True
+        pred["correct"] = correct
+        pred["exit_px"] = current_px
+        pred["pnl_pct"] = round(pnl, 2)
+
+        # Update recent20
+        h["win_rate"]["total"] += 1
+        if correct:
+            h["win_rate"]["wins"] += 1
+        h["win_rate"]["recent20"].append(correct)
+        if len(h["win_rate"]["recent20"]) > 20:
+            h["win_rate"]["recent20"] = h["win_rate"]["recent20"][-20:]
+
+        # Generate follow-up message
+        emoji = "✅" if correct else "❌"
+        direction_cn = "做多" if pred["direction"] == dl else "做空"
+        pnl_str = f"+{pnl:.2f}%" if pnl > 0 else f"{pnl:.2f}%"
+        messages.append(
+            f"{emoji} 上笔信号验证 | {pred['symbol']} {direction_cn}\n"
+            f"入场: ${pred['entry']:.2f} → 现价: ${current_px:.2f}\n"
+            f"盈亏: {pnl_str} | {'方向正确' if correct else '方向错误'}"
+        )
+
+    save_history(h)
+    return messages
+
+
+def get_win_rate_stats():
+    h = load_history()
+    recent20 = h["win_rate"].get("recent20", [])
+    recent10 = recent20[-10:] if len(recent20) >= 10 else recent20[-5:] if recent20 else []
+
+    overall_wins = h["win_rate"]["wins"]
+    overall_total = h["win_rate"]["total"]
+    overall_rate = overall_wins / overall_total * 100 if overall_total > 0 else 0
+    recent20_rate = sum(recent20) / len(recent20) * 100 if recent20 else 0
+    recent10_rate = sum(recent10) / len(recent10) * 100 if recent10 else 0
+
+    return {
+        "overall": f"{overall_wins}/{overall_total}" if overall_total > 0 else "0/0",
+        "overall_rate": round(overall_rate),
+        "recent20_rate": round(recent20_rate),
+        "recent10_rate": round(recent10_rate),
+    }
+
+
+def rsi_word(rsi):
+    """RSI数值 → 大白话, 让人看懂是过热还是超卖"""
+    if rsi >= 70: return f"RSI={rsi:.0f}(超买区，涨多了有回调风险)"
+    if rsi >= 55: return f"RSI={rsi:.0f}(偏强)"
+    if rsi >= 45: return f"RSI={rsi:.0f}(中性)"
+    if rsi >= 30: return f"RSI={rsi:.0f}(偏弱)"
+    return f"RSI={rsi:.0f}(超卖区，跌多了有反弹需求)"
+
+
+def compute_direction_probs(symbol):
+    """Compute direction probability for each timeframe using local momentum + volatility"""
+    lines = []
+    try:
+        configs = [
+            ("5分钟",  "5m",  0.015, 3,  "短线噪声大，参考权重低"),
+            ("15分钟", "15m", 0.030, 6,  "主参考级别"),
+            ("4小时",  "4h",  0.045, 20, "长周期趋势，权重大"),
+        ]
+        bars = []
+
+        for tf_label, tf, ic, lookback, note in configs:
+            df = fetch_klines(symbol, tf, 50)
+            c = df["close"]
+            v = df["volume"]
+            h, l = df["high"], df["low"]
+
+            # 1. Momentum: N-bar return
+            if len(c) >= lookback + 1:
+                mom = c.iloc[-1] / c.iloc[-lookback-1] - 1
+                mom_z = np.sign(mom) * min(abs(mom) / 0.01, 3)  # cap at 3σ
+            else:
+                mom_z = 0
+
+            # 2. Price position: RSV
+            if len(c) >= 20:
+                hh, ll = h.iloc[-20:].max(), l.iloc[-20:].min()
+                rsv = (c.iloc[-1] - ll) / max(hh - ll, 1e-6)
+                rsv_z = (rsv - 0.5) * 2
+            else:
+                rsv_z = 0
+
+            # 3. Volume anomaly
+            if len(v) >= 10:
+                vol_ratio = v.iloc[-3:].mean() / max(v.iloc[-10:].mean(), 1e-6)
+                vol_z = np.sign(vol_ratio - 1) * min(abs(vol_ratio - 1) * 3, 2)
+            else:
+                vol_z = 0
+
+            # Composite: momentum(50%) + position(30%) + volume(20%)
+            composite = mom_z * 0.5 + rsv_z * 0.3 + vol_z * 0.2
+
+            # IC-based probability
+            prob_up = 50 + ic * composite * 150
+            prob_up = np.clip(prob_up, 30, 70)
+            prob_down = 100 - prob_up
+
+            bars.append(f"├ {tf_label}: 🟢涨{prob_up:.0f}% / 🔴跌{prob_down:.0f}% ({note})")
+
+        lines.extend(bars)
+
+    except Exception:
+        lines.append("├ (数据暂不可用)")
+
+    return lines
+
+
+def calc_trade_plan(sym, sig, px, ba):
+    """Brooks 形态止损优先(第二腿/双顶底极值外侧), 否则 ATR×0.6; 止盈 = 1:1 scalp + 测量目标"""
+    atr_val = px * 0.003
+    last_leg = atr_val * 3
+    try:
+        df = fetch_klines(sym, "15m", 80)
+        atr_val = float((df["high"] - df["low"]).tail(14).mean())
+        if np.isnan(atr_val) or atr_val <= 0:
+            atr_val = px * 0.003
+        recent = df["close"].iloc[-30:]
+        last_leg = abs(float(recent.max() - recent.min()))
+        if last_leg < atr_val:
+            last_leg = atr_val * 3
+    except Exception:
+        pass
+
+    sl_map = (ba or {}).get("sl") or {}
+    sl_struct = sl_map.get("long" if sig == "LONG" else "short")
+    if sig == "LONG":
+        sl = sl_struct if (sl_struct and sl_struct < px) else px - atr_val * 0.6
+        tp1 = px + (px - sl)
+        tp2 = px + last_leg
+    else:
+        sl = sl_struct if (sl_struct and sl_struct > px) else px + atr_val * 0.6
+        tp1 = px - (sl - px)
+        tp2 = px - last_leg
+    risk = abs(px - sl)
+    rr = abs(tp2 - px) / max(risk, 1e-9)
+    return {"entry": px, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": rr,
+            "sl_label": "结构止损(形态极值外侧)" if sl_struct else "ATR止损(按近期波动幅度)"}
+
+
+def format_caption(result, plan):
+    """图片信号卡标题 — 极简, 详情在文字消息"""
+    sig = result["signal"]; sym = result["symbol"]
+    ba = result.get("brooks") or {}
+    emoji = "🟢" if sig == "LONG" else "🔴"
+    setups = f" | {'; '.join(ba['setups'])}" if ba.get("setups") else ""
+    return f"{emoji} {sym} {'做多' if sig == 'LONG' else '做空'} {result['votes']}票{setups} | 入场 ${plan['entry']:.2f}"
+
+
+def make_chart(result, plan):
+    """15m K线图: EMA20 + 摆动点 + 入场/止损/止盈线, 全中文标注"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib import font_manager
+        # macOS 系统中文字体, 按优先级选第一个可用的
+        available = {f.name for f in font_manager.fontManager.ttflist}
+        for fname in ["PingFang SC", "Hiragino Sans GB", "Arial Unicode MS", "Heiti SC", "STHeiti"]:
+            if fname in available:
+                plt.rcParams["font.sans-serif"] = [fname]
+                break
+        plt.rcParams["axes.unicode_minus"] = False
+    except Exception:
+        return None
+    path = os.path.join(tempfile.gettempdir(), f"vt_{result['symbol']}.png")
+    try:
+        sym = result["symbol"]
+        df = fetch_klines(sym, "15m", 60)
+        o = df["open"].values; h = df["high"].values
+        l = df["low"].values; c = df["close"].values
+        x = np.arange(len(df))
+        fig, ax = plt.subplots(figsize=(10, 5.2), dpi=110)
+        for i in x:
+            col = "#26a69a" if c[i] >= o[i] else "#ef5350"
+            ax.vlines(i, l[i], h[i], color=col, lw=0.7)
+            ax.vlines(i, min(o[i], c[i]), max(o[i], c[i]), color=col, lw=3.2)
+        ema20 = pd.Series(c).ewm(span=20, adjust=False).mean().values
+        ax.plot(x, ema20, color="#ffa726", lw=1.3, label="EMA20均线")
+        sw_hi = _swing_points(h)[0]; sw_lo = _swing_points(l)[1]
+        ax.plot(x[sw_hi], h[sw_hi], "v", color="#ab47bc", ms=5, label="摆动高/低点")
+        ax.plot(x[sw_lo], l[sw_lo], "^", color="#ab47bc", ms=5)
+        for price, label, col in [(plan["entry"], "入场", "#1e88e5"),
+                                  (plan["sl"], "止损", "#e53935"),
+                                  (plan["tp1"], "止盈1", "#8e24aa"),
+                                  (plan["tp2"], "止盈2", "#43a047")]:
+            ax.axhline(price, color=col, lw=1, ls="--", alpha=0.8)
+            ax.text(len(df) - 0.5, price, f" {label} {price:.1f}",
+                    color=col, fontsize=9, va="bottom", ha="right")
+        dir_txt = "做多" if result["signal"] == "LONG" else "做空"
+        ax.set_title(f"{sym} 15分钟  {dir_txt} {result['votes']}票  |  {pd.Timestamp.now():%m-%d %H:%M}")
+        tick_idx = x[::10]
+        ax.set_xticks(tick_idx)
+        ax.set_xticklabels([df.index[i].strftime("%H:%M") for i in tick_idx], fontsize=7)
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+        return path
+    except Exception:
+        return None
+
+
+def format_message(result, plan, is_emergency=False):
+    if result["signal"] == "NEUTRAL":
+        return None
+    sym = result["symbol"]; sig = result["signal"]
+    px = result["price"]
+    votes_n, votes_total = map(int, result["votes"].split("/"))
+    pct = int(votes_n / votes_total * 100)
+    bar = "▓" * (pct // 10) + "░" * (10 - pct // 10)
+    emoji = "🟢" if sig == "LONG" else "🔴"
+    dir_cn = "做多" if sig == "LONG" else "做空"
+    ba = result.get("brooks") or {}
+    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
+    spike_cn = {1: "(刚出现强势向上突破)", -1: "(刚出现强势向下跌破)"}.get(ba.get("spike", 0), "")
+    ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
+
+    drivers = [d for d in result["details"] if (d["direction"] == "🟢") == (sig == "LONG")]
+    oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
+
+    L = []
+    if is_emergency:
+        L.append("🔄 <b>紧急翻转信号</b> — 5分钟监控检测到方向变化")
+        L.append("")
+    L.append(f"{emoji} <b>{sym} 建议{dir_cn}</b> | {'⚡强信号' if votes_n >= STRONG else '📡信号'} {votes_n}/{votes_total}票")
+    L.append(f"强度 {pct}% {bar}")
+    # Clean market context
+    market_line = f"市场: {state_cn}"
+    if spike_cn:
+        market_line += spike_cn
+    market_line += f" | Always In: {ai_cn}"
+    if ba.get("setups"):
+        market_line += f" | 形态: {'; '.join(ba['setups'])}"
+    L.append(market_line)
+    L.append("")
+
+    L.append("投票分布")
+    groups = {"VT因子": [], "NOFX": [], "Brooks": []}
+    for d in result["details"]:
+        name = d["name"]
+        if name.startswith("NOFX_"):
+            groups["NOFX"].append(d)
+        elif name.startswith("BROOKS_"):
+            groups["Brooks"].append(d)
+        else:
+            groups["VT因子"].append(d)
+    gtotal = {"VT因子": 8, "NOFX": 4, "Brooks": 6}
+    gkeys = ["VT因子", "NOFX", "Brooks"]
+    for gi, key in enumerate(gkeys):
+        ds = groups[key]
+        agree = sum(1 for d in ds if (d["direction"] == "🟢") == (sig == "LONG"))
+        total = gtotal[key]
+        prefix = "└" if gi == len(gkeys) - 1 else "├"
+        # 🟢=看涨 🔴=看跌 ⭕=未触发
+        em = "".join(d["direction"] for d in ds)
+        em += "⭕" * (total - len(ds))
+        L.append(f"{prefix} {key} {agree}/{total}票  {em}")
+    L.append("")
+
+    L.append("交易计划")
+    L.append(f"├ 入场: ${plan['entry']:.2f}")
+    L.append(f"├ 止损: ${plan['sl']:.2f} ({plan['sl_label']})")
+    L.append(f"├ 止盈1: ${plan['tp1']:.2f} (赚1倍风险先落袋一半)")
+    L.append(f"└ 止盈2: ${plan['tp2']:.2f} (测量目标，盈亏比1:{plan['rr']:.1f})")
+
+    # 50x 杠杆短线建议
+    tight_sl = px * 0.005   # 0.5% 窄止损
+    quick_tp = px * 0.01   # 1% 快止盈
+    sl_50x = px - tight_sl if sig == "LONG" else px + tight_sl
+    tp_50x = px + quick_tp if sig == "LONG" else px - quick_tp
+    L.append("")
+    L.append(f"50x短线建议 (风险自控)")
+    L.append(f"├ 不追现价: 等5分钟回踩{'EMA20' if sig=='LONG' else '反弹'}再入场，追进去容易被打止损")
+    L.append(f"├ 窄止损: ${sl_50x:.2f} (现价{'下方' if sig=='LONG' else '上方'}0.5%以内)")
+    L.append(f"├ 快止盈: ${tp_50x:.2f} (赚0.8-1%就走，不贪)")
+    L.append(f"└ 如果5分钟内不回头，放弃这单等下次信号")
+
+    stats = get_win_rate_stats()
+    if stats["overall"] != "0/0":
+        L.append("")
+        L.append(f"📊 历史胜率 总{stats['overall']}({stats['overall_rate']}%) 近10次:{stats['recent10_rate']}% 近20次:{stats['recent20_rate']}%")
+    L.append(f"🕐 {pd.Timestamp.now():%m/%d %H:%M}")
+    L.append("")
+    L.append("三周期方向预测")
+    L.extend(compute_direction_probs(sym))
+    L.append("")
+    L.append("AI大白话解读")
+    ai_text = ai_analyze(result)
+    for line in ai_text.split("\n"):
+        line = line.strip()
+        if line:
+            L.append(f"  {line}")
+    return "\n".join(L)
+
+
+def ai_analyze(result):
+    """DeepSeek 大白话解读: 禁止堆指标数值, 每个理由都要说清意味着什么"""
+    sym = result["symbol"]
+    sig = result["signal"]
+    px = result["price"]
+    votes_n = int(result["votes"].split("/")[0])
+    votes_total = int(result["votes"].split("/")[1])
+
+    def factor_line(d):
+        desc = FACTOR_DESC.get(d["name"], "")
+        txt = d.get("txt", "")
+        s = f"  {'看多' if d['direction']=='🟢' else '看空'} {d['name']}"
+        if desc:
+            s += f"({desc})"
+        if txt:
+            s += f": {txt}"
+        return s
+
+    factor_detail = "\n".join(factor_line(d) for d in result["details"])
+
+    # Brooks context for AI
+    ba = result.get("brooks") or {}
+    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
+    drivers = [d for d in result["details"] if (d["direction"] == "🟢") == (sig == "LONG")]
+    oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
+
+    # 关键价位 + 人话版指标状态
+    levels_text = ""
+    try:
+        df15 = fetch_klines(sym, "15m", 80)
+        c15, h15, l15 = df15["close"], df15["high"], df15["low"]
+        swing_high = h15.iloc[-20:].max()
+        swing_low = l15.iloc[-20:].min()
+        recent_high = h15.iloc[-5:].max()
+        ema20 = c15.ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = c15.ewm(span=50, adjust=False).mean().iloc[-1] if len(c15) >= 50 else ema20
+        rsi14 = float((c15.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean().iloc[-1] /
+                        (c15.diff().abs().ewm(alpha=1/14, adjust=False).mean().iloc[-1] + 1e-10) * 100))
+        vol_ratio = df15["volume"].iloc[-1] / df15["volume"].iloc[-20:].mean()
+        vol_word = "明显放量，有资金进场" if vol_ratio > 1.5 else "量能正常" if vol_ratio > 0.8 else "明显缩量，观望情绪重"
+
+        if sig == "LONG":
+            resistance = f"${swing_high:.2f}(近20周期高点)"
+            support = f"${swing_low:.2f}(近20周期低点)、${ema50:.2f}(EMA50均线)"
+        else:
+            resistance = f"${recent_high:.2f}(近5周期高点)、${swing_high:.2f}(近20周期高点)"
+            support = f"${swing_low:.2f}(近20周期低点)"
+
+        levels_text = f"""
+关键支撑位: {support}
+关键压力位: {resistance}
+市场情绪: {rsi_word(rsi14)}
+成交量: {vol_word}"""
+    except Exception:
+        pass
+
+    prompt = f"""你是加密货币短线交易分析师，读者是看不懂技术指标的新手。根据多空投票结果，用大白话给出分析和操作建议（中文）。
+
+币种: {sym}  建议方向: {'做多' if sig == 'LONG' else '做空'}  现价: ${px:.2f}
+投票: {votes_n}/{votes_total} 票同向
+{levels_text}
+
+市场背景: {state_cn}
+形态信号: {ba.get('setups', [])}
+
+各票详情 ({len(drivers)}票同向 + {len(oppose)}票反对):
+{factor_detail}
+
+硬性要求:
+- 每条不超过2句话，直接给结论
+- 模拟专业交易员的决策心路，每个操作决策都要带具体价格
+- 禁止使用"这意味着""综合来看""值得注意的是"等口水话
+
+内容（纯文本编号，逐条覆盖，每条必须带具体价格）:
+1. 为什么{('做多' if sig=='LONG' else '做空')}（1句说核心逻辑）
+2. 风险在哪（1句，带具体价位说明反弹/回踩风险点）
+3. 操作：入场${px:.0f}附近，止损设在{'支撑' if sig=='LONG' else '压力'}位外
+4. 第一目标、第二目标（带具体价格）
+5. 认错条件（带具体价格）
+格式: 1. xxx  2. xxx ...每条换行"""
+
+    payload = json.dumps({
+        "model": DS_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "temperature": 0.3,
+    })
+
+    try:
+        proc = subprocess.Popen(
+            ["curl", "-s", "--max-time", "20", "-X", "POST", DS_API_URL,
+             "-H", "Content-Type: application/json",
+             "-H", f"Authorization: Bearer {DS_API_KEY}",
+             "-d", payload],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        stdout, _ = proc.communicate(timeout=25)
+        if proc.returncode != 0:
+            return "(AI分析暂不可用)"
+        data = json.loads(stdout.decode())
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"(AI分析暂不可用: {e})"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
+    parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
+    args = parser.parse_args()
+
+    if args.test:
+        global send_telegram
+        send_telegram = lambda x: print(f"\n[Telegram]\n{x}\n")
+
+    print(f"VT投票信号机器人 v2.1 | VT8+NOFX4+Brooks6=18票 | ≥{MIN_VOTES}票触发 ≥{STRONG}强 | 每{args.loop}分钟")
+    print(f"{'='*60}")
+
+    print("预加载因子...", end=" ", flush=True)
+    preload_factors()
+    print("OK")
+
+    last_15m_signal = {}  # sym → (dir, time, px) — 上一次15分钟信号
+    last_emergency = {}   # sym → timestamp — 5分钟紧急推送冷却
+
+    while True:
+        now = pd.Timestamp.now()
+        minute = now.minute
+        is_15m = minute % 15 == 0  # :00 :15 :30 :45
+
+        if is_15m:
+            print(f"\n[{now.strftime('%H:%M:%S')}] 15分钟定时扫描...")
+        else:
+            print(f"\n[{now.strftime('%H:%M:%S')}] 5分钟监控...")
+
+        # ── 验证上次预测 ──
+        try:
+            followups = verify_predictions()
+            for msg in followups:
+                send_telegram(msg)
+                print(f"  验证: 已推送")
+        except Exception as e:
+            print(f"  验证失败: {e}")
+
+        for sym, config in [("BTCUSDT", BTC_FACTORS), ("ETHUSDT", ETH_FACTORS)]:
+            try:
+                print(f"  {sym}...", end=" ", flush=True)
+                result = vote(sym, config)
+                time.sleep(2)  # Binance 限流
+                if result["signal"] != "NEUTRAL" and result["votes"]:
+                    vn = int(result["votes"].split("/")[0])
+                    if vn >= MIN_VOTES:
+                        # 5分钟检查: 方向翻转才紧急推送, 且10分钟内不重复
+                        if not is_15m:
+                            prev = last_15m_signal.get(sym)
+                            if not prev or prev[0] == result["signal"]:
+                                print(f"方向未变跳过")
+                                continue
+                            now_ts = time.time()
+                            if sym in last_emergency and now_ts - last_emergency[sym] < 600:
+                                print(f"紧急冷却跳过")
+                                continue
+                            last_emergency[sym] = now_ts
+
+                        plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
+                        msg = format_message(result, plan, is_emergency=(not is_15m))
+                        if msg:
+                            if not args.test:
+                                img = make_chart(result, plan)
+                                if img:
+                                    send_photo(img, format_caption(result, plan))
+                            send_telegram(msg)
+                            save_prediction(sym, result["signal"], result["price"])
+                            if is_15m:
+                                last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
+                            tag = "🔄翻转" if not is_15m else ""
+                            print(f"  {sym} → {result['signal']} {result['votes']}票 {tag}已推送")
+                        else:
+                            print(f"  {sym} {result['signal']} {result['votes']}票 (无消息)")
+                    else:
+                        print(f"  {sym} 票数不足 {result['votes']}")
+                else:
+                    print(f"  {sym} NEUTRAL {result['votes']}")
+            except Exception as e:
+                print(f"错误: {e}")
+
+        if args.loop == 0:
+            break
+        # 睡到下一个5分钟整点
+        now = time.localtime()
+        seconds_to_next = 300 - ((now.tm_min % 5) * 60 + now.tm_sec)
+        if seconds_to_next < 5:
+            seconds_to_next += 300
+        time.sleep(seconds_to_next)
+
+
+if __name__ == "__main__":
+    main()
