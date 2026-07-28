@@ -552,18 +552,16 @@ def save_history(h):
         json.dump(h, f, indent=2)
 
 
-def save_prediction(sym, sig, px):
+def save_prediction(sym, sig, px, plan=None):
     h = load_history()
-    h["signals"].append({
-        "symbol": sym,
-        "direction": sig,
-        "entry": px,
-        "time": pd.Timestamp.now().isoformat(),
-        "verified": False,
-        "correct": None,
-        "exit_px": None,
-        "pnl_pct": None,
-    })
+    entry = {"symbol": sym, "direction": sig, "entry": px,
+             "time": pd.Timestamp.now().isoformat(), "verified": False,
+             "correct": None, "exit_px": None, "pnl_pct": None}
+    if plan:
+        entry["sl"] = plan["sl"]
+        entry["tp1"] = plan["tp1"]
+        entry["tp2"] = plan["tp2"]
+    h["signals"].append(entry)
     # Keep last 100
     if len(h["signals"]) > 100:
         h["signals"] = h["signals"][-100:]
@@ -571,54 +569,81 @@ def save_prediction(sym, sig, px):
 
 
 def verify_predictions():
-    """Check unresolved predictions and update win rate. Returns follow-up messages."""
+    """Path-based verification: check if TP1/TP2 or SL hit first using 15m bars"""
     h = load_history()
     messages = []
+    now = pd.Timestamp.now(tz="UTC")
 
     for pred in h["signals"]:
         if pred["verified"]:
             continue
-
-        # Check if enough time passed (at least 10 minutes)
         pred_time = pd.Timestamp(pred["time"])
-        if (pd.Timestamp.now() - pred_time).total_seconds() < 1800:  # 30分钟验证
+        if pred_time.tz is None:
+            pred_time = pred_time.tz_localize("UTC")
+        if (now - pred_time).total_seconds() < 1800:
             continue
 
-        # Get current price
+        # Get 15m bars since prediction
         try:
-            df = fetch_klines(pred["symbol"], "4h", 2)
-            current_px = float(df["close"].iloc[-1])
+            df = fetch_klines(pred["symbol"], "15m", 30)
+            if df.empty:
+                continue
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+            mask = df.index >= pred_time
+            bars = df[mask]
+            if len(bars) < 2:
+                continue
         except Exception:
             continue
 
-        dl = "LONG"
-        correct = (pred["direction"] == dl and current_px > pred["entry"]) or \
-                  (pred["direction"] != dl and current_px < pred["entry"])
-        pnl = (current_px - pred["entry"]) / pred["entry"] * 100
-        if pred["direction"] != dl:
+        direction = pred["direction"]
+        entry = pred["entry"]
+        sl = pred.get("sl", entry * 1.005 if direction == "SHORT" else entry * 0.995)
+        tp2 = pred.get("tp2", entry * 1.03 if direction == "LONG" else entry * 0.97)
+
+        # Walk bars: which hit first?
+        result = "timeout"
+        exit_px = float(bars["close"].iloc[-1])
+        for _, bar in bars.iterrows():
+            h, l = float(bar["high"]), float(bar["low"])
+            if direction == "LONG":
+                if l <= sl:
+                    result = "sl"; exit_px = sl; break
+                if h >= tp2:
+                    result = "tp2"; exit_px = tp2; break
+            else:
+                if h >= sl:
+                    result = "sl"; exit_px = sl; break
+                if l <= tp2:
+                    result = "tp2"; exit_px = tp2; break
+
+        pnl = (exit_px - entry) / entry * 100
+        if direction == "SHORT":
             pnl = -pnl
 
         pred["verified"] = True
-        pred["correct"] = correct
-        pred["exit_px"] = current_px
+        pred["result"] = result
+        pred["correct"] = result == "tp2"
+        pred["exit_px"] = exit_px
         pred["pnl_pct"] = round(pnl, 2)
 
-        # Update recent20
         h["win_rate"]["total"] += 1
-        if correct:
+        if pred["correct"]:
             h["win_rate"]["wins"] += 1
-        h["win_rate"]["recent20"].append(correct)
+        h["win_rate"]["recent20"].append(pred["correct"])
         if len(h["win_rate"]["recent20"]) > 20:
             h["win_rate"]["recent20"] = h["win_rate"]["recent20"][-20:]
 
-        # Generate follow-up message
-        emoji = "✅" if correct else "❌"
-        direction_cn = "做多" if pred["direction"] == dl else "做空"
+        # Follow-up message
+        result_emoji = {"tp2": "🎯", "sl": "❌", "timeout": "⏰"}.get(result, "⏰")
+        result_cn = {"tp2": "止盈(1:2)", "sl": "止损", "timeout": "超时未触发"}.get(result, "超时")
         pnl_str = f"+{pnl:.2f}%" if pnl > 0 else f"{pnl:.2f}%"
         messages.append(
-            f"{emoji} 上笔信号验证 | {pred['symbol']} {direction_cn}\n"
-            f"入场: ${pred['entry']:.2f} → 现价: ${current_px:.2f}\n"
-            f"盈亏: {pnl_str} | {'方向正确' if correct else '方向错误'}"
+            f"============================\n"
+            f"{result_emoji} 信号结算 | {pred['symbol']} {'做多' if direction=='LONG' else '做空'}\n"
+            f"入场: ${entry:.2f} → 出场: ${exit_px:.2f}\n"
+            f"结果: {result_cn} | 盈亏: {pnl_str}"
         )
 
     save_history(h)
@@ -1085,7 +1110,7 @@ def main():
                                 if img:
                                     send_photo(img, format_caption(result, plan))
                             send_telegram(msg)
-                            save_prediction(sym, result["signal"], result["price"])
+                            save_prediction(sym, result["signal"], result["price"], plan)
                             if is_15m:
                                 last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
                             tag = "🔄翻转" if not is_15m else ""
