@@ -600,8 +600,11 @@ def verify_predictions():
 
         direction = pred["direction"]
         entry = pred["entry"]
-        sl = pred.get("sl", entry * 1.005 if direction == "SHORT" else entry * 0.995)
-        tp2 = pred.get("tp2", entry * 1.03 if direction == "LONG" else entry * 0.97)
+        # 胜率统计统一按 ±0.6% 价格波动结算 (50x杠杆 ≈ 30%盈亏, 1:1)
+        if direction == "LONG":
+            sl, tp2 = entry * 0.994, entry * 1.006
+        else:
+            sl, tp2 = entry * 1.006, entry * 0.994
 
         # Walk bars: which hit first?
         result = "timeout"
@@ -647,7 +650,7 @@ def verify_predictions():
 
         # Follow-up message
         result_emoji = {"tp2": "🎯", "sl": "❌", "timeout": "⏰"}.get(result, "⏰")
-        result_cn = {"tp2": "止盈(1:2)", "sl": "止损", "timeout": "超时未触发"}.get(result, "超时")
+        result_cn = {"tp2": "止盈(+0.6%)", "sl": "止损(-0.6%)", "timeout": "超时未触发"}.get(result, "超时")
         pnl_str = f"+{pnl:.2f}%" if pnl > 0 else f"{pnl:.2f}%"
         messages.append(
             f"============================\n"
