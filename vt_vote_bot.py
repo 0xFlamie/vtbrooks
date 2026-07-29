@@ -636,12 +636,14 @@ def verify_predictions():
         pred["exit_px"] = exit_px
         pred["pnl_pct"] = round(pnl, 2)
 
-        h["win_rate"]["total"] += 1
-        if pred["correct"]:
-            h["win_rate"]["wins"] += 1
-        h["win_rate"]["recent20"].append(pred["correct"])
-        if len(h["win_rate"]["recent20"]) > 20:
-            h["win_rate"]["recent20"] = h["win_rate"]["recent20"][-20:]
+        # 超时不计入胜率, 只统计明确触发 TP2/SL 的信号
+        if result in ("tp2", "sl"):
+            h["win_rate"]["total"] += 1
+            if pred["correct"]:
+                h["win_rate"]["wins"] += 1
+            h["win_rate"]["recent20"].append(pred["correct"])
+            if len(h["win_rate"]["recent20"]) > 20:
+                h["win_rate"]["recent20"] = h["win_rate"]["recent20"][-20:]
 
         # Follow-up message
         result_emoji = {"tp2": "🎯", "sl": "❌", "timeout": "⏰"}.get(result, "⏰")
@@ -1128,11 +1130,12 @@ def main():
                         rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
                         msg = format_message(result, plan, is_emergency=(not is_15m), sig_num=sig_num, reverse_from=rev_from)
                         if msg:
+                            # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
+                            send_telegram(msg)
                             if not args.test:
                                 img = make_chart(result, plan)
                                 if img:
                                     send_photo(img, format_caption(result, plan))
-                            send_telegram(msg)
                             save_prediction(sym, result["signal"], result["price"], plan)
                             if is_15m:
                                 last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
