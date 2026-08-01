@@ -85,11 +85,12 @@ def z_word(z):
     return "显著低于"
 
 
-def fetch_klines(symbol, interval="15m", limit=200):
+def fetch_klines(symbol, interval="15m", limit=200, start_ms=None):
     """Binance.US → Binance Global → yfinance"""
+    extra = f"&startTime={start_ms}" if start_ms else ""
     for api_url in [
-        f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}",
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}",
     ]:
         result = subprocess.run(["curl", "-s", "--max-time", "8", api_url], capture_output=True, text=True, timeout=12)
         try:
@@ -584,15 +585,15 @@ def verify_predictions():
         if (now - pred_time).total_seconds() < 1800:
             continue
 
-        # Get 15m bars since prediction
+        # 从信号时间起取完整K线, 给足走完 ±0.6% 的时间
         try:
-            df = fetch_klines(pred["symbol"], "15m", 30)
+            df = fetch_klines(pred["symbol"], "15m", 1000,
+                              start_ms=int(pred_time.timestamp() * 1000))
             if df.empty:
                 continue
             if df.index.tz is None:
                 df.index = df.index.tz_localize("UTC")
-            mask = df.index >= pred_time
-            bars = df[mask]
+            bars = df[df.index >= pred_time]
             if len(bars) < 2:
                 continue
         except Exception:
@@ -632,6 +633,10 @@ def verify_predictions():
         pnl = (exit_px - entry) / entry * 100
         if direction == "SHORT":
             pnl = -pnl
+
+        # 未满24小时且未触发: 不结算, 下一轮继续跟踪
+        if result == "timeout" and (now - pred_time).total_seconds() < 86400:
+            continue
 
         pred["verified"] = True
         pred["result"] = result
