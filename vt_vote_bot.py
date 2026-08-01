@@ -1012,11 +1012,14 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
     L.append("")
     L.append("AI裁判")
     judge = judge or {}
+    reasons = judge.get("reasons") or ["-"]
     if judge.get("confidence", -1) >= 0:
         L.append(f"├ 结论: {judge['verdict']} (置信度 {judge['confidence']})")
     else:
         L.append("├ 结论: 裁判不可用")
-    L.append(f"└ 理由: {judge.get('reason', '-')}")
+    for i, rsn in enumerate(reasons):
+        prefix = "└" if i == len(reasons) - 1 else "├"
+        L.append(f"{prefix} 理由{i+1}: {rsn}")
     return "\n".join(L)
 
 
@@ -1084,14 +1087,17 @@ def build_market_brief(result, plan):
     return "\n".join(L)
 
 
-JUDGE_UNAVAILABLE = {"verdict": "执行", "confidence": -1, "reason": "裁判不可用，按规则放行"}
+JUDGE_UNAVAILABLE = {"verdict": "执行", "confidence": -1, "reasons": ["裁判不可用，按规则放行"]}
 
 
 def ai_judge(result, plan):
     """LLM 风控裁判: 对候选信号放行/否决; 任何异常都放行, 不阻塞信号流"""
     brief = build_market_brief(result, plan)
     system = ("你是严格的风控裁判，只对候选交易信号做放行/否决，遵循 Al Brooks 价格行为学原则。"
-              "只输出 JSON: {\"verdict\": \"执行\" 或 \"观望\", \"confidence\": 0-100 整数, \"reason\": \"一句中文理由\"}")
+              "只输出 JSON: {\"verdict\": \"执行\" 或 \"观望\", \"confidence\": 0-100 整数, "
+              "\"reasons\": [2-3条理由]}。"
+              "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR)，只陈述数据和事实关系，"
+              "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。")
     try:
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
@@ -1107,8 +1113,11 @@ def ai_judge(result, plan):
         data = json.loads(m.group(0)) if m else {}
         verdict = "观望" if "观望" in str(data.get("verdict", "")) else "执行"
         confidence = int(data.get("confidence", -1))
-        reason = str(data.get("reason", "")).strip() or "无理由"
-        return {"verdict": verdict, "confidence": confidence, "reason": reason}
+        reasons = data.get("reasons")
+        if not isinstance(reasons, list) or not reasons:
+            reasons = [str(data.get("reason", "")).strip() or "无理由"]
+        reasons = [str(x).strip() for x in reasons[:3]]
+        return {"verdict": verdict, "confidence": confidence, "reasons": reasons}
     except Exception:
         return dict(JUDGE_UNAVAILABLE)
 
@@ -1218,7 +1227,7 @@ def main():
                         # AI 裁判: 放行才推送, 价格决策仍由 Brooks 规则定
                         judge = ai_judge(result, plan)
                         if judge["verdict"] == "观望" or (judge["confidence"] != -1 and judge["confidence"] < 60):
-                            print(f"AI裁判否决: {judge['reason']}")
+                            print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
                             continue
                         sig_num = get_signal_number()
                         prev_dir = last_15m_signal.get(sym, (None,))[0]
