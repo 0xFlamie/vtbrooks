@@ -6,7 +6,7 @@ Vibe-Trading 因子投票信号机器人 v2.1
   三推楔形·双顶底反转 / 假突破陷阱 / 信号K线质量
 - 推送: K线图(图片信号卡) + 结构化文字详解, 全部大白话表达
 """
-import warnings, sys, os, json, time, argparse, importlib, tempfile
+import warnings, sys, os, re, json, time, argparse, importlib, tempfile
 warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
@@ -922,7 +922,7 @@ def make_chart(result, plan):
         return None
 
 
-def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from=""):
+def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="", judge=None):
     if result["signal"] == "NEUTRAL":
         return None
     sym = result["symbol"]; sig = result["signal"]
@@ -1010,43 +1010,18 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="")
     L.append("三周期方向预测")
     L.extend(compute_direction_probs(sym))
     L.append("")
-    L.append("AI大白话解读")
-    ai_text = ai_analyze(result)
-    for line in ai_text.split("\n"):
-        line = line.strip()
-        if line:
-            L.append(f"  {line}")
+    L.append("AI裁判")
+    judge = judge or {}
+    if judge.get("confidence", -1) >= 0:
+        L.append(f"├ 结论: {judge['verdict']} (置信度 {judge['confidence']})")
+    else:
+        L.append("├ 结论: 裁判不可用")
+    L.append(f"└ 理由: {judge.get('reason', '-')}")
     return "\n".join(L)
 
 
-def ai_analyze(result):
-    """DeepSeek 大白话解读: 禁止堆指标数值, 每个理由都要说清意味着什么"""
-    sym = result["symbol"]
-    sig = result["signal"]
-    px = result["price"]
-    votes_n = int(result["votes"].split("/")[0])
-    votes_total = int(result["votes"].split("/")[1])
-
-    def factor_line(d):
-        desc = FACTOR_DESC.get(d["name"], "")
-        txt = d.get("txt", "")
-        s = f"  {'看多' if d['direction']=='🟢' else '看空'} {d['name']}"
-        if desc:
-            s += f"({desc})"
-        if txt:
-            s += f": {txt}"
-        return s
-
-    factor_detail = "\n".join(factor_line(d) for d in result["details"])
-
-    # Brooks context for AI
-    ba = result.get("brooks") or {}
-    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
-    drivers = [d for d in result["details"] if (d["direction"] == "🟢") == (sig == "LONG")]
-    oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
-
-    # 关键价位 + 人话版指标状态
-    levels_text = ""
+def compute_levels(sym, sig):
+    """15m 关键价位/指标状态 (近20高低点/EMA/ATR/RSI/量比), 供 AI 裁判简报共用"""
     try:
         df15 = fetch_klines(sym, "15m", 80)
         c15, h15, l15 = df15["close"], df15["high"], df15["low"]
@@ -1055,67 +1030,87 @@ def ai_analyze(result):
         recent_high = h15.iloc[-5:].max()
         ema20 = c15.ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = c15.ewm(span=50, adjust=False).mean().iloc[-1] if len(c15) >= 50 else ema20
+        atr14 = float((h15 - l15).tail(14).mean())
         rsi14 = float((c15.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean().iloc[-1] /
                         (c15.diff().abs().ewm(alpha=1/14, adjust=False).mean().iloc[-1] + 1e-10) * 100))
         vol_ratio = df15["volume"].iloc[-1] / df15["volume"].iloc[-20:].mean()
         vol_word = "明显放量，有资金进场" if vol_ratio > 1.5 else "量能正常" if vol_ratio > 0.8 else "明显缩量，观望情绪重"
-
         if sig == "LONG":
             resistance = f"${swing_high:.2f}(近20周期高点)"
             support = f"${swing_low:.2f}(近20周期低点)、${ema50:.2f}(EMA50均线)"
         else:
             resistance = f"${recent_high:.2f}(近5周期高点)、${swing_high:.2f}(近20周期高点)"
             support = f"${swing_low:.2f}(近20周期低点)"
-
-        levels_text = f"""
-关键支撑位: {support}
-关键压力位: {resistance}
-市场情绪: {rsi_word(rsi14)}
-成交量: {vol_word}"""
+        return {"support": support, "resistance": resistance, "rsi14": rsi14,
+                "atr14": atr14, "ema20": ema20, "ema50": ema50,
+                "vol_ratio": vol_ratio, "vol_word": vol_word}
     except Exception:
-        pass
+        return None
 
-    prompt = f"""你是加密货币短线交易分析师，读者是看不懂技术指标的新手。根据多空投票结果，用大白话给出分析和操作建议（中文）。
 
-币种: {sym}  建议方向: {'做多' if sig == 'LONG' else '做空'}  现价: ${px:.2f}
-投票: {votes_n}/{votes_total} 票同向
-{levels_text}
+def build_market_brief(result, plan):
+    """结构化市场简报(纯文本): 喂给 AI 裁判做放行/否决决策, 价格决策仍由 Brooks 规则定"""
+    sym = result["symbol"]; sig = result["signal"]
+    px = result["price"]
+    ba = result.get("brooks") or {}
+    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
+    ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
+    spike_cn = {1: "强势向上突破", -1: "强势向下跌破"}.get(ba.get("spike", 0), "无")
 
-市场背景: {state_cn}
-形态信号: {ba.get('setups', [])}
+    # 投票分布: 三组各几票同向
+    groups = {"VT因子": [0, 8], "NOFX": [0, 4], "Brooks": [0, 6]}
+    for d in result["details"]:
+        name = d["name"]
+        key = "NOFX" if name.startswith("NOFX_") else "Brooks" if name.startswith("BROOKS_") else "VT因子"
+        if (d["direction"] == "🟢") == (sig == "LONG"):
+            groups[key][0] += 1
 
-各票详情 ({len(drivers)}票同向 + {len(oppose)}票反对):
-{factor_detail}
+    L = []
+    L.append(f"候选信号: {sym} {'做多' if sig == 'LONG' else '做空'} @ ${px:.2f}")
+    L.append(f"市场状态: {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
+    L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
+    L.append("投票分布: " + " | ".join(f"{k} {v[0]}/{v[1]}票同向" for k, v in groups.items()))
 
-硬性要求:
-- 每条不超过2句话，直接给结论
-- 模拟专业交易员的决策心路，每个操作决策都要带具体价格
-- 禁止使用"这意味着""综合来看""值得注意的是"等口水话
+    lv = compute_levels(sym, sig)
+    if lv:
+        L.append(f"关键支撑位: {lv['support']}")
+        L.append(f"关键压力位: {lv['resistance']}")
+        L.append(f"EMA20: ${lv['ema20']:.2f} | EMA50: ${lv['ema50']:.2f} | ATR14: ${lv['atr14']:.2f}")
+        L.append(f"市场情绪: {rsi_word(lv['rsi14'])}")
+        L.append(f"成交量: {lv['vol_word']} (量比 {lv['vol_ratio']:.2f})")
 
-内容（纯文本编号，逐条覆盖，每条必须带具体价格）:
-1. 为什么{('做多' if sig=='LONG' else '做空')}（1句说核心逻辑）
-2. 风险在哪（1句，带具体价位）
-3. 操作：入场${px:.0f}附近，止损设在{'支撑' if sig=='LONG' else '压力'}位外
-4. 第一目标、第二目标、第三目标（每个都要标注是什么位置，如"近20低点""前期震荡下沿"）
-5. 认错条件（带具体价格）
-格式: 1. xxx  2. xxx ...每条换行"""
+    L.append(f"交易计划: 入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f} | "
+             f"TP1 ${plan['tp1']:.2f} | TP2 ${plan['tp2']:.2f} | 盈亏比 1:{plan['rr']:.1f}")
+    return "\n".join(L)
 
-    payload = {
-        "model": DS_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 300,
-        "temperature": 0.3,
-    }
 
+JUDGE_UNAVAILABLE = {"verdict": "执行", "confidence": -1, "reason": "裁判不可用，按规则放行"}
+
+
+def ai_judge(result, plan):
+    """LLM 风控裁判: 对候选信号放行/否决; 任何异常都放行, 不阻塞信号流"""
+    brief = build_market_brief(result, plan)
+    system = ("你是严格的风控裁判，只对候选交易信号做放行/否决，遵循 Al Brooks 价格行为学原则。"
+              "只输出 JSON: {\"verdict\": \"执行\" 或 \"观望\", \"confidence\": 0-100 整数, \"reason\": \"一句中文理由\"}")
     try:
-        r = _http.post(DS_API_URL, json=payload,
-                       headers={"Authorization": f"Bearer {DS_API_KEY}"},
-                       timeout=20)
+        r = _http.post(DS_API_URL, json={
+            "model": DS_MODEL,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": brief}],
+            "max_tokens": 150, "temperature": 0.2},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
         if r.status_code != 200:
-            return "(AI分析暂不可用)"
-        return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"(AI分析暂不可用: {e})"
+            return dict(JUDGE_UNAVAILABLE)
+        text = r.json()["choices"][0]["message"]["content"]
+        # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
+        m = re.search(r"\{[^{}]*\}", text, re.S)
+        data = json.loads(m.group(0)) if m else {}
+        verdict = "观望" if "观望" in str(data.get("verdict", "")) else "执行"
+        confidence = int(data.get("confidence", -1))
+        reason = str(data.get("reason", "")).strip() or "无理由"
+        return {"verdict": verdict, "confidence": confidence, "reason": reason}
+    except Exception:
+        return dict(JUDGE_UNAVAILABLE)
 
 
 def main():
@@ -1123,6 +1118,7 @@ def main():
     parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
     parser.add_argument("--symbols", default="ETHUSDT", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
+    parser.add_argument("--judge-test", action="store_true", help="裁判调试: 打印简报+裁判JSON后退出")
     args = parser.parse_args()
 
     factor_map = {"BTCUSDT": BTC_FACTORS, "ETHUSDT": ETH_FACTORS}
@@ -1150,6 +1146,16 @@ def main():
     print("预加载因子...", end=" ", flush=True)
     preload_factors()
     print("OK")
+
+    # 裁判调试: 跳过票数门槛和推送, 原样打印简报和裁判结果
+    if args.judge_test:
+        result = vote("ETHUSDT", ETH_FACTORS)
+        plan = calc_trade_plan("ETHUSDT", result["signal"], result["price"], result.get("brooks") or {})
+        print("\n── 市场简报 ──")
+        print(build_market_brief(result, plan))
+        print("\n── 裁判结果 ──")
+        print(json.dumps(ai_judge(result, plan), ensure_ascii=False))
+        return
 
     last_15m_signal = {}  # sym → (dir, time, px)
     last_emergency = {}   # sym → timestamp
@@ -1209,10 +1215,15 @@ def main():
                             last_emergency[sym] = now_ts
 
                         plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
+                        # AI 裁判: 放行才推送, 价格决策仍由 Brooks 规则定
+                        judge = ai_judge(result, plan)
+                        if judge["verdict"] == "观望" or (judge["confidence"] != -1 and judge["confidence"] < 60):
+                            print(f"AI裁判否决: {judge['reason']}")
+                            continue
                         sig_num = get_signal_number()
                         prev_dir = last_15m_signal.get(sym, (None,))[0]
                         rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
-                        msg = format_message(result, plan, is_emergency=(not is_15m), sig_num=sig_num, reverse_from=rev_from)
+                        msg = format_message(result, plan, is_emergency=(not is_15m), sig_num=sig_num, reverse_from=rev_from, judge=judge)
                         if msg:
                             # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
                             send_telegram(msg)
