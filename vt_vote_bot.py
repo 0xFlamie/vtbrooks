@@ -28,6 +28,7 @@ DS_API_KEY = os.environ.get("VT_DS_API_KEY", "")
 DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
+JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
 
 # ── 因子配置: (name, module, ic_sign, display_name)
 # ic_sign = +1 → 因子值高 = 看多, 值低 = 看空
@@ -609,6 +610,28 @@ def save_history(h):
     os.replace(tmp, STATE_FILE)
 
 
+def load_journal():
+    """裁判判例: 同 load_history 的损坏容错模式"""
+    if os.path.exists(JOURNAL_FILE):
+        try:
+            with open(JOURNAL_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"WARN: 判例文件损坏({e}), 备份为 .bak 并重建")
+            try:
+                os.replace(JOURNAL_FILE, JOURNAL_FILE + ".bak")
+            except OSError:
+                pass
+    return {"entries": []}
+
+
+def save_journal(j):
+    tmp = JOURNAL_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(j, f, indent=2)
+    os.replace(tmp, JOURNAL_FILE)
+
+
 def save_prediction(sym, sig, px, plan=None):
     h = load_history()
     entry = {"symbol": sym, "direction": sig, "entry": px,
@@ -732,6 +755,86 @@ def verify_predictions():
 
     save_history(h)
     return messages
+
+
+def record_judge(result, plan, judge):
+    """裁判决策落盘(放行/否决都记), 供事后虚拟结算和判例记忆; 上限200条"""
+    ba = result.get("brooks") or {}
+    lv = compute_levels(result["symbol"], result["signal"])
+    j = load_journal()
+    j["entries"].append({
+        "time": pd.Timestamp.now().isoformat(),
+        "symbol": result["symbol"], "direction": result["signal"],
+        "entry_px": plan["entry"], "sl": plan["sl"], "tp2": plan["tp2"],
+        "verdict": judge["verdict"], "confidence": judge["confidence"],
+        "reasons": judge.get("reasons", []),
+        "rsi": round(lv["rsi14"]) if lv else None,
+        "state": ba.get("state"), "votes": result["votes"],
+        "outcome": None, "judgment": None,
+    })
+    if len(j["entries"]) > 200:
+        j["entries"] = j["entries"][-200:]
+    save_journal(j)
+
+
+def verify_journal():
+    """判例虚拟结算: 按 entry 的 sl/tp2 走K线, 判裁判对错; <24h 未触发不结算"""
+    j = load_journal()
+    now = pd.Timestamp.now(tz="UTC")
+    changed = False
+    for e in j["entries"]:
+        if e.get("outcome") is not None:
+            continue
+        et = pd.Timestamp(e["time"])
+        if et.tz is None:
+            et = et.tz_localize("UTC")
+        age = (now - et).total_seconds()
+        if age < 1800:
+            continue
+        try:
+            df = fetch_klines(e["symbol"], "15m", 1000,
+                              start_ms=int(et.timestamp() * 1000), drop_incomplete=False)
+            if df.empty:
+                continue
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+            bars = df[df.index >= et]
+            if len(bars) < 2:
+                continue
+        except Exception:
+            continue
+
+        sl, tp2 = float(e["sl"]), float(e["tp2"])
+        outcome = "timeout"
+        for _, bar in bars.iterrows():
+            try:
+                hi, lo = float(bar["high"]), float(bar["low"])
+            except Exception:
+                continue
+            if e["direction"] == "LONG":
+                if lo <= sl:
+                    outcome = "loss"; break
+                if hi >= tp2:
+                    outcome = "win"; break
+            else:
+                if hi >= sl:
+                    outcome = "loss"; break
+                if lo <= tp2:
+                    outcome = "win"; break
+        if outcome == "timeout" and age < 86400:
+            continue
+        e["outcome"] = outcome
+        # 执行+win=对, 执行+loss=错, 观望+loss=对(躲过), 观望+win=错(错过); timeout 不判定
+        e["judgment"] = None if outcome == "timeout" else (e["verdict"] == "执行") == (outcome == "win")
+        changed = True
+    if changed:
+        save_journal(j)
+
+
+def judge_stats():
+    """判对率 (wins, total): 忽略 timeout(judgment 为 null)"""
+    judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None]
+    return sum(1 for e in judged if e["judgment"]), len(judged)
 
 
 def get_signal_number():
@@ -1018,6 +1121,9 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
         L.append(f"├ 结论: {judge['verdict']} (置信度 {judge['confidence']})")
     else:
         L.append("├ 结论: 裁判不可用")
+    st = judge.get("stats") or {}
+    if st.get("total", 0) >= 5:
+        L.append(f"├ 近期判对率: {round(st['wins'] / st['total'] * 100)}% ({st['wins']}/{st['total']})")
     for i, rsn in enumerate(reasons):
         prefix = "└" if i == len(reasons) - 1 else "├"
         L.append(f"{prefix} 理由{i+1}: {rsn}")
@@ -1198,12 +1304,29 @@ JUDGE_UNAVAILABLE = {"verdict": "执行", "confidence": -1, "reasons": ["裁判�
 def ai_judge(result, plan):
     """LLM 风控裁判: 对候选信号放行/否决; 任何异常都放行, 不阻塞信号流"""
     brief = build_market_brief(result, plan)
+    wins, total = judge_stats()
+
+    # 判例记忆: 最近12条已判定案例附在简报后, 让裁判总结自己的教训
+    if total:
+        state_map = {"trend_up": "趋势上升", "trend_down": "趋势下降", "range": "震荡"}
+        cases = [e for e in load_journal()["entries"] if e.get("judgment") is not None][-12:]
+        lines = [f"你的近期判例(判对率 {wins}/{total}={round(wins / total * 100)}%):"]
+        for e in cases:
+            et = pd.Timestamp(e["time"]).strftime("%m-%d %H:%M")
+            oc = "止盈" if e["outcome"] == "win" else "止损"
+            rsi = e.get("rsi") if e.get("rsi") is not None else "-"
+            lines.append(f"- {et} {'做多' if e['direction'] == 'LONG' else '做空'}@{e['entry_px']:.1f} "
+                         f"RSI={rsi} {state_map.get(e.get('state'), '未知')} {e.get('votes', '-')}票 → "
+                         f"你判{e['verdict']}, 实际{oc}, {'判对' if e['judgment'] else '判错'}")
+        brief += "\n\n" + "\n".join(lines)
+
     system = ("你是严格的风控裁判，只对候选交易信号做放行/否决，遵循 Al Brooks 价格行为学原则。"
               "只输出 JSON: {\"verdict\": \"执行\" 或 \"观望\", \"confidence\": 0-100 整数, "
               "\"reasons\": [2-3条理由]}。"
               "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR)，只陈述数据和事实关系，"
               "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。"
-              "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。")
+              "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。"
+              "附带的判例是你自己的历史决策及结果，判错的案例要总结教训，避免重蹈覆辙。")
     try:
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
@@ -1212,7 +1335,9 @@ def ai_judge(result, plan):
             "max_tokens": 150, "temperature": 0.2},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
         if r.status_code != 200:
-            return dict(JUDGE_UNAVAILABLE)
+            out = dict(JUDGE_UNAVAILABLE)
+            out["stats"] = {"wins": wins, "total": total}
+            return out
         text = r.json()["choices"][0]["message"]["content"]
         # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
         m = re.search(r"\{[^{}]*\}", text, re.S)
@@ -1223,9 +1348,12 @@ def ai_judge(result, plan):
         if not isinstance(reasons, list) or not reasons:
             reasons = [str(data.get("reason", "")).strip() or "无理由"]
         reasons = [str(x).strip() for x in reasons[:3]]
-        return {"verdict": verdict, "confidence": confidence, "reasons": reasons}
+        return {"verdict": verdict, "confidence": confidence, "reasons": reasons,
+                "stats": {"wins": wins, "total": total}}
     except Exception:
-        return dict(JUDGE_UNAVAILABLE)
+        out = dict(JUDGE_UNAVAILABLE)
+        out["stats"] = {"wins": wins, "total": total}
+        return out
 
 
 def main():
@@ -1299,6 +1427,12 @@ def main():
         except Exception as e:
             print(f"  验证失败: {e}")
 
+        # ── 裁判判例虚拟结算 ──
+        try:
+            verify_journal()
+        except Exception as e:
+            print(f"  判例结算失败: {e}")
+
         for sym, config in watch:
             try:
                 print(f"  {sym}...", end=" ", flush=True)
@@ -1332,6 +1466,7 @@ def main():
                         plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
                         # AI 裁判: 放行才推送, 价格决策仍由 Brooks 规则定
                         judge = ai_judge(result, plan)
+                        record_judge(result, plan, judge)  # 放行/否决都落盘, 事后结算判对错
                         if judge["verdict"] == "观望" or (judge["confidence"] != -1 and judge["confidence"] < 60):
                             print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
                             continue
