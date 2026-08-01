@@ -16,7 +16,8 @@ fi
 
 cd "$APP_DIR"
 echo "拉取最新代码..."
-git pull origin master 2>/dev/null || true
+git pull origin master
+echo "当前版本: $(git rev-parse --short HEAD)"
 
 if [ ! -d "$VENV" ]; then
     echo "创建 venv (Python 3.11)..."
@@ -25,7 +26,7 @@ fi
 
 echo "安装依赖..."
 source "$VENV/bin/activate"
-pip install -q numpy pandas
+pip install -q -r requirements.txt
 
 # 密钥只保存在服务器本地 .env, 不入库
 ENV_FILE="$APP_DIR/.env"

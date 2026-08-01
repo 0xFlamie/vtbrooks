@@ -6,10 +6,11 @@ Vibe-Trading 因子投票信号机器人 v2.1
   三推楔形·双顶底反转 / 假突破陷阱 / 信号K线质量
 - 推送: K线图(图片信号卡) + 结构化文字详解, 全部大白话表达
 """
-import warnings, sys, os, json, time, argparse, importlib, subprocess, tempfile
+import warnings, sys, os, json, time, argparse, importlib, tempfile
 warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
+import requests
 
 VT_PKG = None
 for p in sys.path:
@@ -85,22 +86,66 @@ def z_word(z):
     return "显著低于"
 
 
-def fetch_klines(symbol, interval="15m", limit=200, start_ms=None):
-    """Binance.US → Binance Global → yfinance"""
+# ── HTTP: 统一走 requests, 替代 subprocess curl ──
+_http = requests.Session()
+
+def http_get_json(url, timeout=8):
+    """GET JSON, 非200/解析失败抛异常"""
+    r = _http.get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+INTERVAL_MS = {"5m": 5 * 60_000, "15m": 15 * 60_000, "1h": 3_600_000,
+               "4h": 4 * 3_600_000, "1d": 86_400_000}
+
+# K线缓存: (symbol, interval, limit) → (timestamp, df), TTL 60s, 同一轮内复用
+_kline_cache = {}
+
+
+def _drop_unclosed(df, interval):
+    """丢弃最后一根未收盘K线: open_time + 周期 > 当前时间 (按实际请求的 interval 算毫秒)"""
+    if df.empty:
+        return df
+    ms = INTERVAL_MS.get(interval)
+    if not ms:
+        return df
+    last_open = df.index[-1]
+    if getattr(last_open, "tzinfo", None) is not None:
+        last_open = last_open.tz_localize(None)
+    if last_open.value // 10**6 + ms > int(time.time() * 1000):
+        return df.iloc[:-1]
+    return df
+
+
+def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomplete=True):
+    """Binance.US → Binance Global → yfinance; drop_incomplete=False 保留未收盘K线(历史结算用)"""
+    if drop_incomplete:
+        hit = _kline_cache.get((symbol, interval, limit))
+        if hit and time.time() - hit[0] < 60:
+            return hit[1]
     extra = f"&startTime={start_ms}" if start_ms else ""
+    df = None
     for api_url in [
         f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}",
         f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}",
     ]:
-        result = subprocess.run(["curl", "-s", "--max-time", "8", api_url], capture_output=True, text=True, timeout=12)
-        try:
-            data = json.loads(result.stdout)
-            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-                return _parse_binance(data)
-        except Exception:
-            continue
-    return _fetch_yfinance(symbol, interval, limit)
-def _parse_binance(data):
+        for _ in range(2):  # 每个源失败重试1次再切下一个源
+            try:
+                data = http_get_json(api_url)
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                    df = _parse_binance(data, interval, drop_incomplete)
+                    break
+            except Exception:
+                continue
+        if df is not None:
+            break
+    if df is None:
+        df = _fetch_yfinance(symbol, interval, limit, drop_incomplete)
+    if drop_incomplete:
+        _kline_cache[(symbol, interval, limit)] = (time.time(), df)
+    return df
+def _parse_binance(data, interval, drop_incomplete=True):
     df = pd.DataFrame(data, columns=[
         "open_time","open","high","low","close","volume",
         "close_time","amount","trades","taker_base","taker_quote","ignore"
@@ -108,10 +153,11 @@ def _parse_binance(data):
     for c in ["open","high","low","close","volume","amount"]:
         df[c] = df[c].astype(float)
     df["date"] = pd.to_datetime(df["open_time"], unit="ms")
-    return df[["date","open","high","low","close","volume","amount"]].set_index("date").sort_index()
+    df = df[["date","open","high","low","close","volume","amount"]].set_index("date").sort_index()
+    return _drop_unclosed(df, interval) if drop_incomplete else df
 
 
-def _fetch_yfinance(symbol, interval, limit):
+def _fetch_yfinance(symbol, interval, limit, drop_incomplete=True):
     """US-friendly data via Yahoo Finance"""
     try:
         import yfinance as yf
@@ -133,7 +179,8 @@ def _fetch_yfinance(symbol, interval, limit):
                 df[c] = df["close"]
         df["amount"] = df["volume"] * df["close"]
         df = df[["open", "high", "low", "close", "volume", "amount"]]
-        return df.tail(limit).sort_index()
+        df = df.tail(limit).sort_index()
+        return _drop_unclosed(df, interval) if drop_incomplete else df
     except Exception:
         return pd.DataFrame()
 
@@ -159,6 +206,7 @@ def compute_factor_value(mod_name, panel):
             return fv.iloc[:, 0].values
         return np.array(fv).flatten()
     except Exception as e:
+        print(f"  因子计算失败: {mod_name}: {e}")
         return None
 
 
@@ -455,14 +503,15 @@ def vote(symbol, config):
             results.append({"name": "NOFX_5M确认", "txt": "5分钟价格跌破EMA20，入场时机配合空头", "direction": "🔴"})
 
         macd_15 = c15.ewm(span=12, adjust=False).mean() - c15.ewm(span=26, adjust=False).mean()
-        if len(macd_15) >= 2 and macd_15.iloc[-1] > macd_15.iloc[-2]:
+        # 近3根均值 vs 前3根均值, 过滤单根噪声
+        if len(macd_15) >= 6 and macd_15.iloc[-3:].mean() > macd_15.iloc[-6:-3].mean():
             bullish += 1
             results.append({"name": "NOFX_MACD动量", "txt": "15分钟上涨动能在增强", "direction": "🟢"})
         else:
             bearish += 1
             results.append({"name": "NOFX_MACD动量", "txt": "15分钟上涨动能在减弱", "direction": "🔴"})
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  NOFX趋势确认失败: {e}")
 
     # ═══ Al Brooks 价格行为 (6票) ═══
     ba = None
@@ -476,8 +525,8 @@ def vote(symbol, config):
             else:
                 bearish += 1
                 results.append({"name": name, "txt": txt, "direction": "🔴"})
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  Brooks分析失败: {e}")
 
     total = bullish + bearish
 
@@ -489,7 +538,7 @@ def vote(symbol, config):
         votes = bearish
     else:
         signal = "NEUTRAL"
-        votes = max(bullish, bearish)
+        votes = 0  # 无方向时票数无意义
 
     strength = "⚡强" if votes >= STRONG else "📊" if votes >= MIN_VOTES else "❌不够"
 
@@ -506,52 +555,57 @@ def vote(symbol, config):
     }
 
 
+def _escape_html(text):
+    """保留 <b></b>, 其余 & < > 转义 (占位符替换法)"""
+    text = text.replace("&", "&amp;")
+    text = text.replace("<b>", "\x01").replace("</b>", "\x02")
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
+    return text.replace("\x01", "<b>").replace("\x02", "</b>")
+
+
 def send_telegram(text):
-    """Send via curl, non-blocking with 12s timeout"""
-    import urllib.parse
-    post_data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"})
+    """同步发送, 10s 超时"""
     try:
-        proc = subprocess.Popen(
-            ["curl", "-s", "--max-time", "10", "-X", "POST",
-             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-             "-d", post_data],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        proc.wait(timeout=12)
-        return proc.returncode == 0
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        r = _http.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                       data={"chat_id": TELEGRAM_CHAT_ID, "text": _escape_html(text),
+                             "parse_mode": "HTML"}, timeout=10)
+        return r.status_code == 200
+    except Exception:
         return False
 
 
 def send_photo(path, caption):
     """Send chart image with compact signal card as caption"""
     try:
-        proc = subprocess.Popen(
-            ["curl", "-s", "--max-time", "25", "-X", "POST",
-             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-             "-F", f"chat_id={TELEGRAM_CHAT_ID}",
-             "-F", f"photo=@{path}",
-             "-F", f"caption={caption}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        proc.wait(timeout=30)
-        return proc.returncode == 0
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        with open(path, "rb") as f:
+            r = _http.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                           data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption},
+                           files={"photo": f}, timeout=25)
+        return r.status_code == 200
+    except Exception:
         return False
 
 
 def load_history():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"WARN: 状态文件损坏({e}), 备份为 .bak 并重建")
+            try:
+                os.replace(STATE_FILE, STATE_FILE + ".bak")
+            except OSError:
+                pass
     return {"signals": [], "win_rate": {"total": 0, "wins": 0, "recent20": []}}
 
 
 def save_history(h):
-    with open(STATE_FILE, "w") as f:
+    # 原子写入: 先写 .tmp 再 replace, 避免中途崩溃写坏状态文件
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(h, f, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 
 def save_prediction(sym, sig, px, plan=None):
@@ -585,10 +639,11 @@ def verify_predictions():
         if (now - pred_time).total_seconds() < 1800:
             continue
 
-        # 从信号时间起取完整K线, 给足走完 ±0.6% 的时间
+        # 从信号时间起取完整K线(含未收盘), 给足走完 TP/SL 的时间
         try:
             df = fetch_klines(pred["symbol"], "15m", 1000,
-                              start_ms=int(pred_time.timestamp() * 1000))
+                              start_ms=int(pred_time.timestamp() * 1000),
+                              drop_incomplete=False)
             if df.empty:
                 continue
             if df.index.tz is None:
@@ -601,11 +656,15 @@ def verify_predictions():
 
         direction = pred["direction"]
         entry = pred["entry"]
-        # 胜率统计统一按 ±0.6% 价格波动结算 (50x杠杆 ≈ 30%盈亏, 1:1)
-        if direction == "LONG":
-            sl, tp2 = entry * 0.994, entry * 1.006
+        if pred.get("sl") and pred.get("tp2"):
+            # 新数据: 用信号时的计划价位结算, 与推送建议一致
+            sl, tp2 = float(pred["sl"]), float(pred["tp2"])
         else:
-            sl, tp2 = entry * 1.006, entry * 0.994
+            # 旧数据 fallback: ±0.6% 价格波动 (50x杠杆 ≈ 30%盈亏, 1:1)
+            if direction == "LONG":
+                sl, tp2 = entry * 0.994, entry * 1.006
+            else:
+                sl, tp2 = entry * 1.006, entry * 0.994
 
         # Walk bars: which hit first?
         result = "timeout"
@@ -655,7 +714,13 @@ def verify_predictions():
 
         # Follow-up message
         result_emoji = {"tp2": "🎯", "sl": "❌", "timeout": "⏰"}.get(result, "⏰")
-        result_cn = {"tp2": "止盈(+0.6%)", "sl": "止损(-0.6%)", "timeout": "超时未触发"}.get(result, "超时")
+        # 显示实际结算百分比, 不再写死 ±0.6%
+        tp_pct = (tp2 - entry) / entry * 100
+        sl_pct = (sl - entry) / entry * 100
+        if direction == "SHORT":
+            tp_pct, sl_pct = -tp_pct, -sl_pct
+        result_cn = {"tp2": f"止盈({tp_pct:+.2f}%)", "sl": f"止损({sl_pct:+.2f}%)",
+                     "timeout": "超时未触发"}.get(result, "超时")
         pnl_str = f"+{pnl:.2f}%" if pnl > 0 else f"{pnl:.2f}%"
         messages.append(
             f"============================\n"
@@ -1035,26 +1100,20 @@ def ai_analyze(result):
 5. 认错条件（带具体价格）
 格式: 1. xxx  2. xxx ...每条换行"""
 
-    payload = json.dumps({
+    payload = {
         "model": DS_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 300,
         "temperature": 0.3,
-    })
+    }
 
     try:
-        proc = subprocess.Popen(
-            ["curl", "-s", "--max-time", "20", "-X", "POST", DS_API_URL,
-             "-H", "Content-Type: application/json",
-             "-H", f"Authorization: Bearer {DS_API_KEY}",
-             "-d", payload],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
-        stdout, _ = proc.communicate(timeout=25)
-        if proc.returncode != 0:
+        r = _http.post(DS_API_URL, json=payload,
+                       headers={"Authorization": f"Bearer {DS_API_KEY}"},
+                       timeout=20)
+        if r.status_code != 200:
             return "(AI分析暂不可用)"
-        data = json.loads(stdout.decode())
-        return data["choices"][0]["message"]["content"].strip()
+        return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         return f"(AI分析暂不可用: {e})"
 
@@ -1063,7 +1122,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
+    parser.add_argument("--symbols", default="ETHUSDT", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
     args = parser.parse_args()
+
+    factor_map = {"BTCUSDT": BTC_FACTORS, "ETHUSDT": ETH_FACTORS}
+    watch = []
+    for s in args.symbols.split(","):
+        s = s.strip()
+        if s in factor_map:
+            watch.append((s, factor_map[s]))
+        elif s:
+            print(f"WARN: {s} 无因子配置, 跳过")
+    if not watch:
+        print("FAIL: 没有可监控的币种")
+        return
 
     if args.test:
         global send_telegram
@@ -1106,7 +1178,7 @@ def main():
         except Exception as e:
             print(f"  验证失败: {e}")
 
-        for sym, config in [("ETHUSDT", ETH_FACTORS)]:  # 只推 ETH
+        for sym, config in watch:
             try:
                 print(f"  {sym}...", end=" ", flush=True)
                 result = vote(sym, config)
@@ -1126,7 +1198,7 @@ def main():
                                 rc = {"dir": result["signal"], "count": 0}
                             rc["count"] += 1
                             reversal_count[sym] = rc
-                            if rc["count"] < 2:
+                            if rc["count"] < 3:
                                 print(f"反转确认 {rc['count']}/3 跳过")
                                 continue
                             reversal_count[sym] = {"dir": result["signal"], "count": 0}
