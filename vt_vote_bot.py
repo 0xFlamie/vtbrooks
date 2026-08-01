@@ -25,6 +25,7 @@ sys.path.insert(0, VT_PKG)
 TELEGRAM_TOKEN = os.environ.get("VT_TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("VT_TELEGRAM_CHAT", "")
 DS_API_KEY = os.environ.get("VT_DS_API_KEY", "")
+CG_KEY = os.environ.get("VT_CG_API_KEY", "")
 DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
@@ -89,9 +90,9 @@ def z_word(z):
 # ── HTTP: 统一走 requests, 替代 subprocess curl ──
 _http = requests.Session()
 
-def http_get_json(url, timeout=8):
+def http_get_json(url, timeout=8, headers=None):
     """GET JSON, 非200/解析失败抛异常"""
-    r = _http.get(url, timeout=timeout)
+    r = _http.get(url, timeout=timeout, headers=headers or {})
     r.raise_for_status()
     return r.json()
 
@@ -1118,12 +1119,57 @@ def _sentiment_kraken(symbol):
     return None
 
 
+def _sentiment_coinglass(symbol):
+    """CoinGlass v4 合约情绪(需 VT_CG_API_KEY): OI变化/多空账户比/主动买卖比
+    认证 header 为 CG-API-KEY; 免费档 interval 限制 ≥4h, 故 OI 变化为最近两个 4h 收盘的变化%"""
+    if not CG_KEY:
+        return None
+    base = "https://open-api-v4.coinglass.com/api"
+    hdr = {"CG-API-KEY": CG_KEY}
+    s = {}
+
+    try:  # 持仓量变化: 4h OHLC × 2, 首尾 close 对比
+        d = http_get_json(f"{base}/futures/open-interest/history"
+                          f"?exchange=Binance&symbol={symbol}&interval=4h&limit=2", headers=hdr)
+        rows = d.get("data") or []
+        if len(rows) >= 2:
+            c0, c1 = float(rows[0]["close"]), float(rows[1]["close"])
+            if c0 > 0:
+                s["oi_change_1h_pct"] = (c1 - c0) / c0 * 100
+    except Exception:
+        pass
+
+    try:  # 多空账户比: 最新一根
+        d = http_get_json(f"{base}/futures/global-long-short-account-ratio/history"
+                          f"?exchange=Binance&symbol={symbol}&interval=4h&limit=1", headers=hdr)
+        rows = d.get("data") or []
+        if rows:
+            s["long_short_ratio"] = float(rows[-1]["global_account_long_short_ratio"])
+    except Exception:
+        pass
+
+    try:  # 主动买卖量比: 买盘量/卖盘量
+        d = http_get_json(f"{base}/futures/v2/taker-buy-sell-volume/history"
+                          f"?exchange=Binance&symbol={symbol}&interval=4h&limit=1", headers=hdr)
+        rows = d.get("data") or []
+        if rows:
+            buy = float(rows[-1]["taker_buy_volume_usd"])
+            sell = float(rows[-1]["taker_sell_volume_usd"])
+            if sell > 0:
+                s["taker_buy_sell_ratio"] = buy / sell
+    except Exception:
+        pass
+
+    return s or None
+
+
 def fetch_sentiment(symbol):
-    """合约情绪: Binance 优先, 缺失字段用 Kraken 补齐; 两者都全空返回 None"""
-    s = _sentiment_binance(symbol) or {}
-    if len(s) < 5:  # 有字段缺失才打 Kraken, 省一次请求
-        k = _sentiment_kraken(symbol) or {}
-        for key, v in k.items():
+    """合约情绪: CoinGlass 优先 → Binance 补缺 → Kraken 补缺; 全空返回 None"""
+    s = {}
+    for src in (_sentiment_coinglass, _sentiment_binance, _sentiment_kraken):
+        if len(s) >= 5:
+            break  # 字段已齐, 省后续请求
+        for key, v in (src(symbol) or {}).items():
             s.setdefault(key, v)
     return s or None
 
