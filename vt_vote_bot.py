@@ -1051,6 +1051,50 @@ def compute_levels(sym, sig):
         return None
 
 
+def fetch_sentiment(symbol):
+    """Binance USD-M 合约情绪(免key): 资金费率/持仓量1h变化/多空账户比/主动买卖比; 单接口失败跳过, 全失败返回 None"""
+    base = "https://fapi.binance.com"
+    s = {}
+
+    try:  # 资金费率
+        d = http_get_json(f"{base}/fapi/v1/premiumIndex?symbol={symbol}")
+        s["funding_rate"] = float(d["lastFundingRate"])
+    except Exception:
+        pass
+
+    try:  # 持仓量当前值
+        d = http_get_json(f"{base}/fapi/v1/openInterest?symbol={symbol}")
+        s["open_interest"] = float(d["openInterest"])
+    except Exception:
+        pass
+
+    try:  # 持仓量1h变化: 5m×13根, 首尾对比
+        d = http_get_json(f"{base}/futures/data/openInterestHist?symbol={symbol}&period=5m&limit=13")
+        if isinstance(d, list) and len(d) >= 2:
+            oi_first = float(d[0]["sumOpenInterest"])
+            oi_last = float(d[-1]["sumOpenInterest"])
+            if oi_first > 0:
+                s["oi_change_1h_pct"] = (oi_last - oi_first) / oi_first * 100
+    except Exception:
+        pass
+
+    try:  # 多空账户比
+        d = http_get_json(f"{base}/futures/data/globalLongShortAccountRatio?symbol={symbol}&period=5m&limit=1")
+        if isinstance(d, list) and d:
+            s["long_short_ratio"] = float(d[0]["longShortRatio"])
+    except Exception:
+        pass
+
+    try:  # 主动买卖量比
+        d = http_get_json(f"{base}/futures/data/takerlongshortRatio?symbol={symbol}&period=5m&limit=1")
+        if isinstance(d, list) and d:
+            s["taker_buy_sell_ratio"] = float(d[0]["buySellRatio"])
+    except Exception:
+        pass
+
+    return s or None
+
+
 def build_market_brief(result, plan):
     """结构化市场简报(纯文本): 喂给 AI 裁判做放行/否决决策, 价格决策仍由 Brooks 规则定"""
     sym = result["symbol"]; sig = result["signal"]
@@ -1082,6 +1126,22 @@ def build_market_brief(result, plan):
         L.append(f"市场情绪: {rsi_word(lv['rsi14'])}")
         L.append(f"成交量: {lv['vol_word']} (量比 {lv['vol_ratio']:.2f})")
 
+    # 合约情绪: 缺失字段直接省略
+    st = fetch_sentiment(sym)
+    if st:
+        parts = []
+        if "funding_rate" in st:
+            fr = st["funding_rate"] * 100
+            parts.append(f"资金费率 {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+        if "oi_change_1h_pct" in st:
+            parts.append(f"持仓量1h {st['oi_change_1h_pct']:+.1f}%")
+        if "long_short_ratio" in st:
+            parts.append(f"多空账户比 {st['long_short_ratio']:.2f}")
+        if "taker_buy_sell_ratio" in st:
+            parts.append(f"主动买卖比 {st['taker_buy_sell_ratio']:.2f}")
+        if parts:
+            L.append("合约情绪: " + " | ".join(parts))
+
     L.append(f"交易计划: 入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f} | "
              f"TP1 ${plan['tp1']:.2f} | TP2 ${plan['tp2']:.2f} | 盈亏比 1:{plan['rr']:.1f}")
     return "\n".join(L)
@@ -1097,7 +1157,8 @@ def ai_judge(result, plan):
               "只输出 JSON: {\"verdict\": \"执行\" 或 \"观望\", \"confidence\": 0-100 整数, "
               "\"reasons\": [2-3条理由]}。"
               "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR)，只陈述数据和事实关系，"
-              "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。")
+              "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。"
+              "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。")
     try:
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
