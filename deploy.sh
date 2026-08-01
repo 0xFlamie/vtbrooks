@@ -36,7 +36,6 @@ if [ ! -f "$ENV_FILE" ]; then
 VT_TELEGRAM_TOKEN=
 VT_TELEGRAM_CHAT=
 VT_DS_API_KEY=
-VT_CG_API_KEY=
 ENVEOF
     chmod 600 "$ENV_FILE"
 fi
