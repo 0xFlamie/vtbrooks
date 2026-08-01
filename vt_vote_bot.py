@@ -1051,7 +1051,7 @@ def compute_levels(sym, sig):
         return None
 
 
-def fetch_sentiment(symbol):
+def _sentiment_binance(symbol):
     """Binance USD-M 合约情绪(免key): 资金费率/持仓量1h变化/多空账户比/主动买卖比; 单接口失败跳过, 全失败返回 None"""
     base = "https://fapi.binance.com"
     s = {}
@@ -1092,6 +1092,39 @@ def fetch_sentiment(symbol):
     except Exception:
         pass
 
+    return s or None
+
+
+def _sentiment_kraken(symbol):
+    """Kraken Futures 回退源(美国可访问, 免key): 只有资金费率+持仓量, 无 OI 历史/多空比接口"""
+    k_sym = {"ETHUSDT": "PI_ETHUSD", "BTCUSDT": "PI_XBTUSD"}.get(symbol)
+    if not k_sym:
+        return None
+    try:
+        d = http_get_json("https://futures.kraken.com/derivatives/api/v3/tickers")
+        for t in d.get("tickers", []):
+            if t.get("symbol") != k_sym:
+                continue
+            s = {}
+            # Kraken fundingRate 是按秒计的连续资金费率(实测约 1e-10~1e-9 量级),
+            # ×28800(8h秒数) 换算成 Binance lastFundingRate 同口径的 8h 费率
+            if "fundingRate" in t:
+                s["funding_rate"] = float(t["fundingRate"]) * 28800
+            if "openInterest" in t:
+                s["open_interest"] = float(t["openInterest"])
+            return s or None
+    except Exception:
+        pass
+    return None
+
+
+def fetch_sentiment(symbol):
+    """合约情绪: Binance 优先, 缺失字段用 Kraken 补齐; 两者都全空返回 None"""
+    s = _sentiment_binance(symbol) or {}
+    if len(s) < 5:  # 有字段缺失才打 Kraken, 省一次请求
+        k = _sentiment_kraken(symbol) or {}
+        for key, v in k.items():
+            s.setdefault(key, v)
     return s or None
 
 
