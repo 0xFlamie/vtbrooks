@@ -119,30 +119,101 @@ def _drop_unclosed(df, interval):
     return df
 
 
+def _is_stale(df, interval):
+    """数据停滞判定: 最新 bar 距今超过 2×周期, 或最近3根成交量全为0(低流动性交易对价格定格, 如 Binance.US 的 ETHUSDC)"""
+    ms = INTERVAL_MS.get(interval)
+    if not ms or df.empty:
+        return False
+    # 最近3根成交额合计 < $300 视为停滞 (纯零量或零星 dust 交易, 如 Binance.US 的 ETHUSDC)
+    if "volume" in df.columns and len(df) >= 3:
+        last3 = df.tail(3)
+        if float((last3["volume"] * last3["close"]).sum()) < 300.0:
+            return True
+    last_open = df.index[-1]
+    if getattr(last_open, "tzinfo", None) is not None:
+        last_open = last_open.tz_localize(None)
+    return last_open.value // 10**6 < int(time.time() * 1000) - 2 * ms
+
+
+def _fetch_coinbase(symbol, interval, limit, start_ms=None, drop_incomplete=True):
+    """Coinbase Exchange candles(美国可访问, 免key); 实测 ETH-USDC/BTC-USDC 已下架, 统一用 USD 对"""
+    cb_sym = {"ETHUSDT": "ETH-USD", "ETHUSDC": "ETH-USD",
+              "BTCUSDT": "BTC-USD", "BTCUSDC": "BTC-USD"}.get(symbol)
+    gran = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval)
+    if not cb_sym or not gran:
+        return None
+    url = (f"https://api.exchange.coinbase.com/products/{cb_sym}/candles"
+           f"?granularity={gran}&limit={limit}")
+    if start_ms:  # 注意 API 单次上限 300 根
+        t0 = pd.Timestamp(start_ms, unit="ms", tz="UTC")
+        t1 = pd.Timestamp(start_ms + limit * gran * 1000, unit="ms", tz="UTC")
+        url += f"&start={t0.isoformat()}&end={t1.isoformat()}"
+    data = http_get_json(url)
+    if not isinstance(data, list) or not data or not isinstance(data[0], list):
+        return None
+    # [time秒, low, high, open, close, volume], 最新在前
+    df = pd.DataFrame(data, columns=["ts", "low", "high", "open", "close", "volume"])
+    df["date"] = pd.to_datetime(df["ts"], unit="s")
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = df[c].astype(float)
+    df["amount"] = df["volume"] * df["close"]
+    df["taker_base"] = np.nan  # Coinbase 无主动买卖字段
+    df = df[["date", "open", "high", "low", "close", "volume", "amount", "taker_base"]].set_index("date").sort_index()
+    df = df.tail(limit)
+    return _drop_unclosed(df, interval) if drop_incomplete else df
+
+
 def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomplete=True):
-    """Binance.US → Binance Global → yfinance; drop_incomplete=False 保留未收盘K线(历史结算用)"""
+    """binance.us → Coinbase → fapi → yfinance (fapi 在美国被 geo-block, Coinbase 兜底);
+    drop_incomplete=False 保留未收盘K线(历史结算用); 数据停滞的源自动跳过"""
     if drop_incomplete:
         hit = _kline_cache.get((symbol, interval, limit))
         if hit and time.time() - hit[0] < 60:
             return hit[1]
     extra = f"&startTime={start_ms}" if start_ms else ""
     df = None
-    for api_url in [
-        f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}",
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}",
-    ]:
+    stale_df = None
+    sources = [
+        ("binance", f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
+        ("coinbase", None),
+        ("binance", f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
+    ]
+    for kind, url in sources:
         for _ in range(2):  # 每个源失败重试1次再切下一个源
             try:
-                data = http_get_json(api_url)
-                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-                    df = _parse_binance(data, interval, drop_incomplete)
+                if kind == "coinbase":
+                    cand = _fetch_coinbase(symbol, interval, limit, start_ms, drop_incomplete)
+                else:
+                    data = http_get_json(url)
+                    cand = _parse_binance(data, interval, drop_incomplete) if (
+                        isinstance(data, list) and len(data) > 0 and isinstance(data[0], list)) else None
+                if cand is None or cand.empty:
+                    continue
+                # staleness 检查在丢弃未收盘 bar 之后对最新已收盘 bar 做;
+                # start_ms 拉历史(结算用)不查停滞
+                if not start_ms and _is_stale(cand, interval):
+                    stale_df = cand
                     break
+                df = cand
+                break
             except Exception:
                 continue
         if df is not None:
             break
     if df is None:
-        df = _fetch_yfinance(symbol, interval, limit, drop_incomplete)
+        cand = _fetch_yfinance(symbol, interval, limit, drop_incomplete)
+        if cand.empty:
+            pass
+        elif not start_ms and _is_stale(cand, interval):
+            stale_df = cand
+        else:
+            df = cand
+    if df is None:
+        if stale_df is not None:
+            print(f"WARN: {symbol} {interval} 所有数据源停滞, 使用最后可用数据")
+            df = stale_df
+        else:
+            df = pd.DataFrame()
     if drop_incomplete:
         _kline_cache[(symbol, interval, limit)] = (time.time(), df)
     return df
@@ -1181,6 +1252,53 @@ def format_update(result, judge, plan=None):
     return "\n".join(L)
 
 
+def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=False):
+    """AI 主判完整信号紧凑卡片(与快报同风格)"""
+    sym = result["symbol"]; sig = result["signal"]
+    ba = result.get("brooks") or {}
+    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
+    dir_cn = "做多" if sig == "LONG" else "做空"
+    emoji = "🟢" if sig == "LONG" else "🔴"
+
+    L = []
+    L.append("=" * 36)
+    tag = "🔄紧急翻转 " if is_emergency else ""
+    L.append(f"{emoji} {sym} {tag}AI信号 {dir_cn} #{sig_num} | {pd.Timestamp.now():%m-%d %H:%M}")
+    L.append(f"💰 现价 ${result['price']:.2f}")
+
+    judge = judge or {}
+    if judge.get("confidence", -1) >= 0:
+        L.append(f"🤖 AI判断: ✅{judge['verdict']} (置信度{judge['confidence']})")
+        for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
+            L.append(f"📝 理由{i+1}: {rsn}")
+    else:
+        L.append("🤖 AI判断: 裁判不可用")
+
+    arrow = "🔺" if sig == "LONG" else "🔻"
+    L.append(f"🧭 方向: {arrow}{dir_cn}")
+    sl_label = plan.get("sl_label", "").split("(")[0] or "止损"
+    L.append(f"🎯 入场 ${plan['entry']:.2f} | 🚫 止损 ${plan['sl']:.2f} ({sl_label})")
+    L.append(f"🥇 止盈1 ${plan['tp1']:.2f} | 🏆 止盈2 ${plan['tp2']:.2f} (盈亏比1:{plan['rr']:.1f})")
+
+    # 数据汇总一行 (同 format_update)
+    parts = [f"看涨{result['bullish']}票/看跌{result['bearish']}票", state_cn]
+    lv = compute_levels(sym, sig)
+    if lv:
+        parts.append(f"RSI{lv['rsi14']:.0f}")
+    st = fetch_sentiment(sym) or {}
+    if "funding_rate" in st:
+        fr = st["funding_rate"] * 100
+        parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+    if "taker_buy_sell_ratio" in st:
+        parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+    L.append("📊 数据: " + " | ".join(parts))
+
+    stt = judge.get("stats") or {}
+    if stt.get("total", 0) >= 5:
+        L.append(f"📈 判对率: {round(stt['wins'] / stt['total'] * 100)}% ({stt['wins']}/{stt['total']})")
+    return "\n".join(L)
+
+
 def compute_levels(sym, sig):
     """15m 关键价位/指标状态 (近20高低点/EMA/ATR/RSI/量比), 供 AI 裁判简报共用"""
     try:
@@ -1514,10 +1632,7 @@ def main():
                             plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
                         r3 = dict(result, signal=ai_dir)
                         sig_num = get_signal_number()
-                        prev_dir = last_15m_signal.get(sym, (None,))[0]
-                        rev_from = prev_dir if prev_dir and prev_dir != ai_dir else ""
-                        msg = format_message(r3, plan, sig_num=sig_num, reverse_from=rev_from,
-                                             judge=judge, ai_decision=True)
+                        msg = format_signal(r3, plan, judge, sig_num)
                         # 先发文字, 再发图
                         ok = send_telegram(msg)
                         if not args.test:
@@ -1564,9 +1679,7 @@ def main():
                         print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
                         continue
                     sig_num = get_signal_number()
-                    prev_dir = last_15m_signal.get(sym, (None,))[0]
-                    rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
-                    msg = format_message(result, plan, is_emergency=True, sig_num=sig_num, reverse_from=rev_from, judge=judge)
+                    msg = format_signal(result, plan, judge, sig_num, is_emergency=True)
                     if msg:
                         # 先发文字, 再发图
                         ok = send_telegram(msg)
