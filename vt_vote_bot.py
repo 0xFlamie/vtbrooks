@@ -1139,6 +1139,7 @@ def format_update(result, judge):
     reached = sig != "NEUTRAL" and vn >= MIN_VOTES
 
     L = []
+    L.append("=" * 36)
     L.append(f"📡 {sym} 快报 | {pd.Timestamp.now():%m-%d %H:%M} | 现价 ${result['price']:.2f}")
 
     # AI 判断是主角, 放最前
@@ -1151,7 +1152,7 @@ def format_update(result, judge):
         L.append("AI判断: 裁判不可用")
 
     # 数据汇总一行
-    parts = [f"投票🟢{result['bullish']}/🔴{result['bearish']}", state_cn]
+    parts = [f"看涨{result['bullish']}票/看跌{result['bearish']}票", state_cn]
     lv = compute_levels(sym, sig if sig != "NEUTRAL" else ("LONG" if result["bullish"] >= result["bearish"] else "SHORT"))
     if lv:
         vol_short = "放量" if lv["vol_ratio"] > 1.5 else "正常" if lv["vol_ratio"] > 0.8 else "缩量"
