@@ -1130,6 +1130,50 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
     return "\n".join(L)
 
 
+def format_update(result, judge):
+    """15分钟紧凑快报(无门槛): 8行内, 数据走缓存的 compute_levels/fetch_sentiment"""
+    sym = result["symbol"]
+    ba = result.get("brooks") or {}
+    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
+    ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
+    setups = "; ".join(ba["setups"]) if ba.get("setups") else "无"
+    sig = result["signal"]
+    vn = int(result["votes"].split("/")[0])
+    total = result["votes"].split("/")[1]
+    reached = sig != "NEUTRAL" and vn >= MIN_VOTES
+    vote_note = f"已达{MIN_VOTES}票线" if reached else f"{MIN_VOTES}票线未触发"
+
+    L = []
+    L.append("=" * 40)
+    dir_cn = {"LONG": "做多", "SHORT": "做空"}.get(sig, "多空打平")
+    L.append(f"📡 {sym} 快报 {dir_cn} | ${result['price']:.2f} | {pd.Timestamp.now():%m-%d %H:%M}")
+    L.append(f"市场: {state_cn} | Always In: {ai_cn} | 形态: {setups}")
+    L.append(f"投票: 🟢{result['bullish']} / 🔴{result['bearish']} (共{total}票, {vote_note})")
+
+    lv = compute_levels(sym, sig if sig != "NEUTRAL" else ("LONG" if result["bullish"] >= result["bearish"] else "SHORT"))
+    if lv:
+        vol_short = "放量" if lv["vol_ratio"] > 1.5 else "正常" if lv["vol_ratio"] > 0.8 else "缩量"
+        L.append(f"{rsi_word(lv['rsi14'])} | 量比{lv['vol_ratio']:.2f}({vol_short})")
+
+    st = fetch_sentiment(sym) or {}
+    parts = []
+    if "funding_rate" in st:
+        fr = st["funding_rate"] * 100
+        parts.append(f"资金费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+    if "taker_buy_sell_ratio" in st:
+        parts.append(f"主动买卖比{st['taker_buy_sell_ratio']:.2f}")
+    if parts:
+        L.append("情绪: " + " | ".join(parts))
+
+    judge = judge or {}
+    if judge.get("confidence", -1) >= 0:
+        reason = (judge.get("reasons") or [""])[0]
+        L.append(f"AI裁判: {judge['verdict']}({judge['confidence']})" + (f" — {reason}" if reason else ""))
+    else:
+        L.append("AI裁判: 裁判不可用")
+    return "\n".join(L)
+
+
 def compute_levels(sym, sig):
     """15m 关键价位/指标状态 (近20高低点/EMA/ATR/RSI/量比), 供 AI 裁判简报共用"""
     try:
@@ -1437,44 +1481,25 @@ def main():
             try:
                 print(f"  {sym}...", end=" ", flush=True)
                 result = vote(sym, config)
-                if result["signal"] != "NEUTRAL" and result["votes"]:
-                    vn = int(result["votes"].split("/")[0])
-                    if vn >= MIN_VOTES:
-                        # 反转确认: 非15分钟扫描, 需要连续3次同向才触发紧急推送
-                        if not is_15m:
-                            prev = last_15m_signal.get(sym)
-                            if not prev or prev[0] == result["signal"]:
-                                reversal_count.pop(sym, None)
-                                print(f"方向未变跳过")
-                                continue
-                            # 新方向, 累积确认计数
-                            rc = reversal_count.get(sym, {"dir": result["signal"], "count": 0})
-                            if rc["dir"] != result["signal"]:
-                                rc = {"dir": result["signal"], "count": 0}
-                            rc["count"] += 1
-                            reversal_count[sym] = rc
-                            if rc["count"] < 3:
-                                print(f"反转确认 {rc['count']}/3 跳过")
-                                continue
-                            reversal_count[sym] = {"dir": result["signal"], "count": 0}
-                            now_ts = time.time()
-                            if sym in last_emergency and now_ts - last_emergency[sym] < 900:
-                                print(f"紧急冷却跳过")
-                                continue
-                            last_emergency[sym] = now_ts
+                vn = int(result["votes"].split("/")[0])
+                qualified = result["signal"] != "NEUTRAL" and vn >= MIN_VOTES
 
-                        plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
-                        # AI 裁判: 放行才推送, 价格决策仍由 Brooks 规则定
-                        judge = ai_judge(result, plan)
-                        record_judge(result, plan, judge)  # 放行/否决都落盘, 事后结算判对错
-                        if judge["verdict"] == "观望" or (judge["confidence"] != -1 and judge["confidence"] < 60):
-                            print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
-                            continue
-                        sig_num = get_signal_number()
-                        prev_dir = last_15m_signal.get(sym, (None,))[0]
-                        rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
-                        msg = format_message(result, plan, is_emergency=(not is_15m), sig_num=sig_num, reverse_from=rev_from, judge=judge)
-                        if msg:
+                # ── 15分钟定时: 无条件出快报; 达标且裁判放行才发完整信号 ──
+                if is_15m:
+                    # NEUTRAL 时用票多一方作假定方向算 plan/简报
+                    sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
+                        "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
+                    r2 = result if result["signal"] != "NEUTRAL" else dict(result, signal=sig0)
+                    plan = calc_trade_plan(sym, sig0, result["price"], result.get("brooks") or {})
+                    judge = ai_judge(r2, plan)
+                    passed = judge["verdict"] != "观望" and (judge["confidence"] == -1 or judge["confidence"] >= 60)
+                    if qualified:
+                        record_judge(result, plan, judge)  # 候选信号都记判例
+                        if passed:
+                            sig_num = get_signal_number()
+                            prev_dir = last_15m_signal.get(sym, (None,))[0]
+                            rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
+                            msg = format_message(result, plan, sig_num=sig_num, reverse_from=rev_from, judge=judge)
                             # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
                             ok = send_telegram(msg)
                             if not args.test:
@@ -1482,16 +1507,62 @@ def main():
                                 if img:
                                     send_photo(img, format_caption(result, plan))
                             save_prediction(sym, result["signal"], result["price"], plan)
-                            if is_15m:
-                                last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
-                            tag = "🔄翻转" if not is_15m else ""
-                            print(f"  {sym} → {result['signal']} {result['votes']}票 {tag}{'已推送' if ok else '推送FAIL(Telegram拒收)'}")
-                        else:
-                            print(f"  {sym} {result['signal']} {result['votes']}票 (无消息)")
+                            last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
+                            print(f"  {sym} → {result['signal']} {result['votes']}票 {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
+                            continue
+                        print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
+                    # 未达标/NEUTRAL/被否决 → 紧凑快报 (不算信号, 不更新 last_15m_signal)
+                    send_telegram(format_update(result, judge))
+                    print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
+                    continue
+
+                if qualified:
+                    # 反转确认: 非15分钟扫描, 需要连续3次同向才触发紧急推送
+                    prev = last_15m_signal.get(sym)
+                    if not prev or prev[0] == result["signal"]:
+                        reversal_count.pop(sym, None)
+                        print(f"方向未变跳过")
+                        continue
+                    # 新方向, 累积确认计数
+                    rc = reversal_count.get(sym, {"dir": result["signal"], "count": 0})
+                    if rc["dir"] != result["signal"]:
+                        rc = {"dir": result["signal"], "count": 0}
+                    rc["count"] += 1
+                    reversal_count[sym] = rc
+                    if rc["count"] < 3:
+                        print(f"反转确认 {rc['count']}/3 跳过")
+                        continue
+                    reversal_count[sym] = {"dir": result["signal"], "count": 0}
+                    now_ts = time.time()
+                    if sym in last_emergency and now_ts - last_emergency[sym] < 900:
+                        print(f"紧急冷却跳过")
+                        continue
+                    last_emergency[sym] = now_ts
+
+                    plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
+                    # AI 裁判: 放行才推送, 价格决策仍由 Brooks 规则定
+                    judge = ai_judge(result, plan)
+                    record_judge(result, plan, judge)  # 放行/否决都落盘, 事后结算判对错
+                    if judge["verdict"] == "观望" or (judge["confidence"] != -1 and judge["confidence"] < 60):
+                        print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
+                        continue
+                    sig_num = get_signal_number()
+                    prev_dir = last_15m_signal.get(sym, (None,))[0]
+                    rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
+                    msg = format_message(result, plan, is_emergency=True, sig_num=sig_num, reverse_from=rev_from, judge=judge)
+                    if msg:
+                        # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
+                        ok = send_telegram(msg)
+                        if not args.test:
+                            img = make_chart(result, plan)
+                            if img:
+                                send_photo(img, format_caption(result, plan))
+                        save_prediction(sym, result["signal"], result["price"], plan)
+                        print(f"  {sym} → {result['signal']} {result['votes']}票 🔄翻转{'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                     else:
-                        print(f"  {sym} 票数不足 {result['votes']}")
+                        print(f"  {sym} {result['signal']} {result['votes']}票 (无消息)")
                 else:
-                    print(f"  {sym} NEUTRAL {result['votes']}")
+                    print(f"  {sym} {'NEUTRAL' if result['signal'] == 'NEUTRAL' else '票数不足'} {result['votes']}")
             except Exception as e:
                 print(f"错误: {e}")
 
