@@ -162,7 +162,7 @@ def _fetch_yfinance(symbol, interval, limit, drop_incomplete=True):
     """US-friendly data via Yahoo Finance"""
     try:
         import yfinance as yf
-        yf_sym = symbol.replace("USDT", "-USD")
+        yf_sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD")  # ETHUSDT/ETHUSDC → ETH-USD
         tf_map = {"5m": "5m", "15m": "15m", "1h": "60m", "4h": "60m", "1d": "1d"}
         period_map = {"5m": "5d", "15m": "7d", "1h": "30d", "4h": "60d", "1d": "730d"}
         tf = tf_map.get(interval, "15m")
@@ -1243,7 +1243,7 @@ def _sentiment_binance(symbol):
 
 def _sentiment_kraken(symbol):
     """Kraken Futures 回退源(美国可访问, 免key): 只有资金费率+持仓量, 无 OI 历史/多空比接口"""
-    k_sym = {"ETHUSDT": "PI_ETHUSD", "BTCUSDT": "PI_XBTUSD"}.get(symbol)
+    k_sym = {"ETHUSDT": "PI_ETHUSD", "ETHUSDC": "PI_ETHUSD", "BTCUSDT": "PI_XBTUSD"}.get(symbol)
     if not k_sym:
         return None
     try:
@@ -1399,11 +1399,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
-    parser.add_argument("--symbols", default="ETHUSDT", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
+    parser.add_argument("--symbols", default="ETHUSDT,ETHUSDC", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
     parser.add_argument("--judge-test", action="store_true", help="裁判调试: 打印简报+裁判JSON后退出")
     args = parser.parse_args()
 
-    factor_map = {"BTCUSDT": BTC_FACTORS, "ETHUSDT": ETH_FACTORS}
+    factor_map = {"BTCUSDT": BTC_FACTORS, "ETHUSDT": ETH_FACTORS, "ETHUSDC": ETH_FACTORS}
     watch = []
     for s in args.symbols.split(","):
         s = s.strip()
