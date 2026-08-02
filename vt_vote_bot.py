@@ -1128,8 +1128,8 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
     return "\n".join(L)
 
 
-def format_update(result, judge):
-    """15分钟紧凑快报(无门槛): AI判断打头, 数据一行汇总, 无分割线"""
+def format_update(result, judge, plan=None):
+    """15分钟紧凑快报(无门槛): AI判断打头, 带止盈止损, 数据一行汇总"""
     sym = result["symbol"]
     ba = result.get("brooks") or {}
     state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
@@ -1150,6 +1150,13 @@ def format_update(result, judge):
             L.append(f"理由{i+1}: {rsn}")
     else:
         L.append("AI判断: 裁判不可用")
+
+    # 交易计划(止盈止损) — NEUTRAL 时按票多一方的假定方向
+    if plan:
+        dir_cn = {"LONG": "做多", "SHORT": "做空"}.get(sig, "多空打平")
+        L.append(f"方向: {dir_cn}")
+        L.append(f"入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f}")
+        L.append(f"止盈1 ${plan['tp1']:.2f} | 止盈2 ${plan['tp2']:.2f} (盈亏比1:{plan['rr']:.1f})")
 
     # 数据汇总一行
     parts = [f"看涨{result['bullish']}票/看跌{result['bearish']}票", state_cn]
@@ -1399,7 +1406,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
-    parser.add_argument("--symbols", default="ETHUSDT,ETHUSDC", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
+    parser.add_argument("--symbols", default="ETHUSDC", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
     parser.add_argument("--judge-test", action="store_true", help="裁判调试: 打印简报+裁判JSON后退出")
     args = parser.parse_args()
 
@@ -1507,7 +1514,7 @@ def main():
                             continue
                         print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
                     # 未达标/NEUTRAL/被否决 → 紧凑快报 (不算信号, 不更新 last_15m_signal)
-                    send_telegram(format_update(result, judge))
+                    send_telegram(format_update(result, judge, plan))
                     print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
                     continue
 
