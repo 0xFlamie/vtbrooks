@@ -1140,23 +1140,25 @@ def format_update(result, judge, plan=None):
 
     L = []
     L.append("=" * 36)
-    L.append(f"📡 {sym} 快报 | {pd.Timestamp.now():%m-%d %H:%M} | 现价 ${result['price']:.2f}")
+    L.append(f"📡 {sym} 快报 | {pd.Timestamp.now():%m-%d %H:%M} | 💰现价 ${result['price']:.2f}")
 
     # AI 判断是主角, 放最前
     judge = judge or {}
     if judge.get("confidence", -1) >= 0:
-        L.append(f"AI判断: {judge['verdict']} (置信度{judge['confidence']})")
+        j_emoji = "✅" if judge["verdict"] == "执行" else "🛑"
+        L.append(f"🤖 AI判断: {j_emoji}{judge['verdict']} (置信度{judge['confidence']})")
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
-            L.append(f"理由{i+1}: {rsn}")
+            L.append(f"📝 理由{i+1}: {rsn}")
     else:
-        L.append("AI判断: 裁判不可用")
+        L.append("🤖 AI判断: 裁判不可用")
 
     # 交易计划(止盈止损) — NEUTRAL 时按票多一方的假定方向
     if plan:
         dir_cn = {"LONG": "做多", "SHORT": "做空"}.get(sig, "多空打平")
-        L.append(f"方向: {dir_cn}")
-        L.append(f"入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f}")
-        L.append(f"止盈1 ${plan['tp1']:.2f} | 止盈2 ${plan['tp2']:.2f} (盈亏比1:{plan['rr']:.1f})")
+        d_emoji = "🔺" if sig == "LONG" else "🔻" if sig == "SHORT" else "⏸"
+        L.append(f"🧭 方向: {d_emoji}{dir_cn}")
+        L.append(f"🎯 入场 ${plan['entry']:.2f} | 🚫 止损 ${plan['sl']:.2f}")
+        L.append(f"🥇 止盈1 ${plan['tp1']:.2f} | 🏆 止盈2 ${plan['tp2']:.2f} (盈亏比1:{plan['rr']:.1f})")
 
     # 数据汇总一行
     parts = [f"看涨{result['bullish']}票/看跌{result['bearish']}票", state_cn]
@@ -1171,8 +1173,8 @@ def format_update(result, judge, plan=None):
         parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
         parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
-    L.append("数据: " + " | ".join(parts))
-    L.append(f"信号线: {'已达' + str(MIN_VOTES) + '票' if reached else '未触发'}")
+    L.append("📊 数据: " + " | ".join(parts))
+    L.append(f"🚦 信号线: {'✅已达' + str(MIN_VOTES) + '票' if reached else '⏸未触发'}")
     return "\n".join(L)
 
 
