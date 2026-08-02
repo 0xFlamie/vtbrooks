@@ -1422,8 +1422,8 @@ def main():
                 body = "\n".join(followups)
                 if len(body) > 3500:
                     body = body[:3500] + "\n...(过长截断)"
-                send_telegram(f"📋 本批结算 {len(followups)}条: {wins}胜{len(followups)-wins}负\n{body}")
-                print(f"  验证: 合并推送{len(followups)}条")
+                ok = send_telegram(f"📋 本批结算 {len(followups)}条: {wins}胜{len(followups)-wins}负\n{body}")
+                print(f"  验证: 合并推送{len(followups)}条 {'OK' if ok else 'FAIL(Telegram拒收)'}")
         except Exception as e:
             print(f"  验证失败: {e}")
 
@@ -1476,7 +1476,7 @@ def main():
                         msg = format_message(result, plan, is_emergency=(not is_15m), sig_num=sig_num, reverse_from=rev_from, judge=judge)
                         if msg:
                             # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
-                            send_telegram(msg)
+                            ok = send_telegram(msg)
                             if not args.test:
                                 img = make_chart(result, plan)
                                 if img:
@@ -1485,7 +1485,7 @@ def main():
                             if is_15m:
                                 last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
                             tag = "🔄翻转" if not is_15m else ""
-                            print(f"  {sym} → {result['signal']} {result['votes']}票 {tag}已推送")
+                            print(f"  {sym} → {result['signal']} {result['votes']}票 {tag}{'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                         else:
                             print(f"  {sym} {result['signal']} {result['votes']}票 (无消息)")
                     else:
