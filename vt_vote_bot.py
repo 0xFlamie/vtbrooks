@@ -71,7 +71,7 @@ FACTOR_DESC = {
     "量价动量A47":    "量价配合的中期动量",
 }
 
-MIN_VOTES = 10  # 至少 N 票触发 (VT8 + NOFX4 + Brooks6 = 18总票)
+MIN_VOTES = 9   # 至少 N 票触发 (VT8 + NOFX4 + Brooks6 = 18总票)
 STRONG = 12     # N+ 票 = 强信号
 LOOKBACK = 200  # 计算因子用的历史 bar 数
 
