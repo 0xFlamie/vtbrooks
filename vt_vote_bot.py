@@ -766,6 +766,7 @@ def record_judge(result, plan, judge):
         "symbol": result["symbol"], "direction": result["signal"],
         "entry_px": plan["entry"], "sl": plan["sl"], "tp2": plan["tp2"],
         "verdict": judge["verdict"], "confidence": judge["confidence"],
+        "ai_direction": judge.get("direction"),  # AI 实际选择(LONG/SHORT/None), direction 字段是投票假定方向
         "reasons": judge.get("reasons", []),
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
@@ -1025,7 +1026,7 @@ def make_chart(result, plan):
         return None
 
 
-def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="", judge=None):
+def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="", judge=None, ai_decision=False):
     if result["signal"] == "NEUTRAL":
         return None
     sym = result["symbol"]; sig = result["signal"]
@@ -1049,6 +1050,8 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
         L.append("")
     reverse_tag = f" (反转#{sig_num-1}的{reverse_from})" if reverse_from else ""
     L.append(f"{emoji} <b>{sym} 建议{dir_cn} #{sig_num}</b> | {'⚡强信号' if votes_n >= STRONG else '📡信号'} {votes_n}/{votes_total}票{reverse_tag}")
+    if ai_decision:
+        L.append("🤖 AI主判方向, 票数仅作参考")
     L.append(f"强度 {pct}% {bar}")
     # Clean market context
     market_line = f"市场: {state_cn}"
@@ -1252,7 +1255,8 @@ def _sentiment_binance(symbol):
 
 def _sentiment_kraken(symbol):
     """Kraken Futures 回退源(美国可访问, 免key): 只有资金费率+持仓量, 无 OI 历史/多空比接口"""
-    k_sym = {"ETHUSDT": "PI_ETHUSD", "ETHUSDC": "PI_ETHUSD", "BTCUSDT": "PI_XBTUSD"}.get(symbol)
+    k_sym = {"ETHUSDT": "PI_ETHUSD", "ETHUSDC": "PI_ETHUSD",
+             "BTCUSDT": "PI_XBTUSD", "BTCUSDC": "PI_XBTUSD"}.get(symbol)
     if not k_sym:
         return None
     try:
@@ -1295,7 +1299,7 @@ def fetch_sentiment(symbol):
 
 
 def build_market_brief(result, plan):
-    """结构化市场简报(纯文本): 喂给 AI 裁判做放行/否决决策, 价格决策仍由 Brooks 规则定"""
+    """结构化市场简报(纯文本): 客观陈列数据, 不预设方向, 由 AI 独立判断"""
     sym = result["symbol"]; sig = result["signal"]
     px = result["price"]
     ba = result.get("brooks") or {}
@@ -1303,19 +1307,20 @@ def build_market_brief(result, plan):
     ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
     spike_cn = {1: "强势向上突破", -1: "强势向下跌破"}.get(ba.get("spike", 0), "无")
 
-    # 投票分布: 三组各几票同向
+    # 投票分布: 三组各几票看涨(🟢)
     groups = {"VT因子": [0, 8], "NOFX": [0, 4], "Brooks": [0, 6]}
     for d in result["details"]:
         name = d["name"]
         key = "NOFX" if name.startswith("NOFX_") else "Brooks" if name.startswith("BROOKS_") else "VT因子"
-        if (d["direction"] == "🟢") == (sig == "LONG"):
+        if d["direction"] == "🟢":
             groups[key][0] += 1
 
     L = []
-    L.append(f"候选信号: {sym} {'做多' if sig == 'LONG' else '做空'} @ ${px:.2f}")
+    L.append(f"币种: {sym} | 现价: ${px:.2f}")
     L.append(f"市场状态: {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
-    L.append("投票分布: " + " | ".join(f"{k} {v[0]}/{v[1]}票同向" for k, v in groups.items()))
+    L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
+             " | ".join(f"{k} 看涨{v[0]}/{v[1]}" for k, v in groups.items()) + ")")
 
     lv = compute_levels(sym, sig)
     if lv:
@@ -1341,12 +1346,12 @@ def build_market_brief(result, plan):
         if parts:
             L.append("合约情绪: " + " | ".join(parts))
 
-    L.append(f"交易计划: 入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f} | "
+    L.append(f"参考交易计划(按投票方向试算): 入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f} | "
              f"TP1 ${plan['tp1']:.2f} | TP2 ${plan['tp2']:.2f} | 盈亏比 1:{plan['rr']:.1f}")
     return "\n".join(L)
 
 
-JUDGE_UNAVAILABLE = {"verdict": "执行", "confidence": -1, "reasons": ["裁判不可用，按规则放行"]}
+JUDGE_UNAVAILABLE = {"verdict": "执行", "direction": None, "confidence": -1, "reasons": ["裁判不可用，按规则放行"]}
 
 
 def ai_judge(result, plan):
@@ -1363,13 +1368,15 @@ def ai_judge(result, plan):
             et = pd.Timestamp(e["time"]).strftime("%m-%d %H:%M")
             oc = "止盈" if e["outcome"] == "win" else "止损"
             rsi = e.get("rsi") if e.get("rsi") is not None else "-"
+            ai_dir = {"LONG": "做多", "SHORT": "做空"}.get(e.get("ai_direction"), e["verdict"])
             lines.append(f"- {et} {'做多' if e['direction'] == 'LONG' else '做空'}@{e['entry_px']:.1f} "
                          f"RSI={rsi} {state_map.get(e.get('state'), '未知')} {e.get('votes', '-')}票 → "
-                         f"你判{e['verdict']}, 实际{oc}, {'判对' if e['judgment'] else '判错'}")
+                         f"你判{ai_dir}, 实际{oc}, {'判对' if e['judgment'] else '判错'}")
         brief += "\n\n" + "\n".join(lines)
 
-    system = ("你是严格的风控裁判，只对候选交易信号做放行/否决，遵循 Al Brooks 价格行为学原则。"
-              "只输出 JSON: {\"verdict\": \"执行\" 或 \"观望\", \"confidence\": 0-100 整数, "
+    system = ("你是交易员，根据市场数据独立判断方向，遵循 Al Brooks 价格行为学原则。"
+              "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
+              "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", \"confidence\": 0-100 整数, "
               "\"reasons\": [2-3条理由]}。"
               "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR)，只陈述数据和事实关系，"
               "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。"
@@ -1390,13 +1397,16 @@ def ai_judge(result, plan):
         # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
         m = re.search(r"\{[^{}]*\}", text, re.S)
         data = json.loads(m.group(0)) if m else {}
-        verdict = "观望" if "观望" in str(data.get("verdict", "")) else "执行"
+        # 方向制: 含"多"→LONG, 含"空"→SHORT, 否则观望
+        d_str = str(data.get("direction", ""))
+        direction = "LONG" if "多" in d_str else "SHORT" if "空" in d_str else None
         confidence = int(data.get("confidence", -1))
         reasons = data.get("reasons")
         if not isinstance(reasons, list) or not reasons:
             reasons = [str(data.get("reason", "")).strip() or "无理由"]
         reasons = [str(x).strip() for x in reasons[:3]]
-        return {"verdict": verdict, "confidence": confidence, "reasons": reasons,
+        return {"verdict": "执行" if direction else "观望", "direction": direction,
+                "confidence": confidence, "reasons": reasons,
                 "stats": {"wins": wins, "total": total}}
     except Exception:
         out = dict(JUDGE_UNAVAILABLE)
@@ -1408,11 +1418,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
-    parser.add_argument("--symbols", default="ETHUSDC", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
+    parser.add_argument("--symbols", default="ETHUSDC,BTCUSDC", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
     parser.add_argument("--judge-test", action="store_true", help="裁判调试: 打印简报+裁判JSON后退出")
     args = parser.parse_args()
 
-    factor_map = {"BTCUSDT": BTC_FACTORS, "ETHUSDT": ETH_FACTORS, "ETHUSDC": ETH_FACTORS}
+    factor_map = {"BTCUSDT": BTC_FACTORS, "BTCUSDC": BTC_FACTORS, "ETHUSDT": ETH_FACTORS, "ETHUSDC": ETH_FACTORS}
     watch = []
     for s in args.symbols.split(","):
         s = s.strip()
@@ -1488,34 +1498,37 @@ def main():
                 vn = int(result["votes"].split("/")[0])
                 qualified = result["signal"] != "NEUTRAL" and vn >= MIN_VOTES
 
-                # ── 15分钟定时: 无条件出快报; 达标且裁判放行才发完整信号 ──
+                # ── 15分钟定时: AI 主决策, 每次出判例; AI 定向且高置信才发完整信号 ──
                 if is_15m:
-                    # NEUTRAL 时用票多一方作假定方向算 plan/简报
+                    # NEUTRAL 时用票多一方作假定方向算参考 plan/shadow 判例
                     sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
                         "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
                     r2 = result if result["signal"] != "NEUTRAL" else dict(result, signal=sig0)
                     plan = calc_trade_plan(sym, sig0, result["price"], result.get("brooks") or {})
                     judge = ai_judge(r2, plan)
-                    passed = judge["verdict"] != "观望" and (judge["confidence"] == -1 or judge["confidence"] >= 60)
-                    if qualified:
-                        record_judge(result, plan, judge)  # 候选信号都记判例
-                        if passed:
-                            sig_num = get_signal_number()
-                            prev_dir = last_15m_signal.get(sym, (None,))[0]
-                            rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
-                            msg = format_message(result, plan, sig_num=sig_num, reverse_from=rev_from, judge=judge)
-                            # 先发文字, 再发图
-                            ok = send_telegram(msg)
-                            if not args.test:
-                                img = make_chart(result, plan)
-                                if img:
-                                    send_photo(img, format_caption(result, plan))
-                            save_prediction(sym, result["signal"], result["price"], plan)
-                            last_15m_signal[sym] = (result["signal"], time.time(), result["price"])
-                            print(f"  {sym} → {result['signal']} {result['votes']}票 {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
-                            continue
-                        print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
-                    # 未达标/NEUTRAL/被否决 → 紧凑快报 (不算信号, 不更新 last_15m_signal)
+                    record_judge(r2, plan, judge)  # 每次15m决策都记(观望也记, shadow按投票假定方向结算)
+                    ai_dir = judge.get("direction")
+                    if ai_dir and judge["confidence"] >= 60:
+                        # AI 定向: 方向与投票假定不同则按 AI 方向重算 plan
+                        if ai_dir != sig0:
+                            plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
+                        r3 = dict(result, signal=ai_dir)
+                        sig_num = get_signal_number()
+                        prev_dir = last_15m_signal.get(sym, (None,))[0]
+                        rev_from = prev_dir if prev_dir and prev_dir != ai_dir else ""
+                        msg = format_message(r3, plan, sig_num=sig_num, reverse_from=rev_from,
+                                             judge=judge, ai_decision=True)
+                        # 先发文字, 再发图
+                        ok = send_telegram(msg)
+                        if not args.test:
+                            img = make_chart(r3, plan)
+                            if img:
+                                send_photo(img, format_caption(r3, plan))
+                        save_prediction(sym, ai_dir, result["price"], plan)
+                        last_15m_signal[sym] = (ai_dir, time.time(), result["price"])
+                        print(f"  {sym} → AI决策 {ai_dir} (置信{judge['confidence']}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
+                        continue
+                    # AI 观望/低置信/不可用 → 紧凑快报 (不算信号, 不更新 last_15m_signal)
                     send_telegram(format_update(result, judge, plan))
                     print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
                     continue
