@@ -1539,7 +1539,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", type=int, default=15, help="循环间隔(分钟), 0=单次")
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
-    parser.add_argument("--symbols", default="ETHUSDC,BTCUSDC", help="逗号分隔, 如 BTCUSDT,ETHUSDT")
+    parser.add_argument("--symbols", default="ETHUSDC", help="逗号分隔, 如 ETHUSDC,BTCUSDC")
     parser.add_argument("--judge-test", action="store_true", help="裁判调试: 打印简报+裁判JSON后退出")
     args = parser.parse_args()
 
