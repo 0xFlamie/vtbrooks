@@ -747,7 +747,6 @@ def verify_predictions():
                      "timeout": "超时未触发"}.get(result, "超时")
         pnl_str = f"+{pnl:.2f}%" if pnl > 0 else f"{pnl:.2f}%"
         messages.append(
-            f"============================\n"
             f"{result_emoji} 信号结算 | {pred['symbol']} {'做多' if direction=='LONG' else '做空'}\n"
             f"入场: ${entry:.2f} → 出场: ${exit_px:.2f}\n"
             f"结果: {result_cn} | 盈亏: {pnl_str}"
@@ -1045,7 +1044,6 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
     oppose = [d for d in result["details"] if (d["direction"] == "🟢") != (sig == "LONG")]
 
     L = []
-    L.append("=" * 40)
     if is_emergency:
         L.append(f"🔄 <b>紧急翻转 #{sig_num}</b> — 从 #{sig_num-1} 反转")
         L.append("")
@@ -1131,46 +1129,42 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
 
 
 def format_update(result, judge):
-    """15分钟紧凑快报(无门槛): 8行内, 数据走缓存的 compute_levels/fetch_sentiment"""
+    """15分钟紧凑快报(无门槛): AI判断打头, 数据一行汇总, 无分割线"""
     sym = result["symbol"]
     ba = result.get("brooks") or {}
     state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
-    ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
-    setups = "; ".join(ba["setups"]) if ba.get("setups") else "无"
     sig = result["signal"]
     vn = int(result["votes"].split("/")[0])
     total = result["votes"].split("/")[1]
     reached = sig != "NEUTRAL" and vn >= MIN_VOTES
-    vote_note = f"已达{MIN_VOTES}票线" if reached else f"{MIN_VOTES}票线未触发"
 
     L = []
-    L.append("=" * 40)
-    dir_cn = {"LONG": "做多", "SHORT": "做空"}.get(sig, "多空打平")
-    L.append(f"📡 {sym} 快报 {dir_cn} | ${result['price']:.2f} | {pd.Timestamp.now():%m-%d %H:%M}")
-    L.append(f"市场: {state_cn} | Always In: {ai_cn} | 形态: {setups}")
-    L.append(f"投票: 🟢{result['bullish']} / 🔴{result['bearish']} (共{total}票, {vote_note})")
+    L.append(f"📡 {sym} 快报 | {pd.Timestamp.now():%m-%d %H:%M} | 现价 ${result['price']:.2f}")
 
+    # AI 判断是主角, 放最前
+    judge = judge or {}
+    if judge.get("confidence", -1) >= 0:
+        L.append(f"AI判断: {judge['verdict']} (置信度{judge['confidence']})")
+        for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
+            L.append(f"理由{i+1}: {rsn}")
+    else:
+        L.append("AI判断: 裁判不可用")
+
+    # 数据汇总一行
+    parts = [f"投票🟢{result['bullish']}/🔴{result['bearish']}", state_cn]
     lv = compute_levels(sym, sig if sig != "NEUTRAL" else ("LONG" if result["bullish"] >= result["bearish"] else "SHORT"))
     if lv:
         vol_short = "放量" if lv["vol_ratio"] > 1.5 else "正常" if lv["vol_ratio"] > 0.8 else "缩量"
-        L.append(f"{rsi_word(lv['rsi14'])} | 量比{lv['vol_ratio']:.2f}({vol_short})")
-
+        parts.append(f"RSI{lv['rsi14']:.0f}")
+        parts.append(f"{vol_short}{lv['vol_ratio']:.1f}倍")
     st = fetch_sentiment(sym) or {}
-    parts = []
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
-        parts.append(f"资金费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+        parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
-        parts.append(f"主动买卖比{st['taker_buy_sell_ratio']:.2f}")
-    if parts:
-        L.append("情绪: " + " | ".join(parts))
-
-    judge = judge or {}
-    if judge.get("confidence", -1) >= 0:
-        reason = (judge.get("reasons") or [""])[0]
-        L.append(f"AI裁判: {judge['verdict']}({judge['confidence']})" + (f" — {reason}" if reason else ""))
-    else:
-        L.append("AI裁判: 裁判不可用")
+        parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+    L.append("数据: " + " | ".join(parts))
+    L.append(f"信号线: {'已达' + str(MIN_VOTES) + '票' if reached else '未触发'}")
     return "\n".join(L)
 
 
@@ -1500,7 +1494,7 @@ def main():
                             prev_dir = last_15m_signal.get(sym, (None,))[0]
                             rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
                             msg = format_message(result, plan, sig_num=sig_num, reverse_from=rev_from, judge=judge)
-                            # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
+                            # 先发文字, 再发图
                             ok = send_telegram(msg)
                             if not args.test:
                                 img = make_chart(result, plan)
@@ -1551,7 +1545,7 @@ def main():
                     rev_from = prev_dir if prev_dir and prev_dir != result["signal"] else ""
                     msg = format_message(result, plan, is_emergency=True, sig_num=sig_num, reverse_from=rev_from, judge=judge)
                     if msg:
-                        # 先发文字(以====开头), 再发图, 让图落在本次信号的分隔线内
+                        # 先发文字, 再发图
                         ok = send_telegram(msg)
                         if not args.test:
                             img = make_chart(result, plan)
