@@ -1001,7 +1001,7 @@ def compute_direction_probs(symbol):
 
 
 def calc_trade_plan(sym, sig, px, ba):
-    """Brooks 形态止损优先(第二腿/双顶底极值外侧), 否则 ATR×0.6; 止盈 = 1:1 scalp + 测量目标"""
+    """Brooks 形态止损优先(第二腿/双顶底极值外侧), 否则 ATR×0.6; 止损距离下限 0.8×ATR; 止盈 = 1:1 scalp + 测量目标"""
     atr_val = px * 0.003
     last_leg = atr_val * 3
     try:
@@ -1018,12 +1018,15 @@ def calc_trade_plan(sym, sig, px, ba):
 
     sl_map = (ba or {}).get("sl") or {}
     sl_struct = sl_map.get("long" if sig == "LONG" else "short")
+    min_risk = atr_val * 0.8  # 止损下限: 结构止损贴脸时用波动率兜底, 防止毛刺扫损
     if sig == "LONG":
         sl = sl_struct if (sl_struct and sl_struct < px) else px - atr_val * 0.6
+        sl = min(sl, px - min_risk)
         tp1 = px + (px - sl)
         tp2 = px + last_leg
     else:
         sl = sl_struct if (sl_struct and sl_struct > px) else px + atr_val * 0.6
+        sl = max(sl, px + min_risk)
         tp1 = px - (sl - px)
         tp2 = px - last_leg
     risk = abs(px - sl)
