@@ -958,13 +958,13 @@ def maybe_update_lessons():
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 300, "temperature": 0.2},
+            "max_tokens": 900, "temperature": 0.2},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
         if r.status_code != 200:
             print(f"WARN: 错题本复盘失败(HTTP {r.status_code}), 保留旧版")
             return
         text = r.json()["choices"][0]["message"]["content"]
-        m = re.search(r"\{[^{}]*\}", text, re.S)
+        m = re.search(r"\{.*\}", text, re.S)  # 贪婪取最外层 JSON 块, 容忍围栏和前后杂字
         lessons = json.loads(m.group(0)).get("lessons") if m else None
         if not isinstance(lessons, list) or not lessons:
             print("WARN: 错题本复盘解析失败, 保留旧版")
