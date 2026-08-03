@@ -29,6 +29,7 @@ DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
+LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
 
 # ── 因子配置: (name, module, ic_sign, display_name)
 # ic_sign = +1 → 因子值高 = 看多, 值低 = 看空
@@ -703,6 +704,30 @@ def save_journal(j):
     os.replace(tmp, JOURNAL_FILE)
 
 
+def load_lessons():
+    """AI 错题本: 无文件/损坏返回 None"""
+    if os.path.exists(LESSONS_FILE):
+        try:
+            with open(LESSONS_FILE, "r") as f:
+                d = json.load(f)
+            if isinstance(d.get("lessons"), list) and d["lessons"]:
+                return d
+        except Exception as e:
+            print(f"WARN: 错题本损坏({e}), 备份为 .bak")
+            try:
+                os.replace(LESSONS_FILE, LESSONS_FILE + ".bak")
+            except OSError:
+                pass
+    return None
+
+
+def save_lessons(d):
+    tmp = LESSONS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, LESSONS_FILE)
+
+
 def save_prediction(sym, sig, px, plan=None):
     h = load_history()
     entry = {"symbol": sym, "direction": sig, "entry": px,
@@ -906,6 +931,49 @@ def judge_stats():
     """判对率 (wins, total): 忽略 timeout(judgment 为 null)"""
     judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None]
     return sum(1 for e in judged if e["judgment"]), len(judged)
+
+
+def maybe_update_lessons():
+    """AI 错题本: 每积累50条已判定判例, 让 DeepSeek 复盘归纳 3-5 条数据化教训"""
+    try:
+        judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None]
+        n = len(judged)
+        old = load_lessons()
+        if n - (old or {}).get("based_on_count", 0) < 50:
+            return
+
+        state_map = {"trend_up": "趋势上升", "trend_down": "趋势下降", "range": "震荡"}
+        lines = []
+        for e in judged[-100:]:
+            et = pd.Timestamp(e["time"]).strftime("%m-%d %H:%M")
+            ai_dir = {"LONG": "做多", "SHORT": "做空"}.get(e.get("ai_direction"), e["verdict"])
+            oc = "止盈" if e["outcome"] == "win" else "止损"
+            rsi = e.get("rsi") if e.get("rsi") is not None else "-"
+            lines.append(f"{et} {'做多' if e['direction'] == 'LONG' else '做空'}@{e['entry_px']:.1f} "
+                         f"RSI={rsi} {state_map.get(e.get('state'), '未知')} {e.get('votes', '-')}票 "
+                         f"判{ai_dir} 实际{oc} {'对' if e['judgment'] else '错'}")
+        prompt = ("你是交易复盘分析师。以下是某 AI 交易裁判的历史判例及对错结果。"
+                  "归纳 3-5 条可操作的血泪教训，每条必须引用数据规律(如'RSI<25时做空5次错4次')，"
+                  "禁止空话。只输出 JSON: {\"lessons\": [...]}\n\n" + "\n".join(lines))
+        r = _http.post(DS_API_URL, json={
+            "model": DS_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 300, "temperature": 0.2},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
+        if r.status_code != 200:
+            print(f"WARN: 错题本复盘失败(HTTP {r.status_code}), 保留旧版")
+            return
+        text = r.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\{[^{}]*\}", text, re.S)
+        lessons = json.loads(m.group(0)).get("lessons") if m else None
+        if not isinstance(lessons, list) or not lessons:
+            print("WARN: 错题本复盘解析失败, 保留旧版")
+            return
+        save_lessons({"lessons": [str(x).strip() for x in lessons[:5]],
+                      "updated_at": pd.Timestamp.now().isoformat(), "based_on_count": n})
+        print(f"  错题本已更新: {len(lessons)}条教训 (基于{n}条判例)")
+    except Exception as e:
+        print(f"WARN: 错题本更新异常({e}), 保留旧版")
 
 
 def get_signal_number():
@@ -1480,6 +1548,12 @@ def ai_judge(result, plan):
     brief = build_market_brief(result, plan)
     wins, total = judge_stats()
 
+    # 错题本: 历史复盘归纳的教训, 放在判例之前
+    lessons = load_lessons()
+    if lessons:
+        brief += "\n\n你历史判例总结出的教训(必须遵守):\n" + "\n".join(
+            f"{i + 1}. {x}" for i, x in enumerate(lessons["lessons"]))
+
     # 判例记忆: 最近12条已判定案例附在简报后, 让裁判总结自己的教训
     if total:
         state_map = {"trend_up": "趋势上升", "trend_down": "趋势下降", "range": "震荡"}
@@ -1577,6 +1651,9 @@ def main():
         print(build_market_brief(result, plan))
         print("\n── 裁判结果 ──")
         print(json.dumps(ai_judge(result, plan), ensure_ascii=False))
+        print("\n── 错题本 ──")
+        lessons = load_lessons()
+        print(json.dumps(lessons, ensure_ascii=False, indent=2) if lessons else "无错题本")
         return
 
     last_15m_signal = {}  # sym → (dir, time, px)
@@ -1606,9 +1683,10 @@ def main():
         except Exception as e:
             print(f"  验证失败: {e}")
 
-        # ── 裁判判例虚拟结算 ──
+        # ── 裁判判例虚拟结算 (+错题本复盘) ──
         try:
             verify_journal()
+            maybe_update_lessons()
         except Exception as e:
             print(f"  判例结算失败: {e}")
 
