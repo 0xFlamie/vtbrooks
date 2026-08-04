@@ -166,7 +166,7 @@ def _fetch_coinbase(symbol, interval, limit, start_ms=None, drop_incomplete=True
 
 
 def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomplete=True):
-    """binance.us → Coinbase → fapi → yfinance (fapi 在美国被 geo-block, Coinbase 兜底);
+    """USDC对: Coinbase → fapi; USDT对: binance.us → Coinbase → fapi; 最终兜底 yfinance (fapi 在美国被 geo-block);
     drop_incomplete=False 保留未收盘K线(历史结算用); 数据停滞的源自动跳过"""
     if drop_incomplete:
         hit = _kline_cache.get((symbol, interval, limit))
@@ -175,11 +175,19 @@ def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomple
     extra = f"&startTime={start_ms}" if start_ms else ""
     df = None
     stale_df = None
-    sources = [
-        ("binance", f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
-        ("coinbase", None),
-        ("binance", f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
-    ]
+    # Binance.US 的 USDC 对子是死盘(ETHUSDC 24h 成交仅数个 ETH, 最新价常偏离真实价数美元),
+    # USDC 对子跳过 binance.us, 首选 Coinbase USD 对(深度足, USD/USDC 价差可忽略)
+    if symbol.endswith("USDC"):
+        sources = [
+            ("coinbase", None),
+            ("binance", f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
+        ]
+    else:
+        sources = [
+            ("binance", f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
+            ("coinbase", None),
+            ("binance", f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
+        ]
     for kind, url in sources:
         for _ in range(2):  # 每个源失败重试1次再切下一个源
             try:
