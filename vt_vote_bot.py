@@ -1513,13 +1513,55 @@ def _sentiment_hyperliquid(symbol):
         return None
 
 
+def _sentiment_okx(symbol):
+    """OKX 公共接口(免key, 美区可用): 资金费率(8h口径)/持仓量/持仓1h变化/多空账户比; 单接口失败跳过, 全失败返回 None"""
+    coin = symbol.replace("USDT", "").replace("USDC", "")
+    inst = f"{coin}-USDT-SWAP"
+    s = {}
+
+    try:  # 资金费率(8h, 与 Binance lastFundingRate 同口径)
+        d = http_get_json(f"https://www.okx.com/api/v5/public/funding-rate?instId={inst}")
+        s["funding_rate"] = float(d["data"][0]["fundingRate"])
+    except Exception:
+        pass
+
+    try:  # 持仓量当前值(张数→币数, 用 oiCcy 币本位口径与 Binance openInterest 一致)
+        d = http_get_json(f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId={inst}")
+        s["open_interest"] = float(d["data"][0]["oiCcy"])
+    except Exception:
+        pass
+
+    try:  # 持仓量1h变化: 5m 历史(全市场聚合, 美元口径), 最新 vs 12根前
+        d = http_get_json(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy={coin}&period=5m")
+        rows = d.get("data") or []
+        if len(rows) >= 13:
+            now_oi, old_oi = float(rows[0][1]), float(rows[12][1])
+            if old_oi > 0:
+                s["oi_change_1h_pct"] = (now_oi - old_oi) / old_oi * 100
+    except Exception:
+        pass
+
+    try:  # 多空账户比(与 Binance longShortRatio 同口径)
+        d = http_get_json(f"https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy={coin}&period=5m")
+        rows = d.get("data") or []
+        if rows:
+            s["long_short_ratio"] = float(rows[0][1])
+    except Exception:
+        pass
+
+    return s or None
+
+
 def fetch_sentiment(symbol):
-    """合约情绪: Binance 优先 → Kraken/Hyperliquid 补缺; 主动买卖比用K线 taker 量算(现货源也有, 服务器可用); 全空返回 None"""
+    """合约情绪: Binance 优先 → OKX 补缺(美区可用) → Kraken/Hyperliquid 兜底; 主动买卖比用K线 taker 量算; 全空返回 None"""
     s = _sentiment_binance(symbol) or {}
-    if len(s) < 5:  # 有字段缺失才打 Kraken, 省一次请求
+    if len(s) < 5:  # 有字段缺失才打 OKX, 省一次请求
+        for key, v in (_sentiment_okx(symbol) or {}).items():
+            s.setdefault(key, v)
+    if len(s) < 5:
         for key, v in (_sentiment_kraken(symbol) or {}).items():
             s.setdefault(key, v)
-    if "funding_rate" not in s or "oi_change_1h_pct" not in s:  # 服务器被 Binance 墙时由 HL 兜底
+    if "funding_rate" not in s or "oi_change_1h_pct" not in s:  # 仍缺则由 HL 兜底(持仓变化靠本地快照)
         for key, v in (_sentiment_hyperliquid(symbol) or {}).items():
             s.setdefault(key, v)
 
