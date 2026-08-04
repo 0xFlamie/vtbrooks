@@ -30,6 +30,7 @@ DS_MODEL = "deepseek-chat"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
 LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
+OI_SNAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oi_snapshots.json")
 
 # ── 因子配置: (name, module, ic_sign, display_name)
 # ic_sign = +1 → 因子值高 = 看多, 值低 = 看空
@@ -1466,11 +1467,52 @@ def _sentiment_kraken(symbol):
     return None
 
 
+def _oi_change_from_snap(coin, oi_usd):
+    """持仓量1h变化: 本地快照首尾对比(Hyperliquid 无 OI 历史接口); 样本不足1h返回 None"""
+    now = time.time()
+    try:
+        snaps = json.load(open(OI_SNAP_FILE)) if os.path.exists(OI_SNAP_FILE) else {}
+    except Exception:
+        snaps = {}
+    hist = [x for x in snaps.get(coin, []) if now - x[0] < 24 * 3600]
+    hist.append([now, oi_usd])
+    snaps[coin] = hist
+    try:
+        json.dump(snaps, open(OI_SNAP_FILE, "w"))
+    except Exception:
+        pass
+    old = [x for x in hist if now - x[0] >= 55 * 60]
+    if not old or old[-1][1] <= 0:
+        return None
+    return (oi_usd - old[-1][1]) / old[-1][1] * 100
+
+
+def _sentiment_hyperliquid(symbol):
+    """Hyperliquid 回退源(免key): 资金费率+持仓量; funding 是小时费率, ×8 换算成 Binance 8h 口径; 无多空账户比接口"""
+    coin = symbol.replace("USDT", "").replace("USDC", "")
+    try:
+        d = _http.post("https://api.hyperliquid.xyz/info",
+                       json={"type": "metaAndAssetCtxs"}, timeout=10).json()
+        names = [u["name"] for u in d[0]["universe"]]
+        ctx = d[1][names.index(coin)]
+        s = {"funding_rate": float(ctx["funding"]) * 8,
+             "open_interest": float(ctx["openInterest"])}
+        chg = _oi_change_from_snap(coin, float(ctx["openInterest"]) * float(ctx["markPx"]))
+        if chg is not None:
+            s["oi_change_1h_pct"] = chg
+        return s
+    except Exception:
+        return None
+
+
 def fetch_sentiment(symbol):
-    """合约情绪: Binance 优先 → Kraken 补缺; 主动买卖比用K线 taker 量算(现货源也有, 服务器可用); 全空返回 None"""
+    """合约情绪: Binance 优先 → Kraken/Hyperliquid 补缺; 主动买卖比用K线 taker 量算(现货源也有, 服务器可用); 全空返回 None"""
     s = _sentiment_binance(symbol) or {}
     if len(s) < 5:  # 有字段缺失才打 Kraken, 省一次请求
         for key, v in (_sentiment_kraken(symbol) or {}).items():
+            s.setdefault(key, v)
+    if "funding_rate" not in s or "oi_change_1h_pct" not in s:  # 服务器被 Binance 墙时由 HL 兜底
+        for key, v in (_sentiment_hyperliquid(symbol) or {}).items():
             s.setdefault(key, v)
 
     # 主动买卖比: 近20根15m, taker买量 / (总量-taker买量); yfinance 源全 NaN 则跳过
@@ -1540,11 +1582,12 @@ def build_market_brief(result, plan):
     return "\n".join(L)
 
 
-JUDGE_UNAVAILABLE = {"verdict": "执行", "direction": None, "confidence": -1, "reasons": ["裁判不可用，按规则放行"]}
+# 裁判不可用时的保守兜底: 观望(不发信号), 避免风控失效时裸奔
+JUDGE_UNAVAILABLE = {"verdict": "观望", "direction": None, "confidence": -1, "reasons": ["裁判不可用，保守观望"]}
 
 
 def ai_judge(result, plan):
-    """LLM 风控裁判: 对候选信号放行/否决; 任何异常都放行, 不阻塞信号流"""
+    """LLM 风控裁判: 对候选信号放行/否决; 裁判不可用时观望, 不发信号"""
     brief = build_market_brief(result, plan)
     wins, total = judge_stats()
 
@@ -1582,9 +1625,10 @@ def ai_judge(result, plan):
             "model": DS_MODEL,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": brief}],
-            "max_tokens": 150, "temperature": 0.2},
+            "max_tokens": 400, "temperature": 0.2},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
         if r.status_code != 200:
+            print(f"WARN: 裁判API {r.status_code}: {r.text[:200]}")
             out = dict(JUDGE_UNAVAILABLE)
             out["stats"] = {"wins": wins, "total": total}
             return out
@@ -1603,7 +1647,8 @@ def ai_judge(result, plan):
         return {"verdict": "执行" if direction else "观望", "direction": direction,
                 "confidence": confidence, "reasons": reasons,
                 "stats": {"wins": wins, "total": total}}
-    except Exception:
+    except Exception as e:
+        print(f"WARN: 裁判异常 {type(e).__name__}: {e}")
         out = dict(JUDGE_UNAVAILABLE)
         out["stats"] = {"wins": wins, "total": total}
         return out
@@ -1636,7 +1681,7 @@ def main():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
 
-    print(f"VT投票信号机器人 v2.1 | VT8+NOFX4+Brooks6=18票 | ≥{MIN_VOTES}票触发 ≥{STRONG}强 | 每{args.loop}分钟")
+    print(f"VT投票信号机器人 v3.0 | AI主决策(DeepSeek裁判) | 每3分钟扫描, 15分钟快报 | 监控: {args.symbols}")
     print(f"{'='*60}")
 
     print("预加载因子...", end=" ", flush=True)
@@ -1656,9 +1701,7 @@ def main():
         print(json.dumps(lessons, ensure_ascii=False, indent=2) if lessons else "无错题本")
         return
 
-    last_15m_signal = {}  # sym → (dir, time, px)
-    last_emergency = {}   # sym → timestamp
-    reversal_count = {}   # sym → {"dir": str, "count": int}
+    last_signal = {}  # sym → (dir, time, px), 上次推送的 AI 信号, 用于方向去重
 
     while True:
         now = pd.Timestamp.now()
@@ -1666,9 +1709,9 @@ def main():
         is_15m = minute % 15 == 0  # :00 :15 :30 :45
 
         if is_15m:
-            print(f"\n[{now.strftime('%H:%M:%S')}] 15分钟定时扫描...")
+            print(f"\n[{now.strftime('%H:%M:%S')}] 15分钟扫描(带快报)...")
         else:
-            print(f"\n[{now.strftime('%H:%M:%S')}] 5分钟监控...")
+            print(f"\n[{now.strftime('%H:%M:%S')}] 3分钟AI扫描...")
 
         # ── 验证上次预测 (合并为一条推送, 避免刷屏) ──
         try:
@@ -1694,86 +1737,40 @@ def main():
             try:
                 print(f"  {sym}...", end=" ", flush=True)
                 result = vote(sym, config)
-                vn = int(result["votes"].split("/")[0])
-                qualified = result["signal"] != "NEUTRAL" and vn >= MIN_VOTES
 
-                # ── 15分钟定时: AI 主决策, 每次出判例; AI 定向且高置信才发完整信号 ──
+                # ── 每次扫描都由 AI 主决策并记判例(不省API调用); 多/空/观望全由 AI 判, 投票只是简报里的参考数据 ──
+                # NEUTRAL 时用票多一方作假定方向算参考 plan/shadow 判例
+                sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
+                    "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
+                r2 = result if result["signal"] != "NEUTRAL" else dict(result, signal=sig0)
+                plan = calc_trade_plan(sym, sig0, result["price"], result.get("brooks") or {})
+                judge = ai_judge(r2, plan)
+                record_judge(r2, plan, judge)  # 每次决策都记(观望也记, shadow按投票假定方向结算)
+                ai_dir = judge.get("direction")
+                prev = last_signal.get(sym)
+                if ai_dir and judge["confidence"] >= 60 and (not prev or prev[0] != ai_dir):
+                    # AI 定向且高置信, 方向有变化才开单推送; 与投票假定不同则按 AI 方向重算 plan
+                    if ai_dir != sig0:
+                        plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
+                    r3 = dict(result, signal=ai_dir)
+                    sig_num = get_signal_number()
+                    msg = format_signal(r3, plan, judge, sig_num)
+                    # 先发文字, 再发图
+                    ok = send_telegram(msg)
+                    if not args.test:
+                        img = make_chart(r3, plan)
+                        if img:
+                            send_photo(img, format_caption(r3, plan))
+                    save_prediction(sym, ai_dir, result["price"], plan)
+                    last_signal[sym] = (ai_dir, time.time(), result["price"])
+                    print(f"  {sym} → AI决策 {ai_dir} (置信{judge['confidence']}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
+                    continue
+                # AI 观望/低置信/方向未变/不可用 → 仅15m整点发紧凑快报, 其余只记日志不刷屏
                 if is_15m:
-                    # NEUTRAL 时用票多一方作假定方向算参考 plan/shadow 判例
-                    sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
-                        "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
-                    r2 = result if result["signal"] != "NEUTRAL" else dict(result, signal=sig0)
-                    plan = calc_trade_plan(sym, sig0, result["price"], result.get("brooks") or {})
-                    judge = ai_judge(r2, plan)
-                    record_judge(r2, plan, judge)  # 每次15m决策都记(观望也记, shadow按投票假定方向结算)
-                    ai_dir = judge.get("direction")
-                    if ai_dir and judge["confidence"] >= 60:
-                        # AI 定向: 方向与投票假定不同则按 AI 方向重算 plan
-                        if ai_dir != sig0:
-                            plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
-                        r3 = dict(result, signal=ai_dir)
-                        sig_num = get_signal_number()
-                        msg = format_signal(r3, plan, judge, sig_num)
-                        # 先发文字, 再发图
-                        ok = send_telegram(msg)
-                        if not args.test:
-                            img = make_chart(r3, plan)
-                            if img:
-                                send_photo(img, format_caption(r3, plan))
-                        save_prediction(sym, ai_dir, result["price"], plan)
-                        last_15m_signal[sym] = (ai_dir, time.time(), result["price"])
-                        print(f"  {sym} → AI决策 {ai_dir} (置信{judge['confidence']}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
-                        continue
-                    # AI 观望/低置信/不可用 → 紧凑快报 (不算信号, 不更新 last_15m_signal)
                     send_telegram(format_update(result, judge, plan))
                     print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
-                    continue
-
-                if qualified:
-                    # 反转确认: 非15分钟扫描, 需要连续3次同向才触发紧急推送
-                    prev = last_15m_signal.get(sym)
-                    if not prev or prev[0] == result["signal"]:
-                        reversal_count.pop(sym, None)
-                        print(f"方向未变跳过")
-                        continue
-                    # 新方向, 累积确认计数
-                    rc = reversal_count.get(sym, {"dir": result["signal"], "count": 0})
-                    if rc["dir"] != result["signal"]:
-                        rc = {"dir": result["signal"], "count": 0}
-                    rc["count"] += 1
-                    reversal_count[sym] = rc
-                    if rc["count"] < 3:
-                        print(f"反转确认 {rc['count']}/3 跳过")
-                        continue
-                    reversal_count[sym] = {"dir": result["signal"], "count": 0}
-                    now_ts = time.time()
-                    if sym in last_emergency and now_ts - last_emergency[sym] < 900:
-                        print(f"紧急冷却跳过")
-                        continue
-                    last_emergency[sym] = now_ts
-
-                    plan = calc_trade_plan(sym, result["signal"], result["price"], result.get("brooks") or {})
-                    # AI 裁判: 放行才推送, 价格决策仍由 Brooks 规则定
-                    judge = ai_judge(result, plan)
-                    record_judge(result, plan, judge)  # 放行/否决都落盘, 事后结算判对错
-                    if judge["verdict"] == "观望" or (judge["confidence"] != -1 and judge["confidence"] < 60):
-                        print(f"AI裁判否决: {'; '.join(judge['reasons'])}")
-                        continue
-                    sig_num = get_signal_number()
-                    msg = format_signal(result, plan, judge, sig_num, is_emergency=True)
-                    if msg:
-                        # 先发文字, 再发图
-                        ok = send_telegram(msg)
-                        if not args.test:
-                            img = make_chart(result, plan)
-                            if img:
-                                send_photo(img, format_caption(result, plan))
-                        save_prediction(sym, result["signal"], result["price"], plan)
-                        print(f"  {sym} → {result['signal']} {result['votes']}票 🔄翻转{'已推送' if ok else '推送FAIL(Telegram拒收)'}")
-                    else:
-                        print(f"  {sym} {result['signal']} {result['votes']}票 (无消息)")
                 else:
-                    print(f"  {sym} {'NEUTRAL' if result['signal'] == 'NEUTRAL' else '票数不足'} {result['votes']}")
+                    print(f"AI观望 (方向{ai_dir or '无'}, 置信{judge['confidence']}, 投票{result['votes']})")
             except Exception as e:
                 print(f"错误: {e}")
 
