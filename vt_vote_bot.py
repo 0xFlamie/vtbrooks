@@ -141,7 +141,8 @@ def _fetch_coinbase(symbol, interval, limit, start_ms=None, drop_incomplete=True
     """Coinbase Exchange candles(美国可访问, 免key); 实测 ETH-USDC/BTC-USDC 已下架, 统一用 USD 对"""
     cb_sym = {"ETHUSDT": "ETH-USD", "ETHUSDC": "ETH-USD",
               "BTCUSDT": "BTC-USD", "BTCUSDC": "BTC-USD"}.get(symbol)
-    gran = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval)
+    # Coinbase granularity 仅支持 60/300/900/3600/21600/86400, 无 4h(14400 会 400); 4h 由 Hyperliquid 源提供
+    gran = {"5m": 300, "15m": 900, "1h": 3600, "1d": 86400}.get(interval)
     if not cb_sym or not gran:
         return None
     url = (f"https://api.exchange.coinbase.com/products/{cb_sym}/candles"
@@ -165,8 +166,31 @@ def _fetch_coinbase(symbol, interval, limit, start_ms=None, drop_incomplete=True
     return _drop_unclosed(df, interval) if drop_incomplete else df
 
 
+def _fetch_hyperliquid_klines(symbol, interval, limit, start_ms=None, drop_incomplete=True):
+    """Hyperliquid candleSnapshot(美国可访问, 免key): 支持 4h, 补 Coinbase 无 4h 的缺口"""
+    coin = {"ETHUSDT": "ETH", "ETHUSDC": "ETH", "BTCUSDT": "BTC", "BTCUSDC": "BTC"}.get(symbol)
+    ms = INTERVAL_MS.get(interval)
+    if not coin or not ms or interval not in ("5m", "15m", "1h", "4h", "1d"):
+        return None
+    t1 = start_ms + limit * ms if start_ms else int(time.time() * 1000)
+    t0 = t1 - limit * ms
+    d = _http.post("https://api.hyperliquid.xyz/info", timeout=10, json={
+        "type": "candleSnapshot",
+        "req": {"coin": coin, "interval": interval, "startTime": t0, "endTime": t1}}).json()
+    if not isinstance(d, list) or not d:
+        return None
+    df = pd.DataFrame([{
+        "date": pd.to_datetime(int(c["t"]), unit="ms"),
+        "open": float(c["o"]), "high": float(c["h"]), "low": float(c["l"]),
+        "close": float(c["c"]), "volume": float(c["v"])} for c in d])
+    df["amount"] = df["volume"] * df["close"]
+    df["taker_base"] = np.nan  # HL 无主动买卖字段
+    df = df.set_index("date").sort_index().tail(limit)
+    return _drop_unclosed(df, interval) if drop_incomplete else df
+
+
 def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomplete=True):
-    """USDC对: Coinbase → fapi; USDT对: binance.us → Coinbase → fapi; 最终兜底 yfinance (fapi 在美国被 geo-block);
+    """USDC对: Coinbase → Hyperliquid → fapi; USDT对: binance.us → Coinbase → fapi; 最终兜底 yfinance (fapi 在美国被 geo-block);
     drop_incomplete=False 保留未收盘K线(历史结算用); 数据停滞的源自动跳过"""
     if drop_incomplete:
         hit = _kline_cache.get((symbol, interval, limit))
@@ -180,6 +204,7 @@ def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomple
     if symbol.endswith("USDC"):
         sources = [
             ("coinbase", None),
+            ("hyperliquid", None),
             ("binance", f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}{extra}"),
         ]
     else:
@@ -193,6 +218,8 @@ def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomple
             try:
                 if kind == "coinbase":
                     cand = _fetch_coinbase(symbol, interval, limit, start_ms, drop_incomplete)
+                elif kind == "hyperliquid":
+                    cand = _fetch_hyperliquid_klines(symbol, interval, limit, start_ms, drop_incomplete)
                 else:
                     data = http_get_json(url)
                     cand = _parse_binance(data, interval, drop_incomplete) if (
