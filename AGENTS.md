@@ -1,6 +1,6 @@
 # vtbrooks — VT 投票 + AI 主决策信号机器人
 
-## 架构（v3.0, 2026-08-04）
+## 架构（v3.1, 2026-08-05）
 
 单文件 `vt_vote_bot.py`，systemd 服务 `vtbrooks`（服务器 ccvps, `/opt/vtbrooks`）。
 
@@ -8,11 +8,16 @@
 
 1. `vote()` 计算 18 票因子（VT8 + NOFX4 + Brooks6）+ Brooks 价格行为形态
 2. `build_market_brief()` 把价格/RSI/量比/支撑压力/投票分布/合约情绪写成文本简报
-3. `ai_judge()` 喂给 DeepSeek（`deepseek-chat`），返回 多/空/观望 + 置信度 + 理由
-4. AI 定向 + 置信 ≥60 + 方向有变化 → 推完整信号（Telegram 文字 + 图表）；否则仅 15 分钟整点发紧凑快报
-5. 每次判决都落盘 `judge_journal.json`（小本本），`verify_journal()` 事后按 SL/TP 结算判对错；每 50 单 `maybe_update_lessons()` 归纳错题本 `judge_lessons.json`，喂回给 AI
+3. `ai_judge()` 喂给 DeepSeek，返回 多/空/观望 + 置信度 + 理由。**只依据当前简报，历史胜率/判例/错题本不注入 prompt（用户决策：历史胜率不能作为推方向的依据）**
+4. 推送门槛：AI 定向 + 置信 ≥60 + 方向有变化 + 盈亏结构 rr ≥1.5，四者同时满足才推完整信号；否则仅 15 分钟整点发紧凑快报
+5. 每次判决落盘 `judge_journal.json`（同向 1 小时去重，上限 500 条）
 
-**投票只是简报里的参考数据，开单方向完全由 AI 判。**
+结算（`verify_journal`）双指标分离：
+
+- **方向分**（评 AI）：`(+2h/+4h收盘 - 入场) / ATR14 × 方向符号`，固定窗口不看路径；≥+0.5 ATR 判方向正确，判对率以此为准
+- **outcome**（评交易计划）：先碰 SL/TP2，衡量止损止盈摆放质量，不影响 AI 判对率
+
+错题本 `judge_lessons.json` 继续每 50 单生成，仅作复盘档案，不喂回 AI。
 
 ## 数据源（服务器为美区 IP，注意 geo-block）
 

@@ -889,33 +889,45 @@ def verify_predictions():
 
 
 def record_judge(result, plan, judge):
-    """裁判决策落盘(放行/否决都记), 供事后虚拟结算和判例记忆; 上限200条"""
+    """裁判决策落盘(放行/否决都记), 供事后结算和复盘; 同向1小时内去重(相邻判例走同段行情, 不重复计);
+    上限500条(去重后约覆盖10天)"""
     ba = result.get("brooks") or {}
     lv = compute_levels(result["symbol"], result["signal"])
     j = load_journal()
+    if j["entries"]:
+        last = j["entries"][-1]
+        if (last["symbol"] == result["symbol"] and last["direction"] == result["signal"]
+                and (pd.Timestamp.now() - pd.Timestamp(last["time"])).total_seconds() < 3600):
+            return
     j["entries"].append({
         "time": pd.Timestamp.now().isoformat(),
         "symbol": result["symbol"], "direction": result["signal"],
         "entry_px": plan["entry"], "sl": plan["sl"], "tp2": plan["tp2"],
+        "atr": round(lv["atr14"], 2) if lv else None,  # 方向分归一化基准
         "verdict": judge["verdict"], "confidence": judge["confidence"],
         "ai_direction": judge.get("direction"),  # AI 实际选择(LONG/SHORT/None), direction 字段是投票假定方向
         "reasons": judge.get("reasons", []),
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
         "outcome": None, "judgment": None,
+        "dir_score_2h": None, "dir_score_4h": None,  # 方向分: ±ATR 单位, 结算时填
     })
-    if len(j["entries"]) > 200:
-        j["entries"] = j["entries"][-200:]
+    if len(j["entries"]) > 500:
+        j["entries"] = j["entries"][-500:]
     save_journal(j)
 
 
 def verify_journal():
-    """判例虚拟结算: 按 entry 的 sl/tp2 走K线, 判裁判对错; <24h 未触发不结算"""
+    """判例结算, 双指标分开评:
+    方向分 = (+2h/+4h收盘价 - 入场价) / ATR × 方向符号, 固定窗口不看路径, 评 AI 的方向判断(判对依据);
+    outcome = 先碰SL/TP2, 评交易计划本身(止损止盈摆放), 不再用于判 AI 对错; <24h 未触发不结算"""
     j = load_journal()
     now = pd.Timestamp.now(tz="UTC")
     changed = False
     for e in j["entries"]:
-        if e.get("outcome") is not None:
+        need_plan = e.get("outcome") is None
+        need_dir = e.get("dir_score_4h") is None
+        if not (need_plan or need_dir):
             continue
         et = pd.Timestamp(e["time"])
         if et.tz is None:
@@ -936,29 +948,50 @@ def verify_journal():
         except Exception:
             continue
 
-        sl, tp2 = float(e["sl"]), float(e["tp2"])
-        outcome = "timeout"
-        for _, bar in bars.iterrows():
-            try:
-                hi, lo = float(bar["high"]), float(bar["low"])
-            except Exception:
-                continue
-            if e["direction"] == "LONG":
-                if lo <= sl:
-                    outcome = "loss"; break
-                if hi >= tp2:
-                    outcome = "win"; break
-            else:
-                if hi >= sl:
-                    outcome = "loss"; break
-                if lo <= tp2:
-                    outcome = "win"; break
-        if outcome == "timeout" and age < 86400:
-            continue
-        e["outcome"] = outcome
-        # 执行+win=对, 执行+loss=错, 观望+loss=对(躲过), 观望+win=错(错过); timeout 不判定
-        e["judgment"] = None if outcome == "timeout" else (e["verdict"] == "执行") == (outcome == "win")
-        changed = True
+        sign = 1 if e["direction"] == "LONG" else -1
+        # 方向分: +2h/+4h 收盘价结算, 路径回踩不扣分
+        if e.get("atr"):
+            for hours in (2, 4):
+                key = f"dir_score_{hours}h"
+                if e.get(key) is not None:
+                    continue
+                later = bars[bars.index >= et + pd.Timedelta(hours=hours)]
+                if len(later):
+                    e[key] = round(sign * (float(later["close"].iloc[0]) - float(e["entry_px"])) / e["atr"], 2)
+                    changed = True
+
+        # plan 结算: 先碰 SL/TP2 走K线
+        if need_plan:
+            sl, tp2 = float(e["sl"]), float(e["tp2"])
+            outcome = "timeout"
+            for _, bar in bars.iterrows():
+                try:
+                    hi, lo = float(bar["high"]), float(bar["low"])
+                except Exception:
+                    continue
+                if e["direction"] == "LONG":
+                    if lo <= sl:
+                        outcome = "loss"; break
+                    if hi >= tp2:
+                        outcome = "win"; break
+                else:
+                    if hi >= sl:
+                        outcome = "loss"; break
+                    if lo <= tp2:
+                        outcome = "win"; break
+            if outcome != "timeout" or age >= 86400:
+                e["outcome"] = outcome
+                changed = True
+
+        # 判对: 方向分 ≥+0.5 ATR 视为方向正确; 执行+方向对=判对, 观望+方向错=判对(躲过)
+        # 老判例无 atr/方向分, 沿用旧口径(outcome)
+        if e.get("judgment") is None:
+            if e.get("dir_score_4h") is not None:
+                e["judgment"] = (e["verdict"] == "执行") == (e["dir_score_4h"] >= 0.5)
+                changed = True
+            elif e.get("outcome") not in (None, "timeout"):
+                e["judgment"] = (e["verdict"] == "执行") == (e["outcome"] == "win")
+                changed = True
     if changed:
         save_journal(j)
 
@@ -1664,30 +1697,10 @@ JUDGE_UNAVAILABLE = {"verdict": "观望", "direction": None, "confidence": -1, "
 
 
 def ai_judge(result, plan):
-    """LLM 风控裁判: 对候选信号放行/否决; 裁判不可用时观望, 不发信号"""
+    """LLM 裁判: 只根据当前简报(18项指标+合约情绪)独立判方向; 裁判不可用时观望, 不发信号。
+    历史胜率/判例/错题本不注入 prompt——历史胜率不能作为推方向的依据(用户决策 2026-08-05)"""
     brief = build_market_brief(result, plan)
-    wins, total = judge_stats()
-
-    # 错题本: 历史复盘归纳的教训, 放在判例之前
-    lessons = load_lessons()
-    if lessons:
-        brief += "\n\n你历史判例总结出的教训(必须遵守):\n" + "\n".join(
-            f"{i + 1}. {x}" for i, x in enumerate(lessons["lessons"]))
-
-    # 判例记忆: 最近12条已判定案例附在简报后, 让裁判总结自己的教训
-    if total:
-        state_map = {"trend_up": "趋势上升", "trend_down": "趋势下降", "range": "震荡"}
-        cases = [e for e in load_journal()["entries"] if e.get("judgment") is not None][-12:]
-        lines = [f"你的近期判例(判对率 {wins}/{total}={round(wins / total * 100)}%):"]
-        for e in cases:
-            et = pd.Timestamp(e["time"]).strftime("%m-%d %H:%M")
-            oc = "止盈" if e["outcome"] == "win" else "止损"
-            rsi = e.get("rsi") if e.get("rsi") is not None else "-"
-            ai_dir = {"LONG": "做多", "SHORT": "做空"}.get(e.get("ai_direction"), e["verdict"])
-            lines.append(f"- {et} {'做多' if e['direction'] == 'LONG' else '做空'}@{e['entry_px']:.1f} "
-                         f"RSI={rsi} {state_map.get(e.get('state'), '未知')} {e.get('votes', '-')}票 → "
-                         f"你判{ai_dir}, 实际{oc}, {'判对' if e['judgment'] else '判错'}")
-        brief += "\n\n" + "\n".join(lines)
+    wins, total = judge_stats()  # 仅用于返回 stats 展示, 不进 prompt
 
     system = ("你是交易员，根据市场数据独立判断方向，遵循 Al Brooks 价格行为学原则。"
               "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
@@ -1695,8 +1708,7 @@ def ai_judge(result, plan):
               "\"reasons\": [2-3条理由]}。"
               "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR)，只陈述数据和事实关系，"
               "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。"
-              "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。"
-              "附带的判例是你自己的历史决策及结果，判错的案例要总结教训，避免重蹈覆辙。")
+              "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。")
     try:
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
@@ -1758,7 +1770,7 @@ def main():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
 
-    print(f"VT投票信号机器人 v3.0 | AI主决策(DeepSeek裁判) | 每3分钟扫描, 15分钟快报 | 监控: {args.symbols}")
+    print(f"VT投票信号机器人 v3.1 | AI主决策(DeepSeek裁判, 纯指标快照) | 每3分钟扫描, 15分钟快报 | 监控: {args.symbols}")
     print(f"{'='*60}")
 
     print("预加载因子...", end=" ", flush=True)
@@ -1829,6 +1841,13 @@ def main():
                     # AI 定向且高置信, 方向有变化才开单推送; 与投票假定不同则按 AI 方向重算 plan
                     if ai_dir != sig0:
                         plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
+                    if plan["rr"] < 1.5:
+                        # 盈亏结构不达标(止损到支撑/压力的距离比太窄), 方向对也不开单
+                        print(f"AI决策 {ai_dir} 但盈亏比1:{plan['rr']:.1f}<1.5, 结构不达标跳过")
+                        if is_15m:
+                            send_telegram(format_update(result, judge, plan))
+                            print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
+                        continue
                     r3 = dict(result, signal=ai_dir)
                     sig_num = get_signal_number()
                     msg = format_signal(r3, plan, judge, sig_num)
