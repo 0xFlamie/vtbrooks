@@ -1821,7 +1821,7 @@ def build_market_brief(result, plan):
         ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
-        L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%")
+        L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f})")
         wy = ctx4.get("wyckoff")
         if wy:
             ev_map = {"spring": f"Spring假跌破收回({wy['event_vol']},{wy['event_age']}根前)——吸筹末段信号,偏多",
