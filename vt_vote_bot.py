@@ -1488,7 +1488,19 @@ def format_layers(result, judge4, judge15, is_reversal=False):
     ctx4 = compute_4h_context(sym)
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
-        L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
+        px = result["price"]
+        # 事件/贴近边界(<1%)才显示 TR; 区间中部无事件时该行无信息量, 不显示
+        near = min(abs(px - wy["support"]), abs(px - wy["resistance"])) / px < 0.01
+        if wy.get("event"):
+            ev_map = {"spring": ("🔥 威科夫Spring: 假跌破TR下沿收回", "偏多", "主力打掉止损吸筹, 区间底部做多信号"),
+                      "upthrust": ("🔥 威科夫Upthrust: 假突破TR上沿回落", "偏空", "主力拉高出货, 区间顶部做空信号"),
+                      "joc_up": ("🚀 威科夫JOC: 实体收破TR上沿", "顺势做多", "真突破站稳, 上升行情启动确认"),
+                      "joc_down": ("🚀 威科夫JOC: 实体收破TR下沿", "顺势做空", "真跌破站稳, 下降行情启动确认")}
+            t, d, desc = ev_map[wy["event"]]
+            L.append(f"{t}({wy['event_vol']},{wy['event_age']}根前)")
+            L.append(f"   → {d}: {desc}")
+        if wy.get("event") or near:
+            L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, d4 or d15 or result["signal"])
     if lv:
         L.append(f"🧭 支撑: {lv['support']}")
