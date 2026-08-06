@@ -2004,12 +2004,8 @@ def main():
                     r3 = dict(result, signal=ai_dir)
                     sig_num = get_signal_number()
                     msg = format_signal(r3, plan, judge, sig_num)
-                    # 先发文字, 再发图
+                    # 只发文字, 图片已下线(用户决策 2026-08-06)
                     ok = send_telegram(msg)
-                    if not args.test:
-                        img = make_chart(r3, plan)
-                        if img:
-                            send_photo(img, format_caption(r3, plan))
                     save_prediction(sym, ai_dir, result["price"], plan)
                     last_signal[sym] = (ai_dir, time.time(), result["price"])
                     print(f"  {sym} → AI决策 {ai_dir} (置信{judge['confidence']}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
