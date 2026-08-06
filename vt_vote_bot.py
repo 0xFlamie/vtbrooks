@@ -1411,6 +1411,9 @@ def format_update(result, judge, plan=None):
         parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
         parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+    vw = compute_vwap(sym)
+    if vw:
+        parts.append(f"VWAP{'上' if vw[1] >= 0 else '下'}{vw[1]:+.1f}%")
     L.append("📊 " + " | ".join(parts))
     L.append(f"🚦 信号线: {'✅已达' + str(MIN_VOTES) + '票' if reached else '⏸未触发'}")
     return "\n".join(L)
@@ -1491,12 +1494,36 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
         parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
         parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+    vw = compute_vwap(sym)
+    if vw:
+        parts.append(f"VWAP{'上' if vw[1] >= 0 else '下'}{vw[1]:+.1f}%")
     L.append("📊 " + " | ".join(parts))
 
     stt = judge.get("stats") or {}
     if stt.get("total", 0) >= 5:
         L.append(f"📈 判对率: {round(stt['wins'] / stt['total'] * 100)}% ({stt['wins']}/{stt['total']})")
     return "\n".join(L)
+
+
+def compute_vwap(sym):
+    """日内 VWAP(UTC 0点锚定): 价格在VWAP上=买方控盘, 下=卖方控盘; 返回 (vwap, 偏离%)"""
+    try:
+        df = fetch_klines(sym, "15m", 100)
+        if df.empty:
+            return None
+        day_start = pd.Timestamp.now(tz="UTC").normalize().tz_localize(None)
+        d = df[df.index >= day_start]
+        if len(d) < 4:  # 刚跨日数据太少, 用近24h滚动
+            d = df.tail(96)
+        tp = (d["high"] + d["low"] + d["close"]) / 3
+        vsum = float(d["volume"].sum())
+        if vsum <= 0:
+            return None
+        vwap = float((tp * d["volume"]).sum()) / vsum
+        px = float(d["close"].iloc[-1])
+        return vwap, (px - vwap) / vwap * 100
+    except Exception:
+        return None
 
 
 def compute_levels(sym, sig):
@@ -1815,6 +1842,9 @@ def build_market_brief(result, plan):
         L.append(f"EMA20: ${lv['ema20']:.2f} | EMA50: ${lv['ema50']:.2f} | ATR14: ${lv['atr14']:.2f}")
         L.append(f"市场情绪: {rsi_word(lv['rsi14'])}")
         L.append(f"成交量: {lv['vol_word']} (量比 {lv['vol_ratio']:.2f})")
+        vw = compute_vwap(sym)
+        if vw:
+            L.append(f"VWAP(日内): ${vw[0]:.2f} | 价在VWAP{'上' if vw[1] >= 0 else '下'} ({vw[1]:+.2f}%)")
 
     # 合约情绪: 缺失字段直接省略
     st = fetch_sentiment(sym)
