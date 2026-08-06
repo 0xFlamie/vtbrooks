@@ -888,26 +888,33 @@ def verify_predictions():
     return messages
 
 
-def record_judge(result, plan, judge):
-    """裁判决策落盘(放行/否决都记), 供事后结算和复盘; 同向1小时内去重(相邻判例走同段行情, 不重复计);
-    上限500条(去重后约覆盖10天)"""
+def record_judge(result, judge4, judge15):
+    """双层判决落盘: 4h层(dir4h/conf4h/mag_tier)与15m层(dir15m/conf15m)分开记;
+    双层方向都不变且1h内有记录则去重; 上限500条"""
     ba = result.get("brooks") or {}
     lv = compute_levels(result["symbol"], result["signal"])
+    d4, d15 = judge4.get("direction"), judge15.get("direction")
     j = load_journal()
     if j["entries"]:
         last = j["entries"][-1]
-        if (last["symbol"] == result["symbol"] and last["direction"] == result["signal"]
+        if (last["symbol"] == result["symbol"] and last.get("dir4h") == d4 and last.get("dir15m") == d15
                 and (pd.Timestamp.now() - pd.Timestamp(last["time"])).total_seconds() < 3600):
             return
+    sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
+        "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
+    plan = calc_trade_plan(result["symbol"], sig0, result["price"], ba)
     j["entries"].append({
         "time": pd.Timestamp.now().isoformat(),
-        "symbol": result["symbol"], "direction": result["signal"],
+        "symbol": result["symbol"], "direction": d4 or d15 or sig0,
         "entry_px": plan["entry"], "sl": plan["sl"], "tp2": plan["tp2"],
         "atr": round(lv["atr14"], 2) if lv else None,  # 方向分归一化基准
-        "verdict": judge["verdict"], "confidence": judge["confidence"],
-        "mag_tier": judge.get("mag_tier"),  # AI 预期幅度档 0-3 (<1%/1-2%/2-3%/3%+)
-        "ai_direction": judge.get("direction"),  # AI 实际选择(LONG/SHORT/None), direction 字段是投票假定方向
-        "reasons": judge.get("reasons", []),
+        "verdict": "执行" if (d4 or d15) else "观望",
+        "confidence": max(judge4.get("confidence", -1), judge15.get("confidence", -1)),
+        "dir4h": d4, "conf4h": judge4.get("confidence"),
+        "dir15m": d15, "conf15m": judge15.get("confidence"),
+        "mag_tier": judge4.get("mag_tier"),  # 幅度档只有4h层给
+        "ai_direction": d4,  # 幅度档结算以4h层方向为准
+        "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
         "outcome": None, "judgment": None,
@@ -1428,6 +1435,76 @@ def trend4_label(ctx4):
     return "纠缠"
 
 
+def _dir_emoji(d, conf):
+    """方向醒目标注: 🟢多/🔴空/⚪观望/❔不可用"""
+    if conf == -1:
+        return "❔不可用"
+    return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
+
+
+def format_layers(result, judge4, judge15, is_reversal=False):
+    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注"""
+    sym = result["symbol"]
+    d4, d15 = judge4.get("direction"), judge15.get("direction")
+    c4, c15 = judge4.get("confidence", -1), judge15.get("confidence", -1)
+
+    if d4 and d4 == d15:
+        head, reso = ("🟢" if d4 == "LONG" else "🔴"), f"✅ 层级共振 {'做多' if d4 == 'LONG' else '做空'}"
+    elif d4 and d15:
+        head, reso = "⚠️", f"⚠️ 层级背离 (4h{'多' if d4 == 'LONG' else '空'} / 15m{'多' if d15 == 'LONG' else '空'})"
+    elif d4 or d15:
+        d = d4 or d15
+        head, reso = ("🟢" if d == "LONG" else "🔴"), f"单层信号 ({'4h' if d4 else '15m'}{['', '多', '空'][d == 'LONG' and 1 or 2]})"
+    else:
+        head, reso = "⚪", "⚪ 双层观望"
+
+    tag = "🔄反转加推 " if is_reversal else ""
+    L = []
+    L.append("=" * 36)
+    L.append(f"{head} {sym} {tag}信号 | {pd.Timestamp.now():%m-%d %H:%M}")
+    L.append(f"💰 现价 ${result['price']:.2f}")
+    L.append("")
+
+    tier = judge4.get("mag_tier")
+    tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
+    L.append(f"🕐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | 📏 {tier_label}" if tier_label else ""))
+    for rsn in (judge4.get("reasons") or [])[:2]:
+        L.append(f"📝 {rsn}")
+    bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
+    L.append(f"⚡ 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | 因子看涨 {bull_pct}%")
+    for rsn in (judge15.get("reasons") or [])[:2]:
+        L.append(f"📝 {rsn}")
+    L.append("")
+    L.append(reso)
+    L.append("")
+
+    ctx4 = compute_4h_context(sym)
+    if ctx4 and ctx4.get("wyckoff"):
+        wy = ctx4["wyckoff"]
+        L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
+    lv = compute_levels(sym, d4 or d15 or result["signal"])
+    if lv:
+        L.append(f"🧭 支撑: {lv['support']}")
+        L.append(f"🧭 压力: {lv['resistance']}")
+    L.append("")
+
+    parts = []
+    if lv:
+        parts.append(f"RSI{lv['rsi14']:.0f}")
+    st = fetch_sentiment(sym) or {}
+    if "funding_rate" in st:
+        fr = st["funding_rate"] * 100
+        parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+    if "taker_buy_sell_ratio" in st:
+        parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+    vw = compute_vwap(sym)
+    if vw:
+        parts.append(f"VWAP{'上' if vw[1] >= 0 else '下'}{vw[1]:+.1f}%")
+    if parts:
+        L.append("📊 " + " | ".join(parts))
+    return "\n".join(L)
+
+
 def trigger_line(result):
     """15m 短周期扳机行: 投票侧方向(非AI方向)+票数+15m Brooks形态/Spike。
     方向必须按看涨/看跌票数算——完整信号卡里 result['signal'] 已被 AI 方向覆盖, 直接用会自相矛盾"""
@@ -1791,27 +1868,28 @@ def fetch_sentiment(symbol):
     return s or None
 
 
-def build_market_brief(result, plan):
-    """结构化市场简报(纯文本): 客观陈列数据, 不预设方向, 由 AI 独立判断"""
-    sym = result["symbol"]; sig = result["signal"]
-    px = result["price"]
-    ba = result.get("brooks") or {}
-    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
-    ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
-    spike_cn = {1: "强势向上突破", -1: "强势向下跌破"}.get(ba.get("spike", 0), "无")
+def _sentiment_text(sym):
+    """合约情绪行(两层简报共用): 缺失字段直接省略"""
+    st = fetch_sentiment(sym)
+    if not st:
+        return None
+    parts = []
+    if "funding_rate" in st:
+        fr = st["funding_rate"] * 100
+        parts.append(f"资金费率 {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+    if "oi_change_1h_pct" in st:
+        parts.append(f"持仓量1h {st['oi_change_1h_pct']:+.1f}%")
+    if "long_short_ratio" in st:
+        parts.append(f"多空账户比 {st['long_short_ratio']:.2f}")
+    if "taker_buy_sell_ratio" in st:
+        parts.append(f"主动买卖比 {st['taker_buy_sell_ratio']:.2f}")
+    return "合约情绪: " + " | ".join(parts) if parts else None
 
-    # 投票分布: 三组各几票看涨(🟢)
-    groups = {"VT因子": [0, 8], "NOFX": [0, 4], "Brooks": [0, 6]}
-    for d in result["details"]:
-        name = d["name"]
-        key = "NOFX" if name.startswith("NOFX_") else "Brooks" if name.startswith("BROOKS_") else "VT因子"
-        if d["direction"] == "🟢":
-            groups[key][0] += 1
 
-    L = []
-    L.append(f"币种: {sym} | 现价: ${px:.2f}")
-
-    # ── 4h 大周期研判: 判方向和未来4-12h幅度档的主要依据 ──
+def build_brief_4h(result):
+    """4h 层简报: 只含大周期数据(趋势/Brooks4h/挤压/威科夫/合约情绪), 判方向和幅度档"""
+    sym = result["symbol"]; px = result["price"]
+    L = [f"币种: {sym} | 现价: ${px:.2f}"]
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4 = ctx4["brooks"]
@@ -1830,7 +1908,31 @@ def build_market_brief(result, plan):
                       "joc_down": "实体收破TR下沿(JOC)——下降启动确认,偏空"}
             ev = ev_map.get(wy["event"], "区间内,无Spring/Upthrust事件") if wy["event"] else "区间内,无Spring/Upthrust事件"
             L.append(f"威科夫4h: TR区间 ${wy['support']}-${wy['resistance']} (宽{wy['width_pct']}%) | {ev}")
+    st_line = _sentiment_text(sym)
+    if st_line:
+        L.append(st_line)
+    return "\n".join(L)
 
+
+def build_market_brief(result, plan=None):
+    """15m 层简报: 只含短周期数据(18因子投票/15m形态/关键位/RSI/量比/VWAP/合约情绪), 判入场方向"""
+    sym = result["symbol"]; sig = result["signal"]
+    px = result["price"]
+    ba = result.get("brooks") or {}
+    state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
+    ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
+    spike_cn = {1: "强势向上突破", -1: "强势向下跌破"}.get(ba.get("spike", 0), "无")
+
+    # 投票分布: 三组各几票看涨(🟢)
+    groups = {"VT因子": [0, 8], "NOFX": [0, 4], "Brooks": [0, 6]}
+    for d in result["details"]:
+        name = d["name"]
+        key = "NOFX" if name.startswith("NOFX_") else "Brooks" if name.startswith("BROOKS_") else "VT因子"
+        if d["direction"] == "🟢":
+            groups[key][0] += 1
+
+    L = []
+    L.append(f"币种: {sym} | 现价: ${px:.2f}")
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
@@ -1847,24 +1949,9 @@ def build_market_brief(result, plan):
         if vw:
             L.append(f"VWAP(日内): ${vw[0]:.2f} | 价在VWAP{'上' if vw[1] >= 0 else '下'} ({vw[1]:+.2f}%)")
 
-    # 合约情绪: 缺失字段直接省略
-    st = fetch_sentiment(sym)
-    if st:
-        parts = []
-        if "funding_rate" in st:
-            fr = st["funding_rate"] * 100
-            parts.append(f"资金费率 {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
-        if "oi_change_1h_pct" in st:
-            parts.append(f"持仓量1h {st['oi_change_1h_pct']:+.1f}%")
-        if "long_short_ratio" in st:
-            parts.append(f"多空账户比 {st['long_short_ratio']:.2f}")
-        if "taker_buy_sell_ratio" in st:
-            parts.append(f"主动买卖比 {st['taker_buy_sell_ratio']:.2f}")
-        if parts:
-            L.append("合约情绪: " + " | ".join(parts))
-
-    L.append(f"参考交易计划(按投票方向试算): 入场 ${plan['entry']:.2f} | 止损 ${plan['sl']:.2f} | "
-             f"TP1 ${plan['tp1']:.2f} | TP2 ${plan['tp2']:.2f} | 盈亏比 1:{plan['rr']:.1f}")
+    st_line = _sentiment_text(sym)
+    if st_line:
+        L.append(st_line)
     return "\n".join(L)
 
 
@@ -1876,23 +1963,8 @@ MAG_TIERS = ["<1%", "1-2%", "2-3%", "3%+"]
 MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
-def ai_judge(result, plan):
-    """LLM 裁判: 只根据当前简报(18项指标+4h研判+合约情绪)独立判方向和预期幅度档; 不可用时观望。
-    历史胜率/判例/错题本不注入 prompt——历史胜率不能作为推方向的依据(用户决策 2026-08-05)"""
-    brief = build_market_brief(result, plan)
-    wins, total = judge_stats()  # 仅用于返回 stats 展示, 不进 prompt
-
-    system = ("你是交易员，根据市场数据独立判断方向，遵循 Al Brooks 价格行为学原则。"
-              "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
-              "以4h研判(趋势排列/Brooks4h/波动率挤压分位)为主要方向依据，15m数据只用于评估入场时机。"
-              "大行情(3%+)通常只出现在波动率挤压低分位(<40%)或一方仓位拥挤时。"
-              "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
-              "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
-              "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
-              "magnitude 是你对未来4-12小时最大涨跌幅的预期档位，与方向无关也要给。"
-              "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR/挤压分位)，只陈述数据和事实关系，"
-              "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。"
-              "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。")
+def _judge_call(system, brief):
+    """通用裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 任何失败返回 JUDGE_UNAVAILABLE"""
     try:
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
@@ -1902,9 +1974,7 @@ def ai_judge(result, plan):
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
         if r.status_code != 200:
             print(f"WARN: 裁判API {r.status_code}: {r.text[:200]}")
-            out = dict(JUDGE_UNAVAILABLE)
-            out["stats"] = {"wins": wins, "total": total}
-            return out
+            return dict(JUDGE_UNAVAILABLE)
         text = r.json()["choices"][0]["message"]["content"]
         # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
         m = re.search(r"\{[^{}]*\}", text, re.S)
@@ -1925,13 +1995,42 @@ def ai_judge(result, plan):
             reasons = [str(data.get("reason", "")).strip() or "无理由"]
         reasons = [str(x).strip() for x in reasons[:3]]
         return {"verdict": "执行" if direction else "观望", "direction": direction,
-                "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons,
-                "stats": {"wins": wins, "total": total}}
+                "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons}
     except Exception as e:
         print(f"WARN: 裁判异常 {type(e).__name__}: {e}")
-        out = dict(JUDGE_UNAVAILABLE)
-        out["stats"] = {"wins": wins, "total": total}
-        return out
+        return dict(JUDGE_UNAVAILABLE)
+
+
+SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的方向和最大涨跌幅。"
+          "可以做多、做空或观望。大行情(3%+)通常只出现在波动率挤压低分位(<40%)或一方仓位拥挤时。"
+          "威科夫Spring/JOC向上偏多, Upthrust/JOC向下偏空。"
+          "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
+          "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
+          "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
+          "magnitude 与方向无关也要给。每条理由必须引用简报里的具体数字，只陈述数据和事实关系，"
+          "禁止比喻和主观推测词，每条不超过30字。")
+
+SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时的方向(入场时机)。"
+           "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
+           "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
+           "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
+           "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/VWAP)，只陈述数据和事实关系，"
+           "禁止比喻和主观推测词，每条不超过30字。")
+
+
+def ai_judge_4h(result):
+    """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)"""
+    return _judge_call(SYS_4H, build_brief_4h(result))
+
+
+def ai_judge_15m(result):
+    """15m 层裁判: 短周期入场方向"""
+    return _judge_call(SYS_15M, build_market_brief(result))
+
+
+def ai_judge(result, plan=None):
+    """兼容入口(旧调用/judge-test): 15m 层裁判"""
+    return ai_judge_15m(result)
 
 
 def main():
@@ -1961,7 +2060,7 @@ def main():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
 
-    print(f"VT投票信号机器人 v3.2 | AI主决策(方向+幅度档, 纯指标快照) | 每3分钟扫描, 15分钟快报 | 监控: {args.symbols}")
+    print(f"VT投票信号机器人 v4.0 | 双层AI(4h方向+幅度档 / 15m入场) | 15分钟定时信号+翻向加推 | 监控: {args.symbols}")
     print(f"{'='*60}")
 
     print("预加载因子...", end=" ", flush=True)
@@ -1981,21 +2080,17 @@ def main():
         print(json.dumps(lessons, ensure_ascii=False, indent=2) if lessons else "无错题本")
         return
 
-    last_signal = {}  # sym → (dir, time, px), 上次推送的 AI 信号, 用于方向去重
+    last_dirs = {}     # sym → {"4h": dir, "15m": dir}, 上次扫描双层方向, 翻向检测用
+    judge4_cache = {}  # sym → (bar_key, judge4), 4h 层每根4h收线重判一次(根内输入不变, 高频重判只会抖动)
 
     while True:
         now = pd.Timestamp.now()
         minute = now.minute
         is_15m = minute % 15 == 0  # :00 :15 :30 :45
 
-        if is_15m:
-            print(f"\n[{now.strftime('%H:%M:%S')}] 15分钟扫描(带快报)...")
-        else:
-            print(f"\n[{now.strftime('%H:%M:%S')}] 3分钟AI扫描...")
+        print(f"\n[{now.strftime('%H:%M:%S')}] {'15分钟定时' if is_15m else '3分钟'}扫描...")
 
-        # 结算通知已下线(2026-08-06): 0.6%口径作废, 信号结算由判例本(MFE/方向分)承担, 不再推送
-
-        # ── 裁判判例虚拟结算 (+错题本复盘) ──
+        # ── 判例结算 (+错题本复盘) ──
         try:
             verify_journal()
             maybe_update_lessons()
@@ -2007,49 +2102,34 @@ def main():
                 print(f"  {sym}...", end=" ", flush=True)
                 result = vote(sym, config)
 
-                # ── 每次扫描都由 AI 主决策并记判例(不省API调用); 多/空/观望全由 AI 判, 投票只是简报里的参考数据 ──
-                # NEUTRAL 时用票多一方作假定方向算参考 plan/shadow 判例
-                sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
-                    "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
-                r2 = result if result["signal"] != "NEUTRAL" else dict(result, signal=sig0)
-                plan = calc_trade_plan(sym, sig0, result["price"], result.get("brooks") or {})
-                judge = ai_judge(r2, plan)
-                record_judge(r2, plan, judge)  # 每次决策都记(观望也记, shadow按投票假定方向结算)
-                ai_dir = judge.get("direction")
-                prev = last_signal.get(sym)
-                if ai_dir and judge["confidence"] >= 60 and (not prev or prev[0] != ai_dir):
-                    # AI 定向且高置信, 方向有变化才开单推送; 与投票假定不同则按 AI 方向重算 plan
-                    if ai_dir != sig0:
-                        plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
-                    if judge.get("mag_tier") == 0:
-                        # AI 预期幅度<1%, 不构成出手级别, 降级快报
-                        print(f"AI决策 {ai_dir} 但预期幅度<1%, 降级快报")
-                        if is_15m:
-                            send_telegram(format_update(result, judge, plan))
-                            print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
-                        continue
-                    if plan["rr"] < 1.5:
-                        # 盈亏结构不达标(止损到支撑/压力的距离比太窄), 方向对也不开单
-                        print(f"AI决策 {ai_dir} 但盈亏比1:{plan['rr']:.1f}<1.5, 结构不达标跳过")
-                        if is_15m:
-                            send_telegram(format_update(result, judge, plan))
-                            print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
-                        continue
-                    r3 = dict(result, signal=ai_dir)
-                    sig_num = get_signal_number()
-                    msg = format_signal(r3, plan, judge, sig_num)
-                    # 只发文字, 图片已下线(用户决策 2026-08-06)
-                    ok = send_telegram(msg)
-                    save_prediction(sym, ai_dir, result["price"], plan)
-                    last_signal[sym] = (ai_dir, time.time(), result["price"])
-                    print(f"  {sym} → AI决策 {ai_dir} (置信{judge['confidence']}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
-                    continue
-                # AI 观望/低置信/方向未变/不可用 → 仅15m整点发紧凑快报, 其余只记日志不刷屏
-                if is_15m:
-                    send_telegram(format_update(result, judge, plan))
-                    print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
+                # ── 4h 层: 每根4h收线重判一次, 中间用缓存 ──
+                df4 = fetch_klines(sym, "4h", 3, drop_incomplete=False)
+                bar_key = str(df4.index[-1]) if not df4.empty else ""
+                ck = judge4_cache.get(sym)
+                if not ck or ck[0] != bar_key:
+                    judge4 = ai_judge_4h(result)
+                    judge4_cache[sym] = (bar_key, judge4)
+                    print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
                 else:
-                    print(f"AI观望 (方向{ai_dir or '无'}, 置信{judge['confidence']}, 投票{result['votes']})")
+                    judge4 = ck[1]
+
+                # ── 15m 层: 每次扫描都判 ──
+                judge15 = ai_judge_15m(result)
+                record_judge(result, judge4, judge15)
+
+                dirs = {"4h": judge4.get("direction"), "15m": judge15.get("direction")}
+                prev = last_dirs.get(sym)
+                # 翻向: 任一层新方向非空且与上次不同 → 加推反转信号
+                reversal = bool(prev) and any(dirs[k] and dirs[k] != prev.get(k) for k in dirs)
+                last_dirs[sym] = dirs
+
+                if is_15m or reversal:
+                    msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m)
+                    ok = send_telegram(msg)
+                    tag = "定时信号" if is_15m else "🔄反转加推"
+                    print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
+                else:
+                    print(f"4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'} (投票{result['votes']})")
             except Exception as e:
                 print(f"错误: {e}")
 
