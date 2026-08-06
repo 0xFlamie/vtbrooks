@@ -1429,11 +1429,12 @@ def trend4_label(ctx4):
 
 
 def trigger_line(result):
-    """15m 短周期扳机行: 投票方向+票数+15m Brooks形态/Spike, 与 4h 研判行对仗"""
+    """15m 短周期扳机行: 投票侧方向(非AI方向)+票数+15m Brooks形态/Spike。
+    方向必须按看涨/看跌票数算——完整信号卡里 result['signal'] 已被 AI 方向覆盖, 直接用会自相矛盾"""
     ba = result.get("brooks") or {}
-    sig = result["signal"]
-    t_arrow = "🔺多" if sig == "LONG" else "🔻空" if sig == "SHORT" else "⏸中性"
-    parts = [f"{t_arrow} ({result['votes']}票)"]
+    bull, bear = result["bullish"], result["bearish"]
+    t_arrow = "🔺多" if bull > bear else "🔻空" if bear > bull else "⏸中性"
+    parts = [f"{t_arrow} (看涨{bull}/看跌{bear})"]
     if ba.get("setups"):
         parts.append("形态: " + "; ".join(ba["setups"]))
     spike = ba.get("spike", 0)
