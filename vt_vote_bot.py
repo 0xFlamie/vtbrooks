@@ -905,12 +905,15 @@ def record_judge(result, plan, judge):
         "entry_px": plan["entry"], "sl": plan["sl"], "tp2": plan["tp2"],
         "atr": round(lv["atr14"], 2) if lv else None,  # 方向分归一化基准
         "verdict": judge["verdict"], "confidence": judge["confidence"],
+        "mag_tier": judge.get("mag_tier"),  # AI 预期幅度档 0-3 (<1%/1-2%/2-3%/3%+)
         "ai_direction": judge.get("direction"),  # AI 实际选择(LONG/SHORT/None), direction 字段是投票假定方向
         "reasons": judge.get("reasons", []),
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
         "outcome": None, "judgment": None,
         "dir_score_2h": None, "dir_score_4h": None,  # 方向分: ±ATR 单位, 结算时填
+        "mfe_long_12h": None, "mfe_short_12h": None,  # +12h 双向最大偏移%, 幅度档判定用
+        "tier_correct": None,
     })
     if len(j["entries"]) > 500:
         j["entries"] = j["entries"][-500:]
@@ -927,7 +930,8 @@ def verify_journal():
     for e in j["entries"]:
         need_plan = e.get("outcome") is None
         need_dir = e.get("dir_score_4h") is None
-        if not (need_plan or need_dir):
+        need_mfe = "mfe_long_12h" in e and e.get("mfe_long_12h") is None  # 老判例无此字段则跳过
+        if not (need_plan or need_dir or need_mfe):
             continue
         et = pd.Timestamp(e["time"])
         if et.tz is None:
@@ -959,6 +963,18 @@ def verify_journal():
                 if len(later):
                     e[key] = round(sign * (float(later["close"].iloc[0]) - float(e["entry_px"])) / e["atr"], 2)
                     changed = True
+
+        # 双向 MFE(+12h): 判 AI 预期幅度档是否兑现; 幅度档以下限为准, 超出不算错
+        if need_mfe:
+            win12 = bars[bars.index <= et + pd.Timedelta(hours=12)]
+            if age >= 12 * 3600 and len(win12) >= 2:
+                entry = float(e["entry_px"])
+                e["mfe_long_12h"] = round((float(win12["high"].max()) - entry) / entry * 100, 2)
+                e["mfe_short_12h"] = round((entry - float(win12["low"].min())) / entry * 100, 2)
+                if e.get("mag_tier") is not None and e.get("ai_direction"):
+                    mfe_dir = e["mfe_long_12h"] if e["ai_direction"] == "LONG" else e["mfe_short_12h"]
+                    e["tier_correct"] = mfe_dir >= MAG_TIER_FLOOR[e["mag_tier"]]
+                changed = True
 
         # plan 结算: 先碰 SL/TP2 走K线
         if need_plan:
@@ -1361,10 +1377,19 @@ def format_update(result, judge, plan=None):
     if judge.get("confidence", -1) >= 0:
         j_emoji = "✅" if judge["verdict"] == "执行" else "🛑"
         L.append(f"🤖 AI判断: {j_emoji}{judge['verdict']} (置信度{judge['confidence']})")
+        tier = judge.get("mag_tier")
+        if tier is not None:
+            tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier]
+            L.append(f"📏 预期幅度(4-12h): {tier_label}")
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
             L.append(f"📝 理由{i+1}: {rsn}")
     else:
         L.append("🤖 AI判断: 裁判不可用")
+
+    ctx4 = compute_4h_context(sym)
+    if ctx4:
+        b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
+        L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
 
     # 交易计划(止盈止损) — NEUTRAL 时按票多一方的假定方向
     if plan:
@@ -1409,10 +1434,19 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     judge = judge or {}
     if judge.get("confidence", -1) >= 0:
         L.append(f"🤖 AI判断: ✅{judge['verdict']} (置信度{judge['confidence']})")
+        tier = judge.get("mag_tier")
+        if tier is not None:
+            tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier]
+            L.append(f"📏 预期幅度(4-12h): {tier_label}")
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
             L.append(f"📝 理由{i+1}: {rsn}")
     else:
         L.append("🤖 AI判断: 裁判不可用")
+
+    ctx4 = compute_4h_context(sym)
+    if ctx4:
+        b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
+        L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
 
     arrow = "🔺" if sig == "LONG" else "🔻"
     L.append(f"🧭 方向: {arrow}{dir_cn}")
@@ -1463,6 +1497,28 @@ def compute_levels(sym, sig):
         return {"support": support, "resistance": resistance, "rsi14": rsi14,
                 "atr14": atr14, "ema20": ema20, "ema50": ema50,
                 "vol_ratio": vol_ratio, "vol_word": vol_word}
+    except Exception:
+        return None
+
+
+def compute_4h_context(sym):
+    """4h 大周期研判: 趋势排列/Brooks4h/波动率挤压分位/4h ATR%; 大行情(3%+)几乎只从低挤压分位+趋势共振里长出来"""
+    try:
+        df = fetch_klines(sym, "4h", 200)
+        if df.empty or len(df) < 60:
+            return None
+        c, h, l = df["close"], df["high"], df["low"]
+        ema20 = float(c.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = float(c.ewm(span=50, adjust=False).mean().iloc[-1])
+        # 波动率挤压: 当前布林带宽(20,2)在近200根中的分位; <20% = 极度压缩, 大行情临近
+        ma = c.rolling(20).mean()
+        bbw = 4 * c.rolling(20).std() / ma
+        squeeze_pct = float(bbw.iloc[:-1].rank(pct=True).iloc[-1] * 100)
+        atr4h_pct = float((h - l).tail(14).mean()) / float(c.iloc[-1]) * 100
+        ba4 = brooks_analyze(df)
+        return {"trend_up": ema20 > ema50, "above_ema20": float(c.iloc[-1]) > ema20,
+                "ema20": ema20, "ema50": ema50,
+                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "brooks": ba4}
     except Exception:
         return None
 
@@ -1658,7 +1714,20 @@ def build_market_brief(result, plan):
 
     L = []
     L.append(f"币种: {sym} | 现价: ${px:.2f}")
-    L.append(f"市场状态: {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
+
+    # ── 4h 大周期研判: 判方向和未来4-12h幅度档的主要依据 ──
+    ctx4 = compute_4h_context(sym)
+    if ctx4:
+        b4 = ctx4["brooks"]
+        state4_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(b4.get("state"), "未知")
+        sq = ctx4["squeeze_pct"]
+        sq_word = "极度压缩,大行情酝酿中" if sq < 20 else "压缩中" if sq < 40 else "正常波动" if sq < 70 else "高波动(行情已释放)"
+        ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
+        L.append(f"4h研判: 均线{'多' if ctx4['trend_up'] else '空'}头排列, 价在4hEMA20{'上' if ctx4['above_ema20'] else '下'} | "
+                 f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
+        L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%")
+
+    L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
              " | ".join(f"{k} 看涨{v[0]}/{v[1]}" for k, v in groups.items()) + ")")
@@ -1693,20 +1762,28 @@ def build_market_brief(result, plan):
 
 
 # 裁判不可用时的保守兜底: 观望(不发信号), 避免风控失效时裸奔
-JUDGE_UNAVAILABLE = {"verdict": "观望", "direction": None, "confidence": -1, "reasons": ["裁判不可用，保守观望"]}
+JUDGE_UNAVAILABLE = {"verdict": "观望", "direction": None, "confidence": -1, "mag_tier": None, "reasons": ["裁判不可用，保守观望"]}
+
+# 预期幅度档: 未来4-12h最大有利偏移(MFE)档位
+MAG_TIERS = ["<1%", "1-2%", "2-3%", "3%+"]
+MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
 def ai_judge(result, plan):
-    """LLM 裁判: 只根据当前简报(18项指标+合约情绪)独立判方向; 裁判不可用时观望, 不发信号。
+    """LLM 裁判: 只根据当前简报(18项指标+4h研判+合约情绪)独立判方向和预期幅度档; 不可用时观望。
     历史胜率/判例/错题本不注入 prompt——历史胜率不能作为推方向的依据(用户决策 2026-08-05)"""
     brief = build_market_brief(result, plan)
     wins, total = judge_stats()  # 仅用于返回 stats 展示, 不进 prompt
 
     system = ("你是交易员，根据市场数据独立判断方向，遵循 Al Brooks 价格行为学原则。"
               "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
-              "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", \"confidence\": 0-100 整数, "
-              "\"reasons\": [2-3条理由]}。"
-              "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR)，只陈述数据和事实关系，"
+              "以4h研判(趋势排列/Brooks4h/波动率挤压分位)为主要方向依据，15m数据只用于评估入场时机。"
+              "大行情(3%+)通常只出现在波动率挤压低分位(<40%)或一方仓位拥挤时。"
+              "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
+              "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
+              "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
+              "magnitude 是你对未来4-12小时最大涨跌幅的预期档位，与方向无关也要给。"
+              "每条理由必须引用简报里的具体数字(价格/RSI/量比/票数/ATR/挤压分位)，只陈述数据和事实关系，"
               "禁止比喻，禁止\"可能/随时/容易/大概率/感觉\"等主观推测词，每条不超过30字。"
               "简报含合约情绪数据(资金费率/持仓量变化/多空账户比/主动买卖比)，评估时必须考虑拥挤度和资金动向。")
     try:
@@ -1729,12 +1806,19 @@ def ai_judge(result, plan):
         d_str = str(data.get("direction", ""))
         direction = "LONG" if "多" in d_str else "SHORT" if "空" in d_str else None
         confidence = int(data.get("confidence", -1))
+        # 幅度档: 解析 "3%+" / "2-3%" / "1-2%" / "<1%" → tier 0-3, 无法解析→None
+        mag_str = str(data.get("magnitude", ""))
+        mag_tier = None
+        for t, label in ((3, "3%+"), (2, "2-3"), (1, "1-2"), (0, "<1")):
+            if label in mag_str:
+                mag_tier = t
+                break
         reasons = data.get("reasons")
         if not isinstance(reasons, list) or not reasons:
             reasons = [str(data.get("reason", "")).strip() or "无理由"]
         reasons = [str(x).strip() for x in reasons[:3]]
         return {"verdict": "执行" if direction else "观望", "direction": direction,
-                "confidence": confidence, "reasons": reasons,
+                "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons,
                 "stats": {"wins": wins, "total": total}}
     except Exception as e:
         print(f"WARN: 裁判异常 {type(e).__name__}: {e}")
@@ -1770,7 +1854,7 @@ def main():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
 
-    print(f"VT投票信号机器人 v3.1 | AI主决策(DeepSeek裁判, 纯指标快照) | 每3分钟扫描, 15分钟快报 | 监控: {args.symbols}")
+    print(f"VT投票信号机器人 v3.2 | AI主决策(方向+幅度档, 纯指标快照) | 每3分钟扫描, 15分钟快报 | 监控: {args.symbols}")
     print(f"{'='*60}")
 
     print("预加载因子...", end=" ", flush=True)
@@ -1841,6 +1925,13 @@ def main():
                     # AI 定向且高置信, 方向有变化才开单推送; 与投票假定不同则按 AI 方向重算 plan
                     if ai_dir != sig0:
                         plan = calc_trade_plan(sym, ai_dir, result["price"], result.get("brooks") or {})
+                    if judge.get("mag_tier") == 0:
+                        # AI 预期幅度<1%, 不构成出手级别, 降级快报
+                        print(f"AI决策 {ai_dir} 但预期幅度<1%, 降级快报")
+                        if is_15m:
+                            send_telegram(format_update(result, judge, plan))
+                            print(f"  {sym} 快报已推送 ({result['signal']} {result['votes']}票)")
+                        continue
                     if plan["rr"] < 1.5:
                         # 盈亏结构不达标(止损到支撑/压力的距离比太窄), 方向对也不开单
                         print(f"AI决策 {ai_dir} 但盈亏比1:{plan['rr']:.1f}<1.5, 结构不达标跳过")
