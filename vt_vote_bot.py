@@ -1384,7 +1384,7 @@ def format_update(result, judge, plan=None):
         j_emoji = "✅" if judge["verdict"] == "执行" else "🛑"
         tier = judge.get("mag_tier")
         tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-        L.append(f"🤖 AI: {j_emoji}{judge['verdict']} (置信{judge['confidence']})" + (f" | 📏 {tier_label}" if tier_label else ""))
+        L.append(f"🤖 AI: {j_emoji}{judge['verdict']} (置信{judge['confidence']})" + (f" | {tier_label}" if tier_label else ""))
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
             L.append(f"📝 理由{i+1}: {rsn}")
     else:
@@ -1467,7 +1467,7 @@ def format_layers(result, judge4, judge15, is_reversal=False):
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-    L.append(f"🕐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | 📏 {tier_label}" if tier_label else ""))
+    L.append(f"🕐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     for rsn in (judge4.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
@@ -1539,7 +1539,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
         tier = judge.get("mag_tier")
         tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
         head = f"🤖 AI: ✅{dir_cn} (置信{judge['confidence']})"
-        L.append(head + (f" | 📏 {tier_label}" if tier_label else ""))
+        L.append(head + (f" | {tier_label}" if tier_label else ""))
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
             L.append(f"📝 理由{i+1}: {rsn}")
     else:
