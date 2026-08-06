@@ -1390,6 +1390,7 @@ def format_update(result, judge, plan=None):
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
         L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
+    L.append(trigger_line(result))
 
     # 交易计划(止盈止损) — NEUTRAL 时按票多一方的假定方向
     if plan:
@@ -1415,6 +1416,20 @@ def format_update(result, judge, plan=None):
     L.append("📊 数据: " + " | ".join(parts))
     L.append(f"🚦 信号线: {'✅已达' + str(MIN_VOTES) + '票' if reached else '⏸未触发'}")
     return "\n".join(L)
+
+
+def trigger_line(result):
+    """15m 短周期扳机行: 投票方向+票数+15m Brooks形态/Spike, 与 4h 研判行对仗"""
+    ba = result.get("brooks") or {}
+    sig = result["signal"]
+    t_arrow = "🔺多" if sig == "LONG" else "🔻空" if sig == "SHORT" else "⏸中性"
+    parts = [f"{t_arrow} ({result['votes']}票)"]
+    if ba.get("setups"):
+        parts.append("形态: " + "; ".join(ba["setups"]))
+    spike = ba.get("spike", 0)
+    if spike:
+        parts.append("Spike: " + ("强势向上突破" if spike == 1 else "强势向下跌破"))
+    return "⚡ 15m扳机: " + " | ".join(parts)
 
 
 def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=False):
@@ -1447,6 +1462,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
         L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
+    L.append(trigger_line(result))
 
     arrow = "🔺" if sig == "LONG" else "🔻"
     L.append(f"🧭 方向: {arrow}{dir_cn}")
