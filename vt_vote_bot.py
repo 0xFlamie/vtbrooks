@@ -1534,7 +1534,45 @@ def compute_4h_context(sym):
         ba4 = brooks_analyze(df)
         return {"trend_up": ema20 > ema50, "above_ema20": float(c.iloc[-1]) > ema20,
                 "ema20": ema20, "ema50": ema50,
-                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "brooks": ba4}
+                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "brooks": ba4,
+                "wyckoff": _wyckoff(df, atr4h_pct)}
+    except Exception:
+        return None
+
+
+def _wyckoff(df, atr4h_pct):
+    """4h 威科夫: 近60根(约10天)交易区间(TR)识别 + 近6根 Spring/Upthrust/JOC 事件检测。
+    Spring=假跌破TR下沿收回(吸筹末段, 做多信号); Upthrust=假突破TR上沿回落(派发末段, 做空信号);
+    JOC=实体收过TR边界(趋势启动确认)"""
+    try:
+        c, h, l = df["close"].values, df["high"].values, df["low"].values
+        v = df["volume"].values
+        n = len(c)
+        if n < 70:
+            return None
+        win = slice(n - 64, n - 4)
+        sup, res = float(l[win].min()), float(h[win].max())
+        width_pct = (res - sup) / ((res + sup) / 2) * 100
+        # TR 宽度上限随波动率自适应: 约8倍4h ATR (ETH 4h 10天区间常见5-10%), 下限0.3%防死盘
+        if width_pct > max(6.0, 8 * atr4h_pct) or width_pct < 0.3:
+            return None
+        vavg = float(np.mean(v[-20:])) or 1.0
+        out = {"tr": True, "support": round(sup, 2), "resistance": round(res, 2),
+               "width_pct": round(width_pct, 1), "event": None, "event_age": None, "event_vol": None}
+        for i in range(n - 6, n):
+            age = n - 1 - i
+            vw = "放量" if v[i] > 1.5 * vavg else "缩量" if v[i] < 0.8 * vavg else "平量"
+            if l[i] < sup * 0.999 and c[i] > sup:  # 假跌破收回
+                out.update(event="spring", event_age=age, event_vol=vw)
+            elif h[i] > res * 1.001 and c[i] < res:  # 假突破回落
+                out.update(event="upthrust", event_age=age, event_vol=vw)
+        if out["event"] is None:  # 无假动作才看 JOC 实体突破
+            atr_abs = atr4h_pct / 100 * c[-1]
+            if c[-1] > res and c[-1] - df["open"].values[-1] > atr_abs:
+                out.update(event="joc_up", event_age=0, event_vol="放量" if v[-1] > 1.5 * vavg else "平量")
+            elif c[-1] < sup and df["open"].values[-1] - c[-1] > atr_abs:
+                out.update(event="joc_down", event_age=0, event_vol="放量" if v[-1] > 1.5 * vavg else "平量")
+        return out
     except Exception:
         return None
 
@@ -1742,6 +1780,14 @@ def build_market_brief(result, plan):
         L.append(f"4h研判: 均线{'多' if ctx4['trend_up'] else '空'}头排列, 价在4hEMA20{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
         L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%")
+        wy = ctx4.get("wyckoff")
+        if wy:
+            ev_map = {"spring": f"Spring假跌破收回({wy['event_vol']},{wy['event_age']}根前)——吸筹末段信号,偏多",
+                      "upthrust": f"Upthrust假突破回落({wy['event_vol']},{wy['event_age']}根前)——派发末段信号,偏空",
+                      "joc_up": "实体收破TR上沿(JOC)——上升启动确认,偏多",
+                      "joc_down": "实体收破TR下沿(JOC)——下降启动确认,偏空"}
+            ev = ev_map.get(wy["event"], "区间内,无Spring/Upthrust事件") if wy["event"] else "区间内,无Spring/Upthrust事件"
+            L.append(f"威科夫4h: TR区间 ${wy['support']}-${wy['resistance']} (宽{wy['width_pct']}%) | {ev}")
 
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
