@@ -1471,7 +1471,14 @@ def format_layers(result, judge4, judge15, is_reversal=False):
     for rsn in (judge4.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
-    L.append(f"⚡ 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | 因子看涨 {bull_pct}%")
+    # 因子占比跟方向对齐: 判空显示看跌, 判多显示看涨, 观望显示双侧
+    if d15 == "SHORT":
+        fac = f"因子看跌 {100 - bull_pct}%"
+    elif d15 == "LONG":
+        fac = f"因子看涨 {bull_pct}%"
+    else:
+        fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
+    L.append(f"⚡ 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     for rsn in (judge15.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     L.append("")
