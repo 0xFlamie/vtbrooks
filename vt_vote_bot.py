@@ -1632,6 +1632,54 @@ def compute_levels(sym, sig):
         return None
 
 
+SQ_STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "squeeze_stats.json")
+
+
+def squeeze_stats(sym):
+    """挤压分位的历史条件概率: 近1000根4h(约166天), 按挤压分位档统计随后12h(3根)最大振幅≥1%/2%/3%的比例;
+    每天缓存一次(HL K线), 让简报说'历史上这个档位之后有多大行情'而不是干巴巴的分位数"""
+    today = pd.Timestamp.now().strftime("%Y-%m-%d")
+    try:
+        cache = json.load(open(SQ_STATS_FILE)) if os.path.exists(SQ_STATS_FILE) else {}
+        if cache.get(sym, {}).get("date") == today:
+            return cache[sym]["stats"]
+    except Exception:
+        cache = {}
+    try:
+        coin = sym.replace("USDT", "").replace("USDC", "")
+        t1 = int(time.time() * 1000)
+        d = _http.post("https://api.hyperliquid.xyz/info", timeout=15, json={
+            "type": "candleSnapshot",
+            "req": {"coin": coin, "interval": "4h", "startTime": t1 - 1000 * 4 * 3600 * 1000, "endTime": t1}}).json()
+        if not isinstance(d, list) or len(d) < 300:
+            return None
+        df = pd.DataFrame([{"c": float(x["c"]), "h": float(x["h"]), "l": float(x["l"])} for x in d])
+        ma = df["c"].rolling(20).mean()
+        bbw = 4 * df["c"].rolling(20).std() / ma
+        # 每根的挤压分位(对过去200根) + 随后12h最大振幅
+        pct = bbw.rolling(200).apply(lambda w: (w.iloc[-1] > w).mean() * 100, raw=False)
+        fwd = pd.Series([max(df["h"].iloc[i + 1:i + 4].max() - df["c"].iloc[i],
+                             df["c"].iloc[i] - df["l"].iloc[i + 1:i + 4].min()) / df["c"].iloc[i] * 100
+                         if i + 1 < len(df) else np.nan for i in range(len(df))], index=df.index)
+        stats = {}
+        for lo, hi in ((0, 20), (20, 40), (40, 70), (70, 100)):
+            m = (pct >= lo) & (pct < hi) & fwd.notna()
+            n = int(m.sum())
+            if n >= 10:
+                stats[f"{lo}-{hi}"] = {"n": n,
+                                       "p1": round(float((fwd[m] >= 1).mean()) * 100),
+                                       "p2": round(float((fwd[m] >= 2).mean()) * 100),
+                                       "p3": round(float((fwd[m] >= 3).mean()) * 100)}
+        cache[sym] = {"date": today, "stats": stats}
+        try:
+            json.dump(cache, open(SQ_STATS_FILE, "w"))
+        except Exception:
+            pass
+        return stats or None
+    except Exception:
+        return None
+
+
 def compute_4h_context(sym):
     """4h 大周期研判: 趋势排列/Brooks4h/波动率挤压分位/4h ATR%; 大行情(3%+)几乎只从低挤压分位+趋势共振里长出来"""
     try:
@@ -1900,6 +1948,12 @@ def build_brief_4h(result):
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
         L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f})")
+        sst = squeeze_stats(sym)
+        if sst:
+            b = "0-20" if sq < 20 else "20-40" if sq < 40 else "40-70" if sq < 70 else "70-100"
+            if b in sst:
+                t = sst[b]
+                L.append(f"历史统计(近半年): 挤压{b}%档共{t['n']}次, 随后12h振幅≥1%占{t['p1']}%, ≥2%占{t['p2']}%, ≥3%占{t['p3']}%")
         wy = ctx4.get("wyckoff")
         if wy:
             ev_map = {"spring": f"Spring假跌破收回({wy['event_vol']},{wy['event_age']}根前)——吸筹末段信号,偏多",
