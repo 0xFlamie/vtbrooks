@@ -1387,7 +1387,7 @@ def format_update(result, judge, plan=None):
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
+        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
     L.append(trigger_line(result))
     L.append("")
 
@@ -1414,6 +1414,15 @@ def format_update(result, judge, plan=None):
     L.append("📊 " + " | ".join(parts))
     L.append(f"🚦 信号线: {'✅已达' + str(MIN_VOTES) + '票' if reached else '⏸未触发'}")
     return "\n".join(L)
+
+
+def trend4_label(ctx4):
+    """4h 均线排列标签: 全顺多排/全逆空排/否则纠缠(口径 EMA7/25/99, 与币安盘面一致)"""
+    if ctx4["trend_up"]:
+        return "多排"
+    if ctx4.get("trend_dn"):
+        return "空排"
+    return "纠缠"
 
 
 def trigger_line(result):
@@ -1459,7 +1468,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
+        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
     L.append(trigger_line(result))
     L.append("")
 
@@ -1525,16 +1534,20 @@ def compute_4h_context(sym):
         if df.empty or len(df) < 60:
             return None
         c, h, l = df["close"], df["high"], df["low"]
-        ema20 = float(c.ewm(span=20, adjust=False).mean().iloc[-1])
-        ema50 = float(c.ewm(span=50, adjust=False).mean().iloc[-1])
+        # 趋势排列口径与币安盘面一致: EMA7/25/99; 全顺=多排/空排, 否则纠缠
+        ema7 = float(c.ewm(span=7, adjust=False).mean().iloc[-1])
+        ema25 = float(c.ewm(span=25, adjust=False).mean().iloc[-1])
+        ema99 = float(c.ewm(span=99, adjust=False).mean().iloc[-1])
+        trend_up = ema7 > ema25 > ema99
+        trend_dn = ema7 < ema25 < ema99
         # 波动率挤压: 当前布林带宽(20,2)在近200根中的分位; <20% = 极度压缩, 大行情临近
         ma = c.rolling(20).mean()
         bbw = 4 * c.rolling(20).std() / ma
         squeeze_pct = float(bbw.iloc[:-1].rank(pct=True).iloc[-1] * 100)
         atr4h_pct = float((h - l).tail(14).mean()) / float(c.iloc[-1]) * 100
         ba4 = brooks_analyze(df)
-        return {"trend_up": ema20 > ema50, "above_ema20": float(c.iloc[-1]) > ema20,
-                "ema20": ema20, "ema50": ema50,
+        return {"trend_up": trend_up, "trend_dn": trend_dn, "above_ema20": float(c.iloc[-1]) > ema25,
+                "ema7": ema7, "ema25": ema25, "ema99": ema99,
                 "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "brooks": ba4,
                 "wyckoff": _wyckoff(df, atr4h_pct)}
     except Exception:
@@ -1778,7 +1791,7 @@ def build_market_brief(result, plan):
         sq = ctx4["squeeze_pct"]
         sq_word = "极度压缩,大行情酝酿中" if sq < 20 else "压缩中" if sq < 40 else "正常波动" if sq < 70 else "高波动(行情已释放)"
         ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
-        L.append(f"4h研判: 均线{'多' if ctx4['trend_up'] else '空'}头排列, 价在4hEMA20{'上' if ctx4['above_ema20'] else '下'} | "
+        L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
         L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%")
         wy = ctx4.get("wyckoff")
