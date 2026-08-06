@@ -1359,50 +1359,48 @@ def format_message(result, plan, is_emergency=False, sig_num=0, reverse_from="",
 
 
 def format_update(result, judge, plan=None):
-    """15分钟紧凑快报(无门槛): AI判断打头, 带止盈止损, 数据一行汇总"""
+    """15分钟快报: AI结论 → 双周期 → 关键位 → 数据, 分段留白"""
     sym = result["symbol"]
     ba = result.get("brooks") or {}
     state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
     sig = result["signal"]
     vn = int(result["votes"].split("/")[0])
-    total = result["votes"].split("/")[1]
     reached = sig != "NEUTRAL" and vn >= MIN_VOTES
 
     L = []
     L.append("=" * 36)
     L.append(f"📡 {sym} 快报 | {pd.Timestamp.now():%m-%d %H:%M} | 💰现价 ${result['price']:.2f}")
+    L.append("")
 
-    # AI 判断是主角, 放最前
     judge = judge or {}
     if judge.get("confidence", -1) >= 0:
         j_emoji = "✅" if judge["verdict"] == "执行" else "🛑"
-        L.append(f"🤖 AI判断: {j_emoji}{judge['verdict']} (置信度{judge['confidence']})")
         tier = judge.get("mag_tier")
-        if tier is not None:
-            tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier]
-            L.append(f"📏 预期幅度(4-12h): {tier_label}")
+        tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
+        L.append(f"🤖 AI: {j_emoji}{judge['verdict']} (置信{judge['confidence']})" + (f" | 📏 {tier_label}" if tier_label else ""))
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
             L.append(f"📝 理由{i+1}: {rsn}")
     else:
-        L.append("🤖 AI判断: 裁判不可用")
+        L.append("🤖 AI: 裁判不可用")
+    L.append("")
 
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
         L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
     L.append(trigger_line(result))
+    L.append("")
 
-    # 交易计划(止盈止损) — NEUTRAL 时按票多一方的假定方向
-    if plan:
-        dir_cn = {"LONG": "做多", "SHORT": "做空"}.get(sig, "多空打平")
-        d_emoji = "🔺" if sig == "LONG" else "🔻" if sig == "SHORT" else "⏸"
-        L.append(f"🧭 方向: {d_emoji}{dir_cn}")
-        L.append(f"🎯 入场 ${plan['entry']:.2f} | 🚫 止损 ${plan['sl']:.2f}")
-        L.append(f"🥇 止盈1 ${plan['tp1']:.2f} | 🏆 止盈2 ${plan['tp2']:.2f} (盈亏比1:{plan['rr']:.1f})")
-
-    # 数据汇总一行
-    parts = [f"看涨{result['bullish']}票/看跌{result['bearish']}票", state_cn]
+    if ctx4 and ctx4.get("wyckoff"):
+        wy = ctx4["wyckoff"]
+        L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, sig if sig != "NEUTRAL" else ("LONG" if result["bullish"] >= result["bearish"] else "SHORT"))
+    if lv:
+        L.append(f"🧭 支撑: {lv['support']}")
+        L.append(f"🧭 压力: {lv['resistance']}")
+    L.append("")
+
+    parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
     if lv:
         vol_short = "放量" if lv["vol_ratio"] > 1.5 else "正常" if lv["vol_ratio"] > 0.8 else "缩量"
         parts.append(f"RSI{lv['rsi14']:.0f}")
@@ -1413,7 +1411,7 @@ def format_update(result, judge, plan=None):
         parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
         parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
-    L.append("📊 数据: " + " | ".join(parts))
+    L.append("📊 " + " | ".join(parts))
     L.append(f"🚦 信号线: {'✅已达' + str(MIN_VOTES) + '票' if reached else '⏸未触发'}")
     return "\n".join(L)
 
@@ -1433,7 +1431,7 @@ def trigger_line(result):
 
 
 def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=False):
-    """AI 主判完整信号紧凑卡片(与快报同风格)"""
+    """AI 主判完整信号卡片: AI结论 → 双周期 → 关键位 → 数据, 分段留白一目了然"""
     sym = result["symbol"]; sig = result["signal"]
     ba = result.get("brooks") or {}
     state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
@@ -1442,37 +1440,40 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
 
     L = []
     L.append("=" * 36)
-    tag = "🔄紧急翻转 " if is_emergency else ""
-    L.append(f"{emoji} {sym} {tag}AI信号 {dir_cn} #{sig_num} | {pd.Timestamp.now():%m-%d %H:%M}")
+    L.append(f"{emoji} {sym} AI信号 {dir_cn} #{sig_num} | {pd.Timestamp.now():%m-%d %H:%M}")
     L.append(f"💰 现价 ${result['price']:.2f}")
+    L.append("")
 
     judge = judge or {}
     if judge.get("confidence", -1) >= 0:
-        L.append(f"🤖 AI判断: ✅{judge['verdict']} (置信度{judge['confidence']})")
         tier = judge.get("mag_tier")
-        if tier is not None:
-            tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier]
-            L.append(f"📏 预期幅度(4-12h): {tier_label}")
+        tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
+        head = f"🤖 AI: ✅{dir_cn} (置信{judge['confidence']})"
+        L.append(head + (f" | 📏 {tier_label}" if tier_label else ""))
         for i, rsn in enumerate((judge.get("reasons") or [])[:2]):
             L.append(f"📝 理由{i+1}: {rsn}")
     else:
-        L.append("🤖 AI判断: 裁判不可用")
+        L.append("🤖 AI: 裁判不可用")
+    L.append("")
 
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
         L.append(f"🕐 4h: {'多排' if ctx4['trend_up'] else '空排'} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
     L.append(trigger_line(result))
+    L.append("")
 
-    arrow = "🔺" if sig == "LONG" else "🔻"
-    L.append(f"🧭 方向: {arrow}{dir_cn}")
-    sl_label = plan.get("sl_label", "").split("(")[0] or "止损"
-    L.append(f"🎯 入场 ${plan['entry']:.2f} | 🚫 止损 ${plan['sl']:.2f} ({sl_label})")
-    L.append(f"🥇 止盈1 ${plan['tp1']:.2f} | 🏆 止盈2 ${plan['tp2']:.2f} (盈亏比1:{plan['rr']:.1f})")
-
-    # 数据汇总一行 (同 format_update)
-    parts = [f"看涨{result['bullish']}票/看跌{result['bearish']}票", state_cn]
+    # 关键位: 威科夫TR边界 + 15m支撑压力 (替代原0.6%止盈止损计划)
+    if ctx4 and ctx4.get("wyckoff"):
+        wy = ctx4["wyckoff"]
+        L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, sig)
+    if lv:
+        L.append(f"🧭 支撑: {lv['support']}")
+        L.append(f"🧭 压力: {lv['resistance']}")
+    L.append("")
+
+    parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
     if lv:
         parts.append(f"RSI{lv['rsi14']:.0f}")
     st = fetch_sentiment(sym) or {}
@@ -1481,7 +1482,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
         parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
         parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
-    L.append("📊 数据: " + " | ".join(parts))
+    L.append("📊 " + " | ".join(parts))
 
     stt = judge.get("stats") or {}
     if stt.get("total", 0) >= 5:
