@@ -1948,18 +1948,7 @@ def main():
         else:
             print(f"\n[{now.strftime('%H:%M:%S')}] 3分钟AI扫描...")
 
-        # ── 验证上次预测 (合并为一条推送, 避免刷屏) ──
-        try:
-            followups = verify_predictions()
-            if followups:
-                wins = sum(1 for m in followups if "止盈" in m)
-                body = "\n".join(followups)
-                if len(body) > 3500:
-                    body = body[:3500] + "\n...(过长截断)"
-                ok = send_telegram(f"📋 本批结算 {len(followups)}条: {wins}胜{len(followups)-wins}负\n{body}")
-                print(f"  验证: 合并推送{len(followups)}条 {'OK' if ok else 'FAIL(Telegram拒收)'}")
-        except Exception as e:
-            print(f"  验证失败: {e}")
+        # 结算通知已下线(2026-08-06): 0.6%口径作废, 信号结算由判例本(MFE/方向分)承担, 不再推送
 
         # ── 裁判判例虚拟结算 (+错题本复盘) ──
         try:
