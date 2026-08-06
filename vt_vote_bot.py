@@ -1394,7 +1394,7 @@ def format_update(result, judge, plan=None):
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
+        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
     L.append(trigger_line(result))
     L.append("")
 
@@ -1410,7 +1410,7 @@ def format_update(result, judge, plan=None):
     parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
     if lv:
         vol_short = "放量" if lv["vol_ratio"] > 1.5 else "正常" if lv["vol_ratio"] > 0.8 else "缩量"
-        parts.append(f"RSI{lv['rsi14']:.0f}")
+        parts.append(f"RSI{rsi_tag(lv['rsi14'])}")
         parts.append(f"{vol_short}{lv['vol_ratio']:.1f}倍")
     st = fetch_sentiment(sym) or {}
     if "funding_rate" in st:
@@ -1424,6 +1424,15 @@ def format_update(result, judge, plan=None):
     L.append("📊 " + " | ".join(parts))
     L.append(f"🚦 信号线: {'✅已达' + str(MIN_VOTES) + '票' if reached else '⏸未触发'}")
     return "\n".join(L)
+
+
+def rsi_tag(r):
+    """RSI 超买超卖状态灯: ≥70超买 / ≤30超卖"""
+    if r >= 70:
+        return f"{r:.0f}超买⚠️"
+    if r <= 30:
+        return f"{r:.0f}超卖⚠️"
+    return f"{r:.0f}"
 
 
 def trend4_label(ctx4):
@@ -1509,7 +1518,7 @@ def format_layers(result, judge4, judge15, is_reversal=False):
 
     parts = []
     if lv:
-        parts.append(f"RSI{lv['rsi14']:.0f}")
+        parts.append(f"RSI{rsi_tag(lv['rsi14'])}")
     st = fetch_sentiment(sym) or {}
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
@@ -1568,7 +1577,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位")
+        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
     L.append(trigger_line(result))
     L.append("")
 
@@ -1584,7 +1593,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
 
     parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
     if lv:
-        parts.append(f"RSI{lv['rsi14']:.0f}")
+        parts.append(f"RSI{rsi_tag(lv['rsi14'])}")
     st = fetch_sentiment(sym) or {}
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
@@ -1717,10 +1726,12 @@ def compute_4h_context(sym):
         bbw = 4 * c.rolling(20).std() / ma
         squeeze_pct = float(bbw.iloc[:-1].rank(pct=True).iloc[-1] * 100)
         atr4h_pct = float((h - l).tail(14).mean()) / float(c.iloc[-1]) * 100
+        rsi4h = float((c.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean().iloc[-1] /
+                       (c.diff().abs().ewm(alpha=1/14, adjust=False).mean().iloc[-1] + 1e-10) * 100))
         ba4 = brooks_analyze(df)
         return {"trend_up": trend_up, "trend_dn": trend_dn, "above_ema20": float(c.iloc[-1]) > ema25,
                 "ema7": ema7, "ema25": ema25, "ema99": ema99,
-                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "brooks": ba4,
+                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "rsi4h": rsi4h, "brooks": ba4,
                 "wyckoff": _wyckoff(df, atr4h_pct)}
     except Exception:
         return None
@@ -1966,7 +1977,7 @@ def build_brief_4h(result):
         ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
-        L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f})")
+        L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f}) | 4hRSI: {rsi_tag(ctx4['rsi4h'])}")
         sst = squeeze_stats(sym)
         if sst:
             b = "0-20" if sq < 20 else "20-40" if sq < 40 else "40-70" if sq < 70 else "70-100"
