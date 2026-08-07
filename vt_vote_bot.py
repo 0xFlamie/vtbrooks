@@ -1531,9 +1531,10 @@ def plain_signals(result, lv, ctx4):
 
 
 def han_pad(s, width):
-    """全角空格补齐到指定视觉宽度(汉字/全角=2, ASCII=1), 用于卡片标签对齐"""
+    """补齐到指定视觉宽度(汉字/全角=2, ASCII=1): 优先全角空格, 余1用ASCII空格微调, 保证任意宽度可达"""
     w = sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
-    return s + "　" * max((width - w) // 2, 0)
+    gap = max(width - w, 0)
+    return s + "　" * (gap // 2) + (" " if gap % 2 else "")
 
 
 def entry_window(result, judge4, ctx4, lv, vwap):
@@ -1612,7 +1613,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-    L.append(f"🌐 {han_pad('4h层:', 8)} {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
+    L.append(f"🌐 {han_pad('4h层:', 9)} {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     for rsn in (judge4.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
@@ -1623,7 +1624,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         fac = f"因子看涨 {bull_pct}%"
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
-    L.append(f"⚡ {han_pad('15m层:', 8)} {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
+    L.append(f"🌐 {han_pad('15m层:', 9)} {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     for rsn in (judge15.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     L.append("")
