@@ -1530,6 +1530,50 @@ def plain_signals(result, lv, ctx4):
     return out[:4]
 
 
+def entry_window(result, judge4, ctx4, lv, vwap):
+    """入场窗口(纯规则, 不经AI): 4h层有方向为前提。
+    A回调=价格贴近结构位(≤0.5×ATR15m)+RSI重置/形态扳机, RR最优; B突破=收破摆动极值+放量(>1.5倍), 单边市用。
+    入场好坏的本质是失效位距离, 因此输出失效位和距离%"""
+    d4 = judge4.get("direction")
+    if not d4 or not ctx4 or not lv:
+        return None
+    px = result["price"]
+    atr = lv["atr14"]
+    if d4 == "LONG":
+        structures = [("EMA20", lv["ema20"]), ("摆动低点", lv["swing_low"])]
+    else:
+        structures = [("EMA20", lv["ema20"]), ("摆动高点", lv["swing_high"])]
+    if vwap:
+        structures.append(("VWAP", vwap[0]))
+
+    # A 回调: 贴近结构位 + RSI重置区(40-62) 或 Brooks 形态扳机
+    name, lvl = min(structures, key=lambda s: abs(px - s[1]))
+    if abs(px - lvl) <= 0.5 * atr:
+        rsi = lv["rsi14"]
+        has_setup = bool((result.get("brooks") or {}).get("setups"))
+        if 40 <= rsi <= 62 or has_setup:
+            inv = lvl - 0.8 * atr if d4 == "LONG" else lvl + 0.8 * atr
+            return {"type": "A回调", "dir": d4,
+                    "zone": f"{name} ${lvl:.2f} 附近", "invalid": inv,
+                    "dist": abs(px - inv) / px * 100,
+                    "basis": f"贴近{name} + RSI{rsi:.0f}" + (" + 形态扳机" if has_setup else "")}
+
+    # B 突破: 收破摆动极值 + 放量
+    if d4 == "LONG" and px >= lv["swing_high"] * 0.9995 and lv["vol_ratio"] > 1.5:
+        inv = lv["swing_high"] - 1.2 * atr
+        return {"type": "B突破", "dir": d4,
+                "zone": f"${lv['swing_high']:.2f} 上方", "invalid": inv,
+                "dist": (px - inv) / px * 100,
+                "basis": f"收破摆动高点${lv['swing_high']:.2f} + 量比{lv['vol_ratio']:.1f}"}
+    if d4 == "SHORT" and px <= lv["swing_low"] * 1.0005 and lv["vol_ratio"] > 1.5:
+        inv = lv["swing_low"] + 1.2 * atr
+        return {"type": "B突破", "dir": d4,
+                "zone": f"${lv['swing_low']:.2f} 下方", "invalid": inv,
+                "dist": (inv - px) / px * 100,
+                "basis": f"收破摆动低点${lv['swing_low']:.2f} + 量比{lv['vol_ratio']:.1f}"}
+    return None
+
+
 def _dir_emoji(d, conf):
     """方向醒目标注: 🟢多/🔴空/⚪观望/❔不可用"""
     if conf == -1:
@@ -1537,8 +1581,8 @@ def _dir_emoji(d, conf):
     return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
 
 
-def format_layers(result, judge4, judge15, is_reversal=False, events=None):
-    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表(加推原因)"""
+def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None):
+    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表, ew=入场窗口"""
     sym = result["symbol"]
     d4, d15 = judge4.get("direction"), judge15.get("direction")
     c4, c15 = judge4.get("confidence", -1), judge15.get("confidence", -1)
@@ -1582,6 +1626,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None):
         L.append("⚡ 异动: " + "; ".join(events))
     ctx4 = compute_4h_context(sym)
     lv = compute_levels(sym, d4 or d15 or result["signal"])
+    if ew:
+        d_txt = "做多" if ew["dir"] == "LONG" else "做空"
+        inv_rel = "下方" if ew["dir"] == "LONG" else "上方"
+        L.append("")
+        L.append(f"🎯 入场窗口 ({ew['type']}) {d_txt}")
+        L.append(f"   入场区: {ew['zone']}")
+        L.append(f"   失效位: ${ew['invalid']:.2f} ({inv_rel}{ew['dist']:.2f}%)")
+        L.append(f"   依据: {ew['basis']}")
     # 白话信号: 规则生成+统计库引用, 常态化显示
     ps = plain_signals(result, lv, ctx4)
     if ps:
@@ -2504,9 +2556,18 @@ def main():
                 events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
                 prev_metrics[sym] = cur_metrics
 
+                # 入场窗口: 4h有方向时, 15m贴近结构位回调/放量突破(纯规则)
+                ew = entry_window(result, judge4, compute_4h_context(sym),
+                                  compute_levels(sym, judge4.get("direction") or judge15.get("direction") or result["signal"]),
+                                  compute_vwap(sym))
+                ew_key = (ew["type"], ew["dir"]) if ew else None
+                if ew_key and prev_metrics.get("_ew") != ew_key:
+                    events = events + [f"入场窗口开启({ew['type']})"]
+                prev_metrics[sym]["_ew"] = ew_key
+
                 if is_15m or reversal or events:
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
-                                        events=None if is_15m else (events or None))
+                                        events=None if is_15m else (events or None), ew=ew)
                     ok = send_telegram(msg)
                     tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
