@@ -1444,6 +1444,92 @@ def trend4_label(ctx4):
     return "纠缠"
 
 
+def detect_events(sym, result, prev):
+    """3分钟扫描异动检测(边沿触发, 不带统计): RSI穿越70/30, 量比突破2, 逼近压力/支撑(<0.3%), 挤压进出<20%区。
+    prev 为上次指标快照; 返回 (事件列表, 当前快照)"""
+    lv = compute_levels(sym, result["signal"])
+    ctx4 = compute_4h_context(sym)
+    px = result["price"]
+    cur = {
+        "rsi": lv["rsi14"] if lv else None,
+        "vol": lv["vol_ratio"] if lv else None,
+        "sq": ctx4["squeeze_pct"] if ctx4 else None,
+        "near_hi": bool(lv and 0 < (lv["swing_high"] - px) / px < 0.003),
+        "near_lo": bool(lv and 0 < (px - lv["swing_low"]) / px < 0.003),
+    }
+    ev = []
+    if prev:
+        r0, r1 = prev.get("rsi"), cur["rsi"]
+        if r0 is not None and r1 is not None:
+            if r0 < 70 <= r1:
+                ev.append(f"RSI进入超买({r1:.0f})")
+            elif r0 > 70 >= r1:
+                ev.append(f"RSI退出超买({r1:.0f})")
+            if r0 > 30 >= r1:
+                ev.append(f"RSI进入超卖({r1:.0f})")
+            elif r0 < 30 <= r1:
+                ev.append(f"RSI退出超卖({r1:.0f})")
+        v0, v1 = prev.get("vol"), cur["vol"]
+        if v0 is not None and v1 is not None and v0 <= 2 < v1:
+            ev.append(f"突然放量({v1:.1f}倍均量)")
+        for key, label in (("near_hi", f"逼近压力位${lv['swing_high']:.2f}"), ("near_lo", f"逼近支撑位${lv['swing_low']:.2f}")):
+            if not prev.get(key) and cur[key]:
+                ev.append(label)
+        s0, s1 = prev.get("sq"), cur["sq"]
+        if s0 is not None and s1 is not None:
+            if s0 >= 20 > s1:
+                ev.append("挤压进入极值区(<20%)")
+            elif s0 < 20 <= s1:
+                ev.append("挤压离开极值区")
+    return ev, cur
+
+
+def plain_signals(result, lv, ctx4):
+    """白话信号行: 阈值触发+引用多年统计库; 概率只引统计数字, 不编。
+    统计口径都是4h, 因此引统计的句子也用4h指标(RSI4h/量比4h/挤压)"""
+    px = result["price"]
+    mst = market_stats(result["symbol"]) or {}
+    out = []
+    if ctx4:
+        vr4 = ctx4.get("vol_ratio4h", 0)
+        if vr4 >= 1.5:
+            vb = "放量上涨" if ctx4.get("up4") else "放量下跌"
+            s = f"量能放大到{vr4:.1f}倍(4h口径), 有资金进场"
+            t = mst.get("volume", {}).get(vb)
+            if t:
+                s += f"; 近3年同类{vb}后12h延续占{t['cont']}%"
+            out.append(s)
+        r4 = ctx4["rsi4h"]
+        if r4 >= 70:
+            t = mst.get("rsi", {}).get(">=70")
+            s = f"4hRSI {r4:.0f}已超买"
+            if t:
+                s += f"(历史同类后12h回落≥1%占{t['drop']}%)"
+            out.append(s + ", 追多需防回抽")
+        elif r4 <= 30:
+            t = mst.get("rsi", {}).get("<=30")
+            s = f"4hRSI {r4:.0f}已超卖"
+            if t:
+                s += f"(历史同类后12h反弹≥1%占{t['bounce']}%)"
+            out.append(s + ", 追空需防反弹")
+        sq = ctx4["squeeze_pct"]
+        if sq < 40:
+            b = "0-20" if sq < 20 else "20-40"
+            s = f"波动率压到近200根4h的{sq:.0f}%位置, 属低位压缩"
+            t = mst.get("squeeze", {}).get(b)
+            if t:
+                s += f"; 历史此档后12h振幅≥2%占{t['p2']}%"
+            out.append(s)
+    if lv:
+        dh = lv["swing_high"] - px
+        dl = px - lv["swing_low"]
+        if 0 < dh / px < 0.01:
+            out.append(f"现价距压力位${lv['swing_high']:.2f}仅${dh:.1f}, 突破临界")
+        elif 0 < dl / px < 0.01:
+            out.append(f"现价距支撑位${lv['swing_low']:.2f}仅${dl:.1f}, 失守临界")
+    return out[:4]
+
+
 def _dir_emoji(d, conf):
     """方向醒目标注: 🟢多/🔴空/⚪观望/❔不可用"""
     if conf == -1:
@@ -1451,8 +1537,8 @@ def _dir_emoji(d, conf):
     return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
 
 
-def format_layers(result, judge4, judge15, is_reversal=False):
-    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注"""
+def format_layers(result, judge4, judge15, is_reversal=False, events=None):
+    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表(加推原因)"""
     sym = result["symbol"]
     d4, d15 = judge4.get("direction"), judge15.get("direction")
     c4, c15 = judge4.get("confidence", -1), judge15.get("confidence", -1)
@@ -1492,9 +1578,18 @@ def format_layers(result, judge4, judge15, is_reversal=False):
         L.append(f"📝 {rsn}")
     L.append("")
     L.append(reso)
+    if events:
+        L.append("⚡ 异动: " + "; ".join(events))
+    ctx4 = compute_4h_context(sym)
+    lv = compute_levels(sym, d4 or d15 or result["signal"])
+    # 白话信号: 规则生成+统计库引用, 常态化显示
+    ps = plain_signals(result, lv, ctx4)
+    if ps:
+        L.append("")
+        for s in ps:
+            L.append(f"💬 {s}")
     L.append("")
 
-    ctx4 = compute_4h_context(sym)
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
         px = result["price"]
@@ -1510,7 +1605,6 @@ def format_layers(result, judge4, judge15, is_reversal=False):
             L.append(f"   → {d}: {desc}")
         if wy.get("event") or near:
             L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
-    lv = compute_levels(sym, d4 or d15 or result["signal"])
     if lv:
         L.append(f"🧭 支撑: {lv['support']}")
         L.append(f"🧭 压力: {lv['resistance']}")
@@ -1655,7 +1749,9 @@ def compute_levels(sym, sig):
             support = f"${swing_low:.2f}(近20周期低点)"
         return {"support": support, "resistance": resistance, "rsi14": rsi14,
                 "atr14": atr14, "ema20": ema20, "ema50": ema50,
-                "vol_ratio": vol_ratio, "vol_word": vol_word}
+                "vol_ratio": vol_ratio, "vol_word": vol_word,
+                "swing_high": float(swing_high), "swing_low": float(swing_low),  # 数值版, 异动检测用
+                "recent_high": float(recent_high)}
     except Exception:
         return None
 
@@ -2362,6 +2458,7 @@ def main():
 
     last_dirs = {}     # sym → {"4h": dir, "15m": dir}, 上次扫描双层方向, 翻向检测用
     judge4_cache = {}  # sym → (bar_key, judge4), 4h 层每根4h收线重判一次(根内输入不变, 高频重判只会抖动)
+    prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
 
     while True:
         now = pd.Timestamp.now()
@@ -2403,10 +2500,15 @@ def main():
                 reversal = bool(prev) and any(dirs[k] and dirs[k] != prev.get(k) for k in dirs)
                 last_dirs[sym] = dirs
 
-                if is_15m or reversal:
-                    msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m)
+                # 异动: RSI穿越/放量/逼位/挤压进出(边沿触发)
+                events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
+                prev_metrics[sym] = cur_metrics
+
+                if is_15m or reversal or events:
+                    msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
+                                        events=None if is_15m else (events or None))
                     ok = send_telegram(msg)
-                    tag = "定时信号" if is_15m else "🔄反转加推"
+                    tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                 else:
                     print(f"4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'} (投票{result['votes']})")
