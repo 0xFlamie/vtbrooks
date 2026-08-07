@@ -1403,8 +1403,8 @@ def format_update(result, judge, plan=None):
         L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, sig if sig != "NEUTRAL" else ("LONG" if result["bullish"] >= result["bearish"] else "SHORT"))
     if lv:
-        L.append(f"🗝️ 支撑: {lv['support']}")
-        L.append(f"🗝️ 压力: {lv['resistance']}")
+        L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
+        L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
     L.append("")
 
     parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
@@ -1530,6 +1530,12 @@ def plain_signals(result, lv, ctx4):
     return out[:4]
 
 
+def han_pad(s, width):
+    """全角空格补齐到指定视觉宽度(汉字/全角=2, ASCII=1), 用于卡片标签对齐"""
+    w = sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
+    return s + "　" * max((width - w) // 2, 0)
+
+
 def entry_window(result, judge4, ctx4, lv, vwap):
     """入场窗口(纯规则, 不经AI): 4h层有方向为前提。
     A回调=价格贴近结构位(≤0.5×ATR15m)+RSI重置/形态扳机, RR最优; B突破=收破摆动极值+放量(>1.5倍), 单边市用。
@@ -1606,7 +1612,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-    L.append(f"🌐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
+    L.append(f"🌐 {han_pad('4h层:', 8)} {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     for rsn in (judge4.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
@@ -1617,7 +1623,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         fac = f"因子看涨 {bull_pct}%"
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
-    L.append(f"⚡ 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
+    L.append(f"⚡ {han_pad('15m层:', 8)} {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     for rsn in (judge15.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     L.append("")
@@ -1631,9 +1637,9 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         inv_rel = "下方" if ew["dir"] == "LONG" else "上方"
         L.append("")
         L.append(f"🎯 入场窗口 ({ew['type']}) {d_txt}")
-        L.append(f"   入场区: {ew['zone']}")
-        L.append(f"   失效位: ${ew['invalid']:.2f} ({inv_rel}{ew['dist']:.2f}%)")
-        L.append(f"   依据: {ew['basis']}")
+        L.append(f"　　{han_pad('入场区:', 8)} {ew['zone']}")
+        L.append(f"　　{han_pad('失效位:', 8)} ${ew['invalid']:.2f} ({inv_rel}{ew['dist']:.2f}%)")
+        L.append(f"　　{han_pad('依据:', 8)} {ew['basis']}")
     # 白话信号: 规则生成+统计库引用, 常态化显示
     ps = plain_signals(result, lv, ctx4)
     if ps:
@@ -1658,8 +1664,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         if wy.get("event") or near:
             L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     if lv:
-        L.append(f"🗝️ 支撑: {lv['support']}")
-        L.append(f"🗝️ 压力: {lv['resistance']}")
+        L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
+        L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
     L.append("")
 
     parts = []
@@ -1733,8 +1739,8 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
         L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, sig)
     if lv:
-        L.append(f"🗝️ 支撑: {lv['support']}")
-        L.append(f"🗝️ 压力: {lv['resistance']}")
+        L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
+        L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
     L.append("")
 
     parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
