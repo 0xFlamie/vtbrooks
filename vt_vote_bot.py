@@ -1394,17 +1394,17 @@ def format_update(result, judge, plan=None):
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
+        L.append(f"🌐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
     L.append(trigger_line(result))
     L.append("")
 
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
-        L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
+        L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, sig if sig != "NEUTRAL" else ("LONG" if result["bullish"] >= result["bearish"] else "SHORT"))
     if lv:
-        L.append(f"🧭 支撑: {lv['support']}")
-        L.append(f"🧭 压力: {lv['resistance']}")
+        L.append(f"🗝️ 支撑: {lv['support']}")
+        L.append(f"🗝️ 压力: {lv['resistance']}")
     L.append("")
 
     parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
@@ -1606,7 +1606,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-    L.append(f"🕐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
+    L.append(f"🌐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     for rsn in (judge4.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
@@ -1656,10 +1656,10 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"{t}({wy['event_vol']},{wy['event_age']}根前)")
             L.append(f"   → {d}: {desc}")
         if wy.get("event") or near:
-            L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
+            L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     if lv:
-        L.append(f"🧭 支撑: {lv['support']}")
-        L.append(f"🧭 压力: {lv['resistance']}")
+        L.append(f"🗝️ 支撑: {lv['support']}")
+        L.append(f"🗝️ 压力: {lv['resistance']}")
     L.append("")
 
     parts = []
@@ -1723,18 +1723,18 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🕐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
+        L.append(f"🌐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
     L.append(trigger_line(result))
     L.append("")
 
     # 关键位: 威科夫TR边界 + 15m支撑压力 (替代原0.6%止盈止损计划)
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
-        L.append(f"🧱 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
+        L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
     lv = compute_levels(sym, sig)
     if lv:
-        L.append(f"🧭 支撑: {lv['support']}")
-        L.append(f"🧭 压力: {lv['resistance']}")
+        L.append(f"🗝️ 支撑: {lv['support']}")
+        L.append(f"🗝️ 压力: {lv['resistance']}")
     L.append("")
 
     parts = [f"看涨{result['bullish']}/看跌{result['bearish']}", state_cn]
