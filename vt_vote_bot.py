@@ -1663,6 +1663,36 @@ def compute_levels(sym, sig):
 STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "market_stats.json")
 
 
+def _4h_history(sym, days=1400):
+    """多年 4h K线: 优先 Hyperliquid 分页(每页可达数千根, 2023年中起, 完整无缺失);
+    Coinbase 并发分页兜底(美站可能被限流出空洞)"""
+    coin = sym.replace("USDT", "").replace("USDC", "")
+    t1 = int(time.time() * 1000)
+    t0 = t1 - days * 86400 * 1000
+    rows = []
+    try:
+        while t0 < t1:
+            d = _http.post("https://api.hyperliquid.xyz/info", timeout=20, json={
+                "type": "candleSnapshot",
+                "req": {"coin": coin, "interval": "4h", "startTime": t0, "endTime": t1}}).json()
+            if not isinstance(d, list) or not d:
+                break
+            rows.extend(d)
+            last = int(d[-1]["t"])
+            if last <= t0:
+                break
+            t0 = last + 1
+            time.sleep(0.2)
+        if len(rows) > 2000:
+            df = pd.DataFrame([{"date": pd.to_datetime(int(x["t"]), unit="ms"),
+                                "open": float(x["o"]), "high": float(x["h"]), "low": float(x["l"]),
+                                "close": float(x["c"]), "volume": float(x["v"])} for x in rows])
+            return df.drop_duplicates("date").set_index("date").sort_index()
+    except Exception:
+        pass
+    return _cb_4h_history(sym, days)
+
+
 def _cb_4h_history(sym, days=1400):
     """Coinbase 1h 分页拉多年数据再重采样 4h; 分页上限300根/次, 8路并发"""
     from concurrent.futures import ThreadPoolExecutor
@@ -1714,7 +1744,7 @@ def market_stats(sym, refresh=False):
     except Exception:
         cache = {}
     try:
-        df = _cb_4h_history(sym)
+        df = _4h_history(sym)
         if df is None:
             return None
         c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
