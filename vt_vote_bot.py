@@ -1660,47 +1660,176 @@ def compute_levels(sym, sig):
         return None
 
 
-SQ_STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "squeeze_stats.json")
+STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "market_stats.json")
 
 
-def squeeze_stats(sym):
-    """挤压分位的历史条件概率: 近1000根4h(约166天), 按挤压分位档统计随后12h(3根)最大振幅≥1%/2%/3%的比例;
-    每天缓存一次(HL K线), 让简报说'历史上这个档位之后有多大行情'而不是干巴巴的分位数"""
-    today = pd.Timestamp.now().strftime("%Y-%m-%d")
+def _cb_4h_history(sym, days=1400):
+    """Coinbase 1h 分页拉多年数据再重采样 4h; 分页上限300根/次, 8路并发"""
+    from concurrent.futures import ThreadPoolExecutor
+    cb_sym = {"ETHUSDT": "ETH-USD", "ETHUSDC": "ETH-USD",
+              "BTCUSDT": "BTC-USD", "BTCUSDC": "BTC-USD"}.get(sym)
+    if not cb_sym:
+        return None
+    t_end = int(time.time())
+    t_start = t_end - days * 86400
+    pages = []
+    t = t_end
+    while t > t_start:
+        pages.append((max(t_start, t - 300 * 3600), t))
+        t -= 300 * 3600
+
+    def _get(pg):
+        p0 = pd.Timestamp(pg[0], unit="s", tz="UTC").isoformat()
+        p1 = pd.Timestamp(pg[1], unit="s", tz="UTC").isoformat()
+        try:
+            d = http_get_json(f"https://api.exchange.coinbase.com/products/{cb_sym}/candles"
+                              f"?granularity=3600&start={p0}&end={p1}", timeout=20)
+            return d if isinstance(d, list) else []
+        except Exception:
+            return []
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for d in ex.map(_get, pages):
+            rows.extend(d)
+    if len(rows) < 2000:
+        return None
+    df = pd.DataFrame(rows, columns=["ts", "low", "high", "open", "close", "volume"])
+    df["date"] = pd.to_datetime(df["ts"], unit="s")
+    df = df.drop_duplicates("date").set_index("date").sort_index()
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = df[c].astype(float)
+    df4 = df.resample("4h").agg({"open": "first", "high": "max", "low": "min",
+                                 "close": "last", "volume": "sum"}).dropna()
+    return df4 if len(df4) > 500 else None
+
+
+def market_stats(sym, refresh=False):
+    """多年(约4年, 跨牛熊)历史条件统计: 挤压/RSI极值/连阳连阴/量比/费率极值 → 12h概率。
+    全量计算约需数分钟(Coinbase分页+HL费率), 因此只读缓存; 无缓存才现算, 每日刷新走 --refresh-stats(cron)"""
     try:
-        cache = json.load(open(SQ_STATS_FILE)) if os.path.exists(SQ_STATS_FILE) else {}
-        if cache.get(sym, {}).get("date") == today:
+        cache = json.load(open(STATS_FILE)) if os.path.exists(STATS_FILE) else {}
+        if not refresh and cache.get(sym, {}).get("stats"):
             return cache[sym]["stats"]
     except Exception:
         cache = {}
     try:
-        coin = sym.replace("USDT", "").replace("USDC", "")
-        t1 = int(time.time() * 1000)
-        d = _http.post("https://api.hyperliquid.xyz/info", timeout=15, json={
-            "type": "candleSnapshot",
-            "req": {"coin": coin, "interval": "4h", "startTime": t1 - 1000 * 4 * 3600 * 1000, "endTime": t1}}).json()
-        if not isinstance(d, list) or len(d) < 300:
+        df = _cb_4h_history(sym)
+        if df is None:
             return None
-        df = pd.DataFrame([{"c": float(x["c"]), "h": float(x["h"]), "l": float(x["l"])} for x in d])
-        ma = df["c"].rolling(20).mean()
-        bbw = 4 * df["c"].rolling(20).std() / ma
-        # 每根的挤压分位(对过去200根) + 随后12h最大振幅
-        pct = bbw.rolling(200).apply(lambda w: (w.iloc[-1] > w).mean() * 100, raw=False)
-        fwd = pd.Series([max(df["h"].iloc[i + 1:i + 4].max() - df["c"].iloc[i],
-                             df["c"].iloc[i] - df["l"].iloc[i + 1:i + 4].min()) / df["c"].iloc[i] * 100
-                         if i + 1 < len(df) else np.nan for i in range(len(df))], index=df.index)
+        c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
+        n = len(df)
+        # 前向12h(3根4h)最大顺向/逆向偏移%
+        up = pd.Series(np.nan, index=df.index)
+        dn = pd.Series(np.nan, index=df.index)
+        hi3 = h.shift(-1).rolling(3).max().shift(-2)
+        lo3 = l.shift(-1).rolling(3).min().shift(-2)
+        up = (hi3 - c) / c * 100
+        dn = (c - lo3) / c * 100
+
         stats = {}
-        for lo, hi in ((0, 20), (20, 40), (40, 70), (70, 100)):
-            m = (pct >= lo) & (pct < hi) & fwd.notna()
-            n = int(m.sum())
-            if n >= 10:
-                stats[f"{lo}-{hi}"] = {"n": n,
-                                       "p1": round(float((fwd[m] >= 1).mean()) * 100),
-                                       "p2": round(float((fwd[m] >= 2).mean()) * 100),
-                                       "p3": round(float((fwd[m] >= 3).mean()) * 100)}
-        cache[sym] = {"date": today, "stats": stats}
+        # ── 挤压分位 → 12h 振幅概率 ──
+        ma = c.rolling(20).mean()
+        bbw = 4 * c.rolling(20).std() / ma
+        # 挤压分位向量化: 每根对过去200根的分位(sliding window), rolling.apply 全量要分钟级
+        from numpy.lib.stride_tricks import sliding_window_view
+        arr = bbw.values
+        pct = pd.Series(np.nan, index=df.index)
+        if n >= 200:
+            w = sliding_window_view(arr, 200)
+            valid = ~np.isnan(w).any(axis=1)
+            frac = np.where(valid, (w < w[:, -1:]).mean(axis=1) * 100, np.nan)
+            pct.iloc[199:] = frac
+        amp = pd.concat([up, dn], axis=1).max(axis=1)
+        sq_stats = {}
+        for lo_, hi_ in ((0, 20), (20, 40), (40, 70), (70, 100)):
+            m = (pct >= lo_) & (pct < hi_)
+            if int(m.sum()) >= 30:
+                sq_stats[f"{lo_}-{hi_}"] = {"n": int(m.sum()),
+                                            "p1": round(float((amp[m] >= 1).mean()) * 100),
+                                            "p2": round(float((amp[m] >= 2).mean()) * 100),
+                                            "p3": round(float((amp[m] >= 3).mean()) * 100)}
+        stats["squeeze"] = sq_stats
+
+        # ── 4h RSI 极值 → 12h 反弹/回落≥1%概率 ──
+        rsi = c.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean() / (
+            c.diff().abs().ewm(alpha=1/14, adjust=False).mean() + 1e-10) * 100
+        rsi_stats = {}
+        for label, m in (("<=30", rsi <= 30), (">=70", rsi >= 70)):
+            if int(m.sum()) >= 20:
+                rsi_stats[label] = {"n": int(m.sum()),
+                                    "bounce": round(float((up[m] >= 1).mean()) * 100),
+                                    "drop": round(float((dn[m] >= 1).mean()) * 100)}
+        stats["rsi"] = rsi_stats
+
+        # ── 4h 连阳/连阴≥3 → 次根同向概率 ──
+        sign = np.sign(c.diff())
+        streak = sign.groupby((sign != sign.shift()).cumsum()).cumcount() + 1
+        streak = streak * sign
+        stk_stats = {}
+        for label, m in (("连阳>=3", streak >= 3), ("连阴>=3", streak <= -3)):
+            if int(m.sum()) >= 20:
+                nxt = sign.shift(-1)
+                stk_stats[label] = {"n": int(m.sum()),
+                                    "cont": round(float((nxt[m] == (1 if "阳" in label else -1)).mean()) * 100)}
+        stats["streak"] = stk_stats
+
+        # ── 4h 量比>2 → 12h 同向延续≥1%概率 ──
+        vr = v / v.rolling(20).mean()
+        vol_stats = {}
+        m_up = (vr > 2) & (c.diff() > 0)
+        m_dn = (vr > 2) & (c.diff() < 0)
+        if int(m_up.sum()) >= 20:
+            vol_stats["放量上涨"] = {"n": int(m_up.sum()), "cont": round(float((up[m_up] >= 1).mean()) * 100)}
+        if int(m_dn.sum()) >= 20:
+            vol_stats["放量下跌"] = {"n": int(m_dn.sum()), "cont": round(float((dn[m_dn] >= 1).mean()) * 100)}
+        stats["volume"] = vol_stats
+
+        # ── 资金费率极值(HL, 2023起): |8h费率|>0.05% → 12h 反向≥1%概率 ──
         try:
-            json.dump(cache, open(SQ_STATS_FILE, "w"))
+            coin = sym.replace("USDT", "").replace("USDC", "")
+            t0 = int((time.time() - 1100 * 86400) * 1000)
+            frs = []
+            while True:
+                d = _http.post("https://api.hyperliquid.xyz/info", timeout=15, json={
+                    "type": "fundingHistory", "coin": coin, "startTime": t0}).json()
+                if not isinstance(d, list) or not d:
+                    break
+                frs.extend(d)
+                if len(d) < 500:
+                    break
+                t0 = int(d[-1]["time"]) + 1
+                time.sleep(0.15)
+            if len(frs) > 500:
+                fr = pd.Series({pd.Timestamp(int(x["time"]), unit="ms"): float(x["fundingRate"]) * 8 * 100 for x in frs})
+                fr8 = fr.resample("8h").sum().dropna()  # 8h费率%
+                # 向量化: 价格序列转 numpy, 用 searchsorted 定位窗口, 避免逐条布尔切片
+                c1h = c.resample("1h").last().ffill()
+                idx = c1h.index.values.astype("datetime64[ns]").astype("int64")
+                vals = c1h.values
+                fstats = {}
+                for label, cond in (("多付空>0.05%", fr8 > 0.05), ("空付多>0.05%", fr8 < -0.05)):
+                    ts = fr8[cond].index
+                    revs = []
+                    for t in ts:
+                        p = t.to_datetime64().astype("int64")
+                        i0 = np.searchsorted(idx, p, side="right")
+                        i1 = np.searchsorted(idx, p + 12 * 3600 * 10**9, side="right")
+                        if i0 == 0 or i1 - i0 < 8:
+                            continue
+                        p0_ = vals[i0 - 1]
+                        win = vals[i0:i1]
+                        rev = ((p0_ - win.min()) if "多付" in label else (win.max() - p0_)) / p0_ * 100
+                        revs.append(rev >= 1)
+                    if len(revs) >= 20:
+                        fstats[label] = {"n": len(revs), "rev": round(sum(revs) / len(revs) * 100)}
+                stats["funding"] = fstats
+        except Exception as e:
+            print(f"WARN: 费率统计失败 {type(e).__name__}: {e}")
+
+        cache[sym] = {"date": pd.Timestamp.now().strftime("%Y-%m-%d"), "stats": stats}
+        try:
+            json.dump(cache, open(STATS_FILE, "w"))
         except Exception:
             pass
         return stats or None
@@ -1728,10 +1857,16 @@ def compute_4h_context(sym):
         atr4h_pct = float((h - l).tail(14).mean()) / float(c.iloc[-1]) * 100
         rsi4h = float((c.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean().iloc[-1] /
                        (c.diff().abs().ewm(alpha=1/14, adjust=False).mean().iloc[-1] + 1e-10) * 100))
+        # 连阳/连阴计数 & 量比(供条件统计显示)
+        sgn = np.sign(c.diff())
+        streak4 = int((sgn.groupby((sgn != sgn.shift()).cumsum()).cumcount() + 1).iloc[-1] * sgn.iloc[-1])
+        vol_ratio4h = float(df["volume"].iloc[-1] / df["volume"].iloc[-20:].mean())
+        up4 = bool(c.diff().iloc[-1] > 0)
         ba4 = brooks_analyze(df)
         return {"trend_up": trend_up, "trend_dn": trend_dn, "above_ema20": float(c.iloc[-1]) > ema25,
                 "ema7": ema7, "ema25": ema25, "ema99": ema99,
-                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "rsi4h": rsi4h, "brooks": ba4,
+                "squeeze_pct": squeeze_pct, "atr4h_pct": atr4h_pct, "rsi4h": rsi4h,
+                "streak4": streak4, "vol_ratio4h": vol_ratio4h, "up4": up4, "brooks": ba4,
                 "wyckoff": _wyckoff(df, atr4h_pct)}
     except Exception:
         return None
@@ -1978,12 +2113,36 @@ def build_brief_4h(result):
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
         L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f}) | 4hRSI: {rsi_tag(ctx4['rsi4h'])}")
-        sst = squeeze_stats(sym)
-        if sst:
+        mst = market_stats(sym)
+        if mst:
+            yrs = "近4年"
             b = "0-20" if sq < 20 else "20-40" if sq < 40 else "40-70" if sq < 70 else "70-100"
-            if b in sst:
-                t = sst[b]
-                L.append(f"历史统计(近半年): 挤压{b}%档共{t['n']}次, 随后12h振幅≥1%占{t['p1']}%, ≥2%占{t['p2']}%, ≥3%占{t['p3']}%")
+            if b in mst.get("squeeze", {}):
+                t = mst["squeeze"][b]
+                L.append(f"统计({yrs}): 挤压{b}%档{t['n']}次, 后12h振幅≥1%占{t['p1']}%, ≥2%占{t['p2']}%, ≥3%占{t['p3']}%")
+            r4 = ctx4["rsi4h"]
+            rb = "<=30" if r4 <= 30 else ">=70" if r4 >= 70 else None
+            if rb and rb in mst.get("rsi", {}):
+                t = mst["rsi"][rb]
+                L.append(f"统计: 4hRSI{rb}共{t['n']}次, 后12h反弹≥1%占{t['bounce']}%, 回落≥1%占{t['drop']}%")
+            sk = ctx4.get("streak4", 0)
+            sb = "连阳>=3" if sk >= 3 else "连阴>=3" if sk <= -3 else None
+            if sb and sb in mst.get("streak", {}):
+                t = mst["streak"][sb]
+                L.append(f"统计: 4h{sb}共{t['n']}次, 次根延续占{t['cont']}%")
+            vr4 = ctx4.get("vol_ratio4h", 0)
+            if vr4 > 2:
+                vb = "放量上涨" if ctx4.get("up4") else "放量下跌"
+                if vb in mst.get("volume", {}):
+                    t = mst["volume"][vb]
+                    L.append(f"统计: 4h{vb}共{t['n']}次, 后12h同向延续≥1%占{t['cont']}%")
+            st_now = fetch_sentiment(sym) or {}
+            fr_now = st_now.get("funding_rate")
+            if fr_now is not None and abs(fr_now) * 100 > 0.05:
+                fb = "多付空>0.05%" if fr_now > 0 else "空付多>0.05%"
+                if fb in mst.get("funding", {}):
+                    t = mst["funding"][fb]
+                    L.append(f"统计: 8h费率{fb}共{t['n']}次, 后12h反向≥1%占{t['rev']}%")
         wy = ctx4.get("wyckoff")
         if wy:
             ev_map = {"spring": f"Spring假跌破收回({wy['event_vol']},{wy['event_age']}根前)——吸筹末段信号,偏多",
@@ -2123,7 +2282,14 @@ def main():
     parser.add_argument("--test", action="store_true", help="仅打印, 不推送")
     parser.add_argument("--symbols", default="ETHUSDC", help="逗号分隔, 如 ETHUSDC,BTCUSDC")
     parser.add_argument("--judge-test", action="store_true", help="裁判调试: 打印简报+裁判JSON后退出")
+    parser.add_argument("--refresh-stats", action="store_true", help="重算多年历史统计缓存后退出(cron每日调用)")
     args = parser.parse_args()
+    if args.refresh_stats:
+        for s in ("ETHUSDC",):
+            t0 = time.time()
+            st = market_stats(s, refresh=True)
+            print(f"{s} stats refreshed in {time.time()-t0:.0f}s:", json.dumps(st, ensure_ascii=False)[:200])
+        return
 
     factor_map = {"BTCUSDT": BTC_FACTORS, "BTCUSDC": BTC_FACTORS, "ETHUSDT": ETH_FACTORS, "ETHUSDC": ETH_FACTORS}
     watch = []
