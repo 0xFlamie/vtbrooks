@@ -1445,12 +1445,14 @@ def trend4_label(ctx4):
 
 
 def detect_events(sym, result, prev):
-    """3分钟扫描异动检测(边沿触发, 不带统计): RSI穿越70/30, 量比突破2, 逼近压力/支撑(<0.3%), 挤压进出<20%区。
+    """3分钟扫描异动检测(边沿触发, 不带统计): RSI(15m/4h)穿越70/30, 量比突破2, 逼近压力/支撑(<0.3%),
+    挤压进出<20%区, 3分钟急涨急跌(≥0.4%, 2026-08-09 用户要求: 极速行情不能等15分钟)。
     prev 为上次指标快照; 返回 (事件列表, 当前快照)"""
     lv = compute_levels(sym, result["signal"])
     ctx4 = compute_4h_context(sym)
     px = result["price"]
     cur = {
+        "px": px,
         "rsi": lv["rsi14"] if lv else None,
         "rsi4h": ctx4["rsi4h"] if ctx4 else None,
         "vol": lv["vol_ratio"] if lv else None,
@@ -1460,6 +1462,11 @@ def detect_events(sym, result, prev):
     }
     ev = []
     if prev:
+        p0 = prev.get("px")
+        if p0:
+            chg = (px - p0) / p0 * 100
+            if abs(chg) >= 0.4:
+                ev.append(f"3分钟{'急涨' if chg > 0 else '急跌'}{abs(chg):.1f}%(${p0:.0f}→${px:.0f})")
         r0, r1 = prev.get("rsi"), cur["rsi"]
         if r0 is not None and r1 is not None:
             if r0 < 70 <= r1:
