@@ -1524,9 +1524,9 @@ def plain_signals(result, lv, ctx4):
         dh = lv["swing_high"] - px
         dl = px - lv["swing_low"]
         if 0 < dh / px < 0.01:
-            out.append(f"现价距压力位${lv['swing_high']:.2f}仅${dh:.1f}, 突破临界")
+            out.append(f"现价距压力位${lv['swing_high']:.2f}仅${dh:.1f}, 临界区: 突破打开上方空间, 受阻则回落")
         elif 0 < dl / px < 0.01:
-            out.append(f"现价距支撑位${lv['swing_low']:.2f}仅${dl:.1f}, 失守临界")
+            out.append(f"现价距支撑位${lv['swing_low']:.2f}仅${dl:.1f}, 临界区: 跌破打开下方空间, 守住则反弹")
     return out[:4]
 
 
