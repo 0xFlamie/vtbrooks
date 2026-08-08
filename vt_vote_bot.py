@@ -1623,14 +1623,13 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     rh, rm = divmod(rm, 60)
     cd = f"距4h收线{rh}h{rm:02d}m" if rh else f"距4h收线{rm}m{rs:02d}s"
     L = []
-    L.append("=" * 36)
     L.append(f"{head} {sym} {tag}信号 | {pd.Timestamp.now():%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
     L.append("")
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-    L.append(f"🌐 {han_pad('4h层:', 9)} {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
+    L.append(f"🌐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     for rsn in (judge4.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
@@ -1641,7 +1640,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         fac = f"因子看涨 {bull_pct}%"
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
-    L.append(f"🌐 {han_pad('15m层:', 9)} {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
+    L.append(f"🌐 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     for rsn in (judge15.get("reasons") or [])[:2]:
         L.append(f"📝 {rsn}")
     L.append("")
@@ -1671,10 +1670,10 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         px = result["price"]
         # 区间常驻: 用户决策 2026-08-08, 不再要求"有事件或贴近边界"才显示
         pos = (px - wy["support"]) / (wy["resistance"] - wy["support"]) * 100
-    # 常驻指标区: 压力/支撑 → Wyckoff区间 → RSI → VWAP → 费率, 无emoji, 标签统一宽度10(值列同一起点)
+    # 常驻指标区: 压力/支撑 → Wyckoff区间 → RSI → VWAP → 费率, 无emoji无填充空格(用户指定版式 2026-08-08)
     if lv:
-        L.append(f"{han_pad('压力:', 10)} {lv['resistance']}")
-        L.append(f"{han_pad('支撑:', 10)} {lv['support']}")
+        L.append(f"压力: {lv['resistance']}")
+        L.append(f"支撑: {lv['support']}")
     L.append("")
     # 威科夫事件(假突破/假跌破/真突破): 有则显示在 Wyckoff 区间行正上方
     if ctx4 and ctx4.get("wyckoff") and wy.get("event"):
@@ -1701,7 +1700,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"   → 解读: 下降行情启动确认, 原区间底${sup}变成压力")
             L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
     if ctx4 and ctx4.get("wyckoff"):
-        L.append(f"{han_pad('Wyckoff:', 10)} ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
+        L.append(f"Wyckoff: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
     # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
     rsi_parts = []
     if lv:
@@ -1709,14 +1708,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if ctx4:
         rsi_parts.append(f"(4h){rsi_tag(ctx4['rsi4h'])}")
     if rsi_parts:
-        L.append(f"{han_pad('RSI:', 10)} " + " | ".join(rsi_parts))
+        L.append("RSI: " + " | ".join(rsi_parts))
     vw = compute_vwap(sym)
     if vw:
-        L.append(f"{han_pad('VWAP:', 10)} {vw[1]:+.1f}%")
+        L.append(f"VWAP: {vw[1]:+.1f}%")
     st = fetch_sentiment(sym) or {}
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
-        L.append(f"{han_pad('费率:', 10)} {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+        L.append(f"费率: {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     return "\n".join(L)
 
 
