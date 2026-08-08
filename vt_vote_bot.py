@@ -1456,7 +1456,7 @@ def fetch_fast_price(sym):
 
 def detect_events(sym, result, prev):
     """3分钟扫描异动检测(边沿触发, 不带统计): RSI(15m/4h)穿越70/30, 量比突破2, 逼近压力/支撑(<0.3%),
-    挤压进出<20%区, 3分钟急涨急跌(阈值随15m ATR自适应, 夹0.2-0.6%), VWAP穿越, 摆动极值突破。
+    挤压进出<20%区, 3分钟急涨急跌(阈值随15m ATR自适应, 夹0.2-0.6%), VWAP穿越, 摆动极值突破, 波动骤增(30m振幅≥2.5×ATR)。
     prev 为上次指标快照; 返回 (事件列表, 当前快照)"""
     lv = compute_levels(sym, result["signal"])
     ctx4 = compute_4h_context(sym)
@@ -1473,6 +1473,8 @@ def detect_events(sym, result, prev):
         "vwap_up": bool(vw and vw[1] >= 0),
         "broke_hi": bool(lv and px > lv["swing_high"]),
         "broke_lo": bool(lv and px < lv["swing_low"]),
+        # 波动骤增: 近30分钟振幅 ≥2.5倍ATR 且 ≥0.3%(2026-08-09: 横盘突然放大, AI必须开口)
+        "vol_burst": bool(lv and lv["rng_30m"] >= max(2.5 * lv["atr14"], 0.003 * px)),
     }
     ev = []
     if prev:
@@ -1491,6 +1493,8 @@ def detect_events(sym, result, prev):
                 ev.append(f"突破近20周期高点${lv['swing_high']:.2f}")
             if not prev.get("broke_lo") and cur["broke_lo"]:
                 ev.append(f"跌破近20周期低点${lv['swing_low']:.2f}")
+            if not prev.get("vol_burst") and cur["vol_burst"]:
+                ev.append(f"波动骤增(近30分钟振幅{lv['rng_30m'] / px * 100:.2f}%, 是常态{lv['rng_30m'] / lv['atr14']:.1f}倍)")
         r0, r1 = prev.get("rsi"), cur["rsi"]
         if r0 is not None and r1 is not None:
             if r0 < 70 <= r1:
@@ -1878,6 +1882,7 @@ def compute_levels(sym, sig):
         return {"support": support, "resistance": resistance, "rsi14": rsi14,
                 "atr14": atr14, "ema20": ema20, "ema50": ema50,
                 "vol_ratio": vol_ratio, "vol_word": vol_word,
+                "rng_30m": float(h15.iloc[-2:].max() - l15.iloc[-2:].min()),  # 近30分钟振幅, 波动骤增检测用
                 "swing_high": float(swing_high), "swing_low": float(swing_low),  # 数值版, 异动检测用
                 "recent_high": float(recent_high)}
     except Exception:
