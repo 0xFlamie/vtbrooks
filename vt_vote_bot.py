@@ -1452,6 +1452,7 @@ def detect_events(sym, result, prev):
     px = result["price"]
     cur = {
         "rsi": lv["rsi14"] if lv else None,
+        "rsi4h": ctx4["rsi4h"] if ctx4 else None,
         "vol": lv["vol_ratio"] if lv else None,
         "sq": ctx4["squeeze_pct"] if ctx4 else None,
         "near_hi": bool(lv and 0 < (lv["swing_high"] - px) / px < 0.003),
@@ -1469,6 +1470,16 @@ def detect_events(sym, result, prev):
                 ev.append(f"RSI进入超卖({r1:.0f})")
             elif r0 < 30 <= r1:
                 ev.append(f"RSI退出超卖({r1:.0f})")
+        r0, r1 = prev.get("rsi4h"), cur["rsi4h"]
+        if r0 is not None and r1 is not None:
+            if r0 < 70 <= r1:
+                ev.append(f"4hRSI进入超买({r1:.0f})")
+            elif r0 > 70 >= r1:
+                ev.append(f"4hRSI退出超买({r1:.0f})")
+            if r0 > 30 >= r1:
+                ev.append(f"4hRSI进入超卖({r1:.0f})")
+            elif r0 < 30 <= r1:
+                ev.append(f"4hRSI退出超卖({r1:.0f})")
         v0, v1 = prev.get("vol"), cur["vol"]
         if v0 is not None and v1 is not None and v0 <= 2 < v1:
             ev.append(f"突然放量({v1:.1f}倍均量)")
@@ -2370,8 +2381,9 @@ def build_brief_4h(result):
     return "\n".join(L)
 
 
-def build_market_brief(result, plan=None):
-    """15m 层简报: 只含短周期数据(18因子投票/15m形态/关键位/RSI/量比/VWAP/合约情绪), 判入场方向"""
+def build_market_brief(result, plan=None, events=None, prev=None):
+    """15m 层简报: 只含短周期数据(18因子投票/15m形态/关键位/RSI/量比/VWAP/合约情绪), 判入场方向
+    events=本轮扫描触发的异动(规则检测原文), prev=上一次15m判决(迟滞/连续性)"""
     sym = result["symbol"]; sig = result["signal"]
     px = result["price"]
     ba = result.get("brooks") or {}
@@ -2408,6 +2420,13 @@ def build_market_brief(result, plan=None):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    if events:
+        L.append("本轮扫描触发异动: " + "; ".join(events))
+    else:
+        L.append("本轮扫描无异动")
+    if prev and prev.get("direction"):
+        d_cn = {"LONG": "做多", "SHORT": "做空"}.get(prev["direction"], "观望")
+        L.append(f"上一次15m判决: {d_cn} 置信{prev.get('confidence')}。证据没有明显变化就维持这个方向。")
     return "\n".join(L)
 
 
@@ -2470,6 +2489,10 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
 
 SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时的方向(入场时机)。"
            "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
+           "简报末尾会给出本轮扫描触发的异动事件和上一次判决。异动要结合走势解读，不要复述事件本身："
+           "同样的RSI超买，在强势上升趋势里是动能、在区间顶部缩量时是回落前兆；放量+逼近压力，"
+           "突破失败和真突破的含义完全相反。不同组合给不同解读，理由里优先写你对异动的判断。"
+           "证据没有明显变化就维持上次方向，别因噪音翻转。"
            "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
            "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
            "理由用大白话写，像说给交易新手听：先说什么现象、再说意味着什么，"
@@ -2488,9 +2511,9 @@ def ai_judge_4h(result, prev=None):
     return _judge_call(SYS_4H, brief)
 
 
-def ai_judge_15m(result):
-    """15m 层裁判: 短周期入场方向"""
-    return _judge_call(SYS_15M, build_market_brief(result))
+def ai_judge_15m(result, prev=None, events=None):
+    """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
+    return _judge_call(SYS_15M, build_market_brief(result, events=events, prev=prev))
 
 
 def ai_judge(result, plan=None):
@@ -2554,6 +2577,7 @@ def main():
 
     last_dirs = {}     # sym → {"4h": dir, "15m": dir}, 上次扫描双层方向, 翻向检测用
     judge4_cache = {}  # sym → (bar_key, judge4), 4h 层每根4h收线重判一次(根内输入不变, 高频重判只会抖动)
+    judge15_prev = {}  # sym → 上次15m判决, 注入简报保持连续性(迟滞)
     prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
 
     while True:
@@ -2586,8 +2610,13 @@ def main():
                 else:
                     judge4 = ck[1]
 
-                # ── 15m 层: 每次扫描都判 ──
-                judge15 = ai_judge_15m(result)
+                # 异动: RSI(15m/4h)穿越/放量/逼位/挤压进出(边沿触发) — 先于15m判决, 事件要喂给裁判解读
+                events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
+                prev_metrics[sym] = cur_metrics
+
+                # ── 15m 层: 每次扫描都判, 携带上次判决(迟滞)+本轮异动(AI解读) ──
+                judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
+                judge15_prev[sym] = judge15
                 record_judge(result, judge4, judge15)
 
                 dirs = {"4h": judge4.get("direction"), "15m": judge15.get("direction")}
@@ -2595,10 +2624,6 @@ def main():
                 # 翻向: 任一层新方向非空且与上次不同 → 加推反转信号
                 reversal = bool(prev) and any(dirs[k] and dirs[k] != prev.get(k) for k in dirs)
                 last_dirs[sym] = dirs
-
-                # 异动: RSI穿越/放量/逼位/挤压进出(边沿触发)
-                events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
-                prev_metrics[sym] = cur_metrics
 
                 # 入场窗口: 4h有方向时, 15m贴近结构位回调/放量突破(纯规则)
                 ew = entry_window(result, judge4, compute_4h_context(sym),
