@@ -1658,29 +1658,6 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
         px = result["price"]
-        if wy.get("event"):
-            sup, res = wy["support"], wy["resistance"]
-            age_h = wy["event_age"] * 4
-            when = f"约{age_h}小时前" if age_h > 0 else "刚刚收线"
-            vw = wy["event_vol"]
-            dist_res = (res - px) / px * 100
-            dist_sup = (px - sup) / px * 100
-            if wy["event"] == "upthrust":
-                L.append(f"🔥 假突破回落({when},{vw}): 一根{vw}K线冲上区间顶${res}但没站住, 被打回区间内")
-                L.append(f"   → 解读: 区间顶有主力拉高出货, ${res}一带卖压重")
-                L.append(f"   → 应对: 现价距顶{dist_res:.1f}%, 反弹到${res}附近做空有优势; 4h实体收破${res}此信号作废")
-            elif wy["event"] == "spring":
-                L.append(f"🔥 假跌破收回({when},{vw}): 一根{vw}K线跌破区间底${sup}但没留住, 很快收回区间内")
-                L.append(f"   → 解读: 区间底有主力接盘吸筹, ${sup}一带买盘重")
-                L.append(f"   → 应对: 现价距底{dist_sup:.1f}%, 回踩${sup}附近做多有优势; 4h实体收破${sup}此信号作废")
-            elif wy["event"] == "joc_up":
-                L.append(f"🚀 真突破({when},{vw}): 4h实体收上区间顶${res}, 不是假突破")
-                L.append(f"   → 解读: 上升行情启动确认, 原区间顶${res}变成支撑")
-                L.append(f"   → 应对: 顺势做多, 回踩${res}附近是入场区; 跌回区间内此信号作废")
-            elif wy["event"] == "joc_down":
-                L.append(f"🚀 真跌破({when},{vw}): 4h实体收破区间底${sup}, 不是假跌破")
-                L.append(f"   → 解读: 下降行情启动确认, 原区间底${sup}变成压力")
-                L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
         # 区间常驻: 用户决策 2026-08-08, 不再要求"有事件或贴近边界"才显示
         pos = (px - wy["support"]) / (wy["resistance"] - wy["support"]) * 100
     # 常驻指标区: 压力/支撑 → Wyckoff区间 → RSI → VWAP → 费率, 无emoji(用户指定版式 2026-08-08)
@@ -1688,6 +1665,30 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         L.append(f"{han_pad('压力:', 8)} {lv['resistance']}")
         L.append(f"{han_pad('支撑:', 8)} {lv['support']}")
     L.append("")
+    # 威科夫事件(假突破/假跌破/真突破): 有则显示在 Wyckoff 区间行正上方
+    if ctx4 and ctx4.get("wyckoff") and wy.get("event"):
+        sup, res = wy["support"], wy["resistance"]
+        age_h = wy["event_age"] * 4
+        when = f"约{age_h}小时前" if age_h > 0 else "刚刚收线"
+        vw = wy["event_vol"]
+        dist_res = (res - px) / px * 100
+        dist_sup = (px - sup) / px * 100
+        if wy["event"] == "upthrust":
+            L.append(f"🔥 假突破回落({when},{vw}): 一根{vw}K线冲上区间顶${res}但没站住, 被打回区间内")
+            L.append(f"   → 解读: 区间顶有主力拉高出货, ${res}一带卖压重")
+            L.append(f"   → 应对: 现价距顶{dist_res:.1f}%, 反弹到${res}附近做空有优势; 4h实体收破${res}此信号作废")
+        elif wy["event"] == "spring":
+            L.append(f"🔥 假跌破收回({when},{vw}): 一根{vw}K线跌破区间底${sup}但没留住, 很快收回区间内")
+            L.append(f"   → 解读: 区间底有主力接盘吸筹, ${sup}一带买盘重")
+            L.append(f"   → 应对: 现价距底{dist_sup:.1f}%, 回踩${sup}附近做多有优势; 4h实体收破${sup}此信号作废")
+        elif wy["event"] == "joc_up":
+            L.append(f"🚀 真突破({when},{vw}): 4h实体收上区间顶${res}, 不是假突破")
+            L.append(f"   → 解读: 上升行情启动确认, 原区间顶${res}变成支撑")
+            L.append(f"   → 应对: 顺势做多, 回踩${res}附近是入场区; 跌回区间内此信号作废")
+        elif wy["event"] == "joc_down":
+            L.append(f"🚀 真跌破({when},{vw}): 4h实体收破区间底${sup}, 不是假跌破")
+            L.append(f"   → 解读: 下降行情启动确认, 原区间底${sup}变成压力")
+            L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
     if ctx4 and ctx4.get("wyckoff"):
         L.append(f"{han_pad('Wyckoff:', 10)} ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
     # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
