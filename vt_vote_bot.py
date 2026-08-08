@@ -1548,32 +1548,6 @@ def han_pad(s, width):
     return s + "　" * (gap // 2) + (" " if gap % 2 else "")
 
 
-def _vlen(s):
-    """视觉宽度: 汉字/全角/emoji=2, ASCII=1"""
-    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
-
-
-def wrap_pre(prefix, text, max_w=46):
-    """等宽块内手动折行(2026-08-08 用户要求): 续行缩进到首行文本起点, 排版不随设备宽度变化
-    max_w=46: iPhone pre 实测≥44视觉宽(08-08截图); 标点不落后行首(可超宽1字符)"""
-    indent = " " * _vlen(prefix)
-    body_w = max_w - _vlen(prefix)
-    lines, cur, cur_w = [], "", 0
-    no_lead = "，。；、：！？%)）,.;:!?"
-    for ch in text:
-        w = 2 if ord(ch) > 0x2E7F else 1
-        if cur and cur_w + w > body_w and ch not in no_lead:
-            lines.append(cur)
-            cur, cur_w = "", 0
-        cur += ch
-        cur_w += w
-    if cur:
-        lines.append(cur)
-    if not lines:
-        return [prefix.rstrip()]
-    return [prefix + lines[0]] + [indent + x for x in lines[1:]]
-
-
 def entry_window(result, judge4, ctx4, lv, vwap):
     """入场窗口(纯规则, 不经AI): 4h层有方向为前提。
     A回调=价格贴近结构位(≤0.5×ATR15m)+RSI重置/形态扳机, RR最优; B突破=收破摆动极值+放量(>1.5倍), 单边市用。
@@ -1657,7 +1631,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
     L.append(f"🌐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     for rsn in (judge4.get("reasons") or [])[:2]:
-        L.extend(wrap_pre("📝 ", rsn))
+        L.append(f"📝 {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
     # 因子占比跟方向对齐: 判空显示看跌, 判多显示看涨, 观望显示双侧
     if d15 == "SHORT":
@@ -1668,7 +1642,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
     L.append(f"🌐 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     for rsn in (judge15.get("reasons") or [])[:2]:
-        L.extend(wrap_pre("📝 ", rsn))
+        L.append(f"📝 {rsn}")
     L.append("")
     L.append(reso)
     if events:
@@ -1688,7 +1662,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if ps:
         L.append("")
         for s in ps:
-            L.extend(wrap_pre("💬 ", s))
+            L.append(f"💬 {s}")
     L.append("")
 
     if ctx4 and ctx4.get("wyckoff"):
@@ -1710,21 +1684,21 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         dist_res = (res - px) / px * 100
         dist_sup = (px - sup) / px * 100
         if wy["event"] == "upthrust":
-            L.extend(wrap_pre("🔥 ", f"假突破回落({when},{vw}): 一根{vw}K线冲上区间顶${res}但没站住, 被打回区间内"))
-            L.extend(wrap_pre("   → 解读: ", f"区间顶有主力拉高出货, ${res}一带卖压重"))
-            L.extend(wrap_pre("   → 应对: ", f"现价距顶{dist_res:.1f}%, 反弹到${res}附近做空有优势; 4h实体收破${res}此信号作废"))
+            L.append(f"🔥 假突破回落({when},{vw}): 一根{vw}K线冲上区间顶${res}但没站住, 被打回区间内")
+            L.append(f"   → 解读: 区间顶有主力拉高出货, ${res}一带卖压重")
+            L.append(f"   → 应对: 现价距顶{dist_res:.1f}%, 反弹到${res}附近做空有优势; 4h实体收破${res}此信号作废")
         elif wy["event"] == "spring":
-            L.extend(wrap_pre("🔥 ", f"假跌破收回({when},{vw}): 一根{vw}K线跌破区间底${sup}但没留住, 很快收回区间内"))
-            L.extend(wrap_pre("   → 解读: ", f"区间底有主力接盘吸筹, ${sup}一带买盘重"))
-            L.extend(wrap_pre("   → 应对: ", f"现价距底{dist_sup:.1f}%, 回踩${sup}附近做多有优势; 4h实体收破${sup}此信号作废"))
+            L.append(f"🔥 假跌破收回({when},{vw}): 一根{vw}K线跌破区间底${sup}但没留住, 很快收回区间内")
+            L.append(f"   → 解读: 区间底有主力接盘吸筹, ${sup}一带买盘重")
+            L.append(f"   → 应对: 现价距底{dist_sup:.1f}%, 回踩${sup}附近做多有优势; 4h实体收破${sup}此信号作废")
         elif wy["event"] == "joc_up":
-            L.extend(wrap_pre("🚀 ", f"真突破({when},{vw}): 4h实体收上区间顶${res}, 不是假突破"))
-            L.extend(wrap_pre("   → 解读: ", f"上升行情启动确认, 原区间顶${res}变成支撑"))
-            L.extend(wrap_pre("   → 应对: ", f"顺势做多, 回踩${res}附近是入场区; 跌回区间内此信号作废"))
+            L.append(f"🚀 真突破({when},{vw}): 4h实体收上区间顶${res}, 不是假突破")
+            L.append(f"   → 解读: 上升行情启动确认, 原区间顶${res}变成支撑")
+            L.append(f"   → 应对: 顺势做多, 回踩${res}附近是入场区; 跌回区间内此信号作废")
         elif wy["event"] == "joc_down":
-            L.extend(wrap_pre("🚀 ", f"真跌破({when},{vw}): 4h实体收破区间底${sup}, 不是假跌破"))
-            L.extend(wrap_pre("   → 解读: ", f"下降行情启动确认, 原区间底${sup}变成压力"))
-            L.extend(wrap_pre("   → 应对: ", f"顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废"))
+            L.append(f"🚀 真跌破({when},{vw}): 4h实体收破区间底${sup}, 不是假跌破")
+            L.append(f"   → 解读: 下降行情启动确认, 原区间底${sup}变成压力")
+            L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
     if ctx4 and ctx4.get("wyckoff"):
         L.append(f"Wyckoff: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
     # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
