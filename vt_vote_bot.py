@@ -1605,9 +1605,15 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         head, reso = "⚪", "⚪ 双层观望"
 
     tag = "🔄反转加推 " if is_reversal else ""
+    # 距4h收线倒计时: 4h K线按 UTC 0/4/8/12/16/20 点收线, 与本地时区无关
+    now_utc = pd.Timestamp.now(tz="UTC")
+    remain = now_utc.floor("4h") + pd.Timedelta("4h") - now_utc
+    rm, rs = divmod(int(remain.total_seconds()), 60)
+    rh, rm = divmod(rm, 60)
+    cd = f"距4h收线{rh}h{rm:02d}m" if rh else f"距4h收线{rm}m{rs:02d}s"
     L = []
     L.append("=" * 36)
-    L.append(f"{head} {sym} {tag}信号 | {pd.Timestamp.now():%m-%d %H:%M}")
+    L.append(f"{head} {sym} {tag}信号 | {pd.Timestamp.now():%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
     L.append("")
 
@@ -1652,26 +1658,43 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
         px = result["price"]
-        # 事件/贴近边界(<1%)才显示 TR; 区间中部无事件时该行无信息量, 不显示
-        near = min(abs(px - wy["support"]), abs(px - wy["resistance"])) / px < 0.01
         if wy.get("event"):
-            ev_map = {"spring": ("🔥 威科夫Spring: 假跌破TR下沿收回", "偏多", "主力打掉止损吸筹, 区间底部做多信号"),
-                      "upthrust": ("🔥 威科夫Upthrust: 假突破TR上沿回落", "偏空", "主力拉高出货, 区间顶部做空信号"),
-                      "joc_up": ("🚀 威科夫JOC: 实体收破TR上沿", "顺势做多", "真突破站稳, 上升行情启动确认"),
-                      "joc_down": ("🚀 威科夫JOC: 实体收破TR下沿", "顺势做空", "真跌破站稳, 下降行情启动确认")}
-            t, d, desc = ev_map[wy["event"]]
-            L.append(f"{t}({wy['event_vol']},{wy['event_age']}根前)")
-            L.append(f"   → {d}: {desc}")
-        if wy.get("event") or near:
-            L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
+            sup, res = wy["support"], wy["resistance"]
+            age_h = wy["event_age"] * 4
+            when = f"约{age_h}小时前" if age_h > 0 else "刚刚收线"
+            vw = wy["event_vol"]
+            dist_res = (res - px) / px * 100
+            dist_sup = (px - sup) / px * 100
+            if wy["event"] == "upthrust":
+                L.append(f"🔥 假突破回落({when},{vw}): 一根{vw}K线冲上区间顶${res}但没站住, 被打回区间内")
+                L.append(f"   → 解读: 区间顶有主力拉高出货, ${res}一带卖压重")
+                L.append(f"   → 应对: 现价距顶{dist_res:.1f}%, 反弹到${res}附近做空有优势; 4h实体收破${res}此信号作废")
+            elif wy["event"] == "spring":
+                L.append(f"🔥 假跌破收回({when},{vw}): 一根{vw}K线跌破区间底${sup}但没留住, 很快收回区间内")
+                L.append(f"   → 解读: 区间底有主力接盘吸筹, ${sup}一带买盘重")
+                L.append(f"   → 应对: 现价距底{dist_sup:.1f}%, 回踩${sup}附近做多有优势; 4h实体收破${sup}此信号作废")
+            elif wy["event"] == "joc_up":
+                L.append(f"🚀 真突破({when},{vw}): 4h实体收上区间顶${res}, 不是假突破")
+                L.append(f"   → 解读: 上升行情启动确认, 原区间顶${res}变成支撑")
+                L.append(f"   → 应对: 顺势做多, 回踩${res}附近是入场区; 跌回区间内此信号作废")
+            elif wy["event"] == "joc_down":
+                L.append(f"🚀 真跌破({when},{vw}): 4h实体收破区间底${sup}, 不是假跌破")
+                L.append(f"   → 解读: 下降行情启动确认, 原区间底${sup}变成压力")
+                L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
+        # 区间常驻: 用户决策 2026-08-08, 不再要求"有事件或贴近边界"才显示
+        pos = (px - wy["support"]) / (wy["resistance"] - wy["support"]) * 100
+        L.append(f"📦 近10天震荡区间: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现价在{pos:.0f}%位置)")
     if lv:
         L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
         L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
     L.append("")
 
     parts = []
+    # RSI 常驻: 15m + 4h 双周期都给(用户决策 2026-08-08), lv 缺失时用 ctx4 兜底仍显示4h RSI
     if lv:
-        parts.append(f"RSI{rsi_tag(lv['rsi14'])}")
+        parts.append(f"RSI(15m){rsi_tag(lv['rsi14'])}")
+    if ctx4:
+        parts.append(f"RSI(4h){rsi_tag(ctx4['rsi4h'])}")
     st = fetch_sentiment(sym) or {}
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
@@ -2330,10 +2353,10 @@ def build_brief_4h(result):
                     L.append(f"统计: 8h费率{fb}共{t['n']}次, 后12h反向≥1%占{t['rev']}%")
         wy = ctx4.get("wyckoff")
         if wy:
-            ev_map = {"spring": f"Spring假跌破收回({wy['event_vol']},{wy['event_age']}根前)——吸筹末段信号,偏多",
-                      "upthrust": f"Upthrust假突破回落({wy['event_vol']},{wy['event_age']}根前)——派发末段信号,偏空",
-                      "joc_up": "实体收破TR上沿(JOC)——上升启动确认,偏多",
-                      "joc_down": "实体收破TR下沿(JOC)——下降启动确认,偏空"}
+            ev_map = {"spring": f"Spring向下假跌破TR下沿${wy['support']}后收回({wy['event_vol']},{wy['event_age']}根前)——吸筹末段信号,偏多",
+                      "upthrust": f"Upthrust向上假突破TR上沿${wy['resistance']}后回落({wy['event_vol']},{wy['event_age']}根前)——派发末段信号,偏空",
+                      "joc_up": f"实体收破TR上沿${wy['resistance']}(JOC)——上升启动确认,偏多",
+                      "joc_down": f"实体收破TR下沿${wy['support']}(JOC)——下降启动确认,偏空"}
             ev = ev_map.get(wy["event"], "区间内,无Spring/Upthrust事件") if wy["event"] else "区间内,无Spring/Upthrust事件"
             L.append(f"威科夫4h: TR区间 ${wy['support']}-${wy['resistance']} (宽{wy['width_pct']}%) | {ev}")
     st_line = _sentiment_text(sym)
@@ -2436,7 +2459,9 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
           "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
           "magnitude 与方向无关也要给。理由用大白话写，像说给交易新手听：先说什么现象、再说意味着什么，"
-          "保留关键数字但不用术语缩写(如: \"波动率压到近一个月最低的四分之一，大行情快来了\")，每条不超过40字。")
+          "保留关键数字但不用术语缩写(如: \"波动率压到近一个月最低的四分之一，大行情快来了\")，每条不超过40字。"
+          "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
+          "要翻转方向，必须在理由里写清新出现的反转证据是什么。")
 
 SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时的方向(入场时机)。"
            "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
@@ -2446,9 +2471,16 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "保留关键数字但不用术语缩写，每条不超过40字。")
 
 
-def ai_judge_4h(result):
-    """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)"""
-    return _judge_call(SYS_4H, build_brief_4h(result))
+def ai_judge_4h(result, prev=None):
+    """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)
+    prev: 上一根4h收线的判决, 注入简报让 AI 自己扛迟滞(2026-08-08 临界区翻转抖动)"""
+    brief = build_brief_4h(result)
+    if prev and prev.get("direction"):
+        d_cn = {"LONG": "做多", "SHORT": "做空"}.get(prev["direction"], "观望")
+        tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
+        brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
+                  "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
+    return _judge_call(SYS_4H, brief)
 
 
 def ai_judge_15m(result):
@@ -2543,7 +2575,7 @@ def main():
                 bar_key = str(df4.index[-1]) if not df4.empty else ""
                 ck = judge4_cache.get(sym)
                 if not ck or ck[0] != bar_key:
-                    judge4 = ai_judge_4h(result)
+                    judge4 = ai_judge_4h(result, prev=ck[1] if ck else None)
                     judge4_cache[sym] = (bar_key, judge4)
                     print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
                 else:
