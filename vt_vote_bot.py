@@ -1683,13 +1683,13 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
         # 区间常驻: 用户决策 2026-08-08, 不再要求"有事件或贴近边界"才显示
         pos = (px - wy["support"]) / (wy["resistance"] - wy["support"]) * 100
-    # 常驻指标区: 压力/支撑 → 区间 → RSI → 资金费率(用户指定版式 2026-08-08)
+    # 常驻指标区: 压力/支撑 → Wyckoff区间 → RSI → VWAP → 费率, 无emoji(用户指定版式 2026-08-08)
     if lv:
-        L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
-        L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
+        L.append(f"{han_pad('压力:', 8)} {lv['resistance']}")
+        L.append(f"{han_pad('支撑:', 8)} {lv['support']}")
     L.append("")
     if ctx4 and ctx4.get("wyckoff"):
-        L.append(f"📦 {han_pad('Wyckoff:', 10)} ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现价在{pos:.0f}%位置)")
+        L.append(f"{han_pad('Wyckoff:', 10)} ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
     # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
     rsi_parts = []
     if lv:
@@ -1697,19 +1697,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if ctx4:
         rsi_parts.append(f"(4h){rsi_tag(ctx4['rsi4h'])}")
     if rsi_parts:
-        L.append(f"📊 {han_pad('RSI:', 10)} " + " | ".join(rsi_parts))
-    st = fetch_sentiment(sym) or {}
-    fund_parts = []
-    if "funding_rate" in st:
-        fr = st["funding_rate"] * 100
-        fund_parts.append(f"{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
-    if "taker_buy_sell_ratio" in st:
-        fund_parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+        L.append(f"{han_pad('RSI:', 10)} " + " | ".join(rsi_parts))
     vw = compute_vwap(sym)
     if vw:
-        fund_parts.append(f"VWAP{'上' if vw[1] >= 0 else '下'}{vw[1]:+.1f}%")
-    if fund_parts:
-        L.append(f"📊 {han_pad('资金费率:', 10)} " + " | ".join(fund_parts))
+        L.append(f"{han_pad('VWAP:', 10)} {vw[1]:+.1f}%")
+    st = fetch_sentiment(sym) or {}
+    if "funding_rate" in st:
+        fr = st["funding_rate"] * 100
+        L.append(f"{han_pad('费率:', 10)} {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     return "\n".join(L)
 
 
