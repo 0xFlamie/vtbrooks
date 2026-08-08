@@ -659,7 +659,7 @@ def vote(symbol, config):
         "strength": strength,
         "bullish": bullish,
         "bearish": bearish,
-        "price": float(df["close"].iloc[-1]),
+        "price": fetch_fast_price(symbol) or float(df["close"].iloc[-1]),  # 实时ticker优先; K线已收盘bar最多滞后15分钟(2026-08-08 价格不准的根因)
         "details": results,
         "brooks": ba,
     }
