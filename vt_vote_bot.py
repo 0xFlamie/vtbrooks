@@ -1683,29 +1683,33 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
         # 区间常驻: 用户决策 2026-08-08, 不再要求"有事件或贴近边界"才显示
         pos = (px - wy["support"]) / (wy["resistance"] - wy["support"]) * 100
-        L.append(f"📦 近10天震荡区间: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现价在{pos:.0f}%位置)")
+    # 常驻指标区: 压力/支撑 → 区间 → RSI → 资金费率(用户指定版式 2026-08-08)
     if lv:
-        L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
         L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
+        L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
     L.append("")
-
-    parts = []
-    # RSI 常驻: 15m + 4h 双周期都给(用户决策 2026-08-08), lv 缺失时用 ctx4 兜底仍显示4h RSI
+    if ctx4 and ctx4.get("wyckoff"):
+        L.append(f"📦 {han_pad('Wyckoff:', 10)} ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现价在{pos:.0f}%位置)")
+    # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
+    rsi_parts = []
     if lv:
-        parts.append(f"RSI(15m){rsi_tag(lv['rsi14'])}")
+        rsi_parts.append(f"(15m){rsi_tag(lv['rsi14'])}")
     if ctx4:
-        parts.append(f"RSI(4h){rsi_tag(ctx4['rsi4h'])}")
+        rsi_parts.append(f"(4h){rsi_tag(ctx4['rsi4h'])}")
+    if rsi_parts:
+        L.append(f"📊 {han_pad('RSI:', 10)} " + " | ".join(rsi_parts))
     st = fetch_sentiment(sym) or {}
+    fund_parts = []
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
-        parts.append(f"费率{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+        fund_parts.append(f"{fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
     if "taker_buy_sell_ratio" in st:
-        parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
+        fund_parts.append(f"买卖比{st['taker_buy_sell_ratio']:.2f}")
     vw = compute_vwap(sym)
     if vw:
-        parts.append(f"VWAP{'上' if vw[1] >= 0 else '下'}{vw[1]:+.1f}%")
-    if parts:
-        L.append("📊 " + " | ".join(parts))
+        fund_parts.append(f"VWAP{'上' if vw[1] >= 0 else '下'}{vw[1]:+.1f}%")
+    if fund_parts:
+        L.append(f"📊 {han_pad('资金费率:', 10)} " + " | ".join(fund_parts))
     return "\n".join(L)
 
 
@@ -1825,10 +1829,15 @@ def compute_levels(sym, sig):
         vol_word = "明显放量，有资金进场" if vol_ratio > 1.5 else "量能正常" if vol_ratio > 0.8 else "明显缩量，观望情绪重"
         if sig == "LONG":
             resistance = f"${swing_high:.2f}(近20周期高点)"
-            support = f"${swing_low:.2f}(近20周期低点)、${ema50:.2f}(EMA50均线)"
+            support = f"${swing_low:.2f}(近20周期低点)"
         else:
             resistance = f"${recent_high:.2f}(近5周期高点)、${swing_high:.2f}(近20周期高点)"
             support = f"${swing_low:.2f}(近20周期低点)"
+        # EMA50 按实际位置挂: 在现价上方是压力, 下方是支撑(2026-08-08 用户要求压力行也带EMA)
+        if ema50 >= c15.iloc[-1]:
+            resistance += f"、${ema50:.2f}(EMA50均线)"
+        else:
+            support += f"、${ema50:.2f}(EMA50均线)"
         return {"support": support, "resistance": resistance, "rsi14": rsi14,
                 "atr14": atr14, "ema20": ema20, "ema50": ema50,
                 "vol_ratio": vol_ratio, "vol_word": vol_word,
