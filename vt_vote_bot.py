@@ -1553,14 +1553,16 @@ def _vlen(s):
     return sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
 
 
-def wrap_pre(prefix, text, max_w=36):
-    """等宽块内手动折行(2026-08-08 用户要求): 续行缩进到首行文本起点, 排版不随设备宽度变化"""
+def wrap_pre(prefix, text, max_w=46):
+    """等宽块内手动折行(2026-08-08 用户要求): 续行缩进到首行文本起点, 排版不随设备宽度变化
+    max_w=46: iPhone pre 实测≥44视觉宽(08-08截图); 标点不落后行首(可超宽1字符)"""
     indent = " " * _vlen(prefix)
     body_w = max_w - _vlen(prefix)
     lines, cur, cur_w = [], "", 0
+    no_lead = "，。；、：！？%)）,.;:!?"
     for ch in text:
         w = 2 if ord(ch) > 0x2E7F else 1
-        if cur and cur_w + w > body_w:
+        if cur and cur_w + w > body_w and ch not in no_lead:
             lines.append(cur)
             cur, cur_w = "", 0
         cur += ch
