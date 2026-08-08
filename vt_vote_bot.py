@@ -2698,9 +2698,10 @@ def main():
         while True:
             now = time.localtime()
             seconds_to_next = 180 - ((now.tm_min % 3) * 60 + now.tm_sec)
-            if seconds_to_next < 3:
+            if seconds_to_next <= 10:  # 必须 >=步长粒度, 否则10秒步长永远跳不进窗口(2026-08-08 死循环事故)
+                time.sleep(max(seconds_to_next, 0))
                 break
-            time.sleep(min(10, seconds_to_next))
+            time.sleep(10)
             trig = None
             for sym, _ in watch:
                 ref = fast_ref.get(sym)
