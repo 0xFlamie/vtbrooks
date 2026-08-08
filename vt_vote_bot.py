@@ -674,10 +674,10 @@ def _escape_html(text):
 
 
 def send_telegram(text):
-    """同步发送, 10s 超时"""
+    """同步发送, 10s 超时; 整卡包 <pre> 等宽块(2026-08-08): Telegram 比例字体下全角空格宽度不一, 列对齐全废"""
     try:
         r = _http.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                       data={"chat_id": TELEGRAM_CHAT_ID, "text": _escape_html(text),
+                       data={"chat_id": TELEGRAM_CHAT_ID, "text": f"<pre>{_escape_html(text)}</pre>",
                              "parse_mode": "HTML"}, timeout=10)
         return r.status_code == 200
     except Exception:
