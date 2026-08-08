@@ -1444,6 +1444,16 @@ def trend4_label(ctx4):
     return "纠缠"
 
 
+def fetch_fast_price(sym):
+    """秒级轻量报价(快检专用): Coinbase ticker, 失败返回 None"""
+    coin = sym.replace("USDC", "").replace("USDT", "")
+    try:
+        d = http_get_json(f"https://api.exchange.coinbase.com/products/{coin}-USD/ticker")
+        return float(d["price"]) if d and d.get("price") else None
+    except Exception:
+        return None
+
+
 def detect_events(sym, result, prev):
     """3分钟扫描异动检测(边沿触发, 不带统计): RSI(15m/4h)穿越70/30, 量比突破2, 逼近压力/支撑(<0.3%),
     挤压进出<20%区, 3分钟急涨急跌(阈值随15m ATR自适应, 夹0.2-0.6%), VWAP穿越, 摆动极值突破。
@@ -2599,6 +2609,7 @@ def main():
     judge4_cache = {}  # sym → (bar_key, judge4), 4h 层每根4h收线重判一次(根内输入不变, 高频重判只会抖动)
     judge15_prev = {}  # sym → 上次15m判决, 注入简报保持连续性(迟滞)
     prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
+    fast_ref = {}      # sym → 快检基准(价/阈值/摆动极值/VWAP), 3分钟休眠期10秒快检用
 
     while True:
         now = pd.Timestamp.now()
@@ -2646,9 +2657,9 @@ def main():
                 last_dirs[sym] = dirs
 
                 # 入场窗口: 4h有方向时, 15m贴近结构位回调/放量突破(纯规则)
-                ew = entry_window(result, judge4, compute_4h_context(sym),
-                                  compute_levels(sym, judge4.get("direction") or judge15.get("direction") or result["signal"]),
-                                  compute_vwap(sym))
+                lv_main = compute_levels(sym, judge4.get("direction") or judge15.get("direction") or result["signal"])
+                vw_main = compute_vwap(sym)
+                ew = entry_window(result, judge4, compute_4h_context(sym), lv_main, vw_main)
                 ew_key = (ew["type"], ew["dir"]) if ew else None
                 if ew_key and prev_metrics.get("_ew") != ew_key:
                     events = events + [f"入场窗口开启({ew['type']})"]
@@ -2662,17 +2673,50 @@ def main():
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                 else:
                     print(f"4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'} (投票{result['votes']})")
+
+                # 快检基准: 3分钟休眠期间供10秒快检使用(2026-08-09 实时化: 检测秒级, AI判决仍触发式)
+                if lv_main:
+                    atr_pct = lv_main["atr14"] / result["price"] * 100
+                    fast_ref[sym] = {"px": result["price"],
+                                     "thr": min(max(0.5 * atr_pct, 0.2), 0.6),
+                                     "hi": lv_main["swing_high"], "lo": lv_main["swing_low"],
+                                     "vwap": vw_main[0] if vw_main else None}
+                else:
+                    fast_ref.pop(sym, None)
             except Exception as e:
                 print(f"错误: {e}")
 
         if args.loop == 0:
             break
-        # 睡到下一个3分钟整点 (每15分钟扫5次)
-        now = time.localtime()
-        seconds_to_next = 180 - ((now.tm_min % 3) * 60 + now.tm_sec)
-        if seconds_to_next < 3:
-            seconds_to_next += 180
-        time.sleep(seconds_to_next)
+        # 睡到下一个3分钟整点, 期间每10秒快检报价: 急动/破摆动极值/穿VWAP → 立即全扫
+        while True:
+            now = time.localtime()
+            seconds_to_next = 180 - ((now.tm_min % 3) * 60 + now.tm_sec)
+            if seconds_to_next < 3:
+                break
+            time.sleep(min(10, seconds_to_next))
+            trig = None
+            for sym, _ in watch:
+                ref = fast_ref.get(sym)
+                if not ref:
+                    continue
+                px = fetch_fast_price(sym)
+                if px is None:
+                    continue
+                chg = (px - ref["px"]) / ref["px"] * 100
+                if abs(chg) >= ref["thr"]:
+                    trig = f"{'急涨' if chg > 0 else '急跌'}{abs(chg):.1f}%(阈值{ref['thr']:.1f}%)"
+                elif ref["hi"] and px > ref["hi"]:
+                    trig = f"突破摆动高点${ref['hi']:.2f}"
+                elif ref["lo"] and px < ref["lo"]:
+                    trig = f"跌破摆动低点${ref['lo']:.2f}"
+                elif ref["vwap"] and (px - ref["vwap"]) * (ref["px"] - ref["vwap"]) < 0:
+                    trig = f"穿越VWAP(${ref['vwap']:.2f})"
+                if trig:
+                    print(f"\n  ⚡ {sym} 快检{trig}, 立即全扫")
+                    break
+            if trig:
+                break
 
 
 if __name__ == "__main__":
