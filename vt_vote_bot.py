@@ -1658,7 +1658,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     rh, rm = divmod(rm, 60)
     cd = f"距4h收线{rh}h{rm:02d}m" if rh else f"距4h收线{rm}m{rs:02d}s"
     L = []
-    L.append(f"{head} {sym} {tag}信号 | {pd.Timestamp.now():%m-%d %H:%M} | {cd}")
+    now_cn = pd.Timestamp.now(tz="UTC").tz_convert("Asia/Shanghai")  # 卡片时间戳用北京时间(用户在国内), 倒计时仍按UTC收线算
+    L.append(f"{head} {sym} {tag}信号 | {now_cn:%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
     L.append("")
 
