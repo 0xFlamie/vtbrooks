@@ -1446,11 +1446,12 @@ def trend4_label(ctx4):
 
 def detect_events(sym, result, prev):
     """3分钟扫描异动检测(边沿触发, 不带统计): RSI(15m/4h)穿越70/30, 量比突破2, 逼近压力/支撑(<0.3%),
-    挤压进出<20%区, 3分钟急涨急跌(≥0.4%, 2026-08-09 用户要求: 极速行情不能等15分钟)。
+    挤压进出<20%区, 3分钟急涨急跌(阈值随15m ATR自适应, 夹0.2-0.6%), VWAP穿越, 摆动极值突破。
     prev 为上次指标快照; 返回 (事件列表, 当前快照)"""
     lv = compute_levels(sym, result["signal"])
     ctx4 = compute_4h_context(sym)
     px = result["price"]
+    vw = compute_vwap(sym)
     cur = {
         "px": px,
         "rsi": lv["rsi14"] if lv else None,
@@ -1459,14 +1460,27 @@ def detect_events(sym, result, prev):
         "sq": ctx4["squeeze_pct"] if ctx4 else None,
         "near_hi": bool(lv and 0 < (lv["swing_high"] - px) / px < 0.003),
         "near_lo": bool(lv and 0 < (px - lv["swing_low"]) / px < 0.003),
+        "vwap_up": bool(vw and vw[1] >= 0),
+        "broke_hi": bool(lv and px > lv["swing_high"]),
+        "broke_lo": bool(lv and px < lv["swing_low"]),
     }
     ev = []
     if prev:
         p0 = prev.get("px")
-        if p0:
+        if p0 and lv:
+            # 阈值 = 0.5×15m ATR(换算成%), 夹 0.2-0.6%: 横盘收紧, 趋势放宽(2026-08-09)
+            atr_pct = lv["atr14"] / px * 100
+            thr = min(max(0.5 * atr_pct, 0.2), 0.6)
             chg = (px - p0) / p0 * 100
-            if abs(chg) >= 0.4:
-                ev.append(f"3分钟{'急涨' if chg > 0 else '急跌'}{abs(chg):.1f}%(${p0:.0f}→${px:.0f})")
+            if abs(chg) >= thr:
+                ev.append(f"3分钟{'急涨' if chg > 0 else '急跌'}{abs(chg):.1f}%(${p0:.0f}→${px:.0f}, 阈值{thr:.1f}%)")
+        if prev.get("vwap_up") is not None and cur["vwap_up"] != prev["vwap_up"]:
+            ev.append(f"价格{'上穿' if cur['vwap_up'] else '下穿'}VWAP(${vw[0]:.2f})")
+        if lv:
+            if not prev.get("broke_hi") and cur["broke_hi"]:
+                ev.append(f"突破近20周期高点${lv['swing_high']:.2f}")
+            if not prev.get("broke_lo") and cur["broke_lo"]:
+                ev.append(f"跌破近20周期低点${lv['swing_low']:.2f}")
         r0, r1 = prev.get("rsi"), cur["rsi"]
         if r0 is not None and r1 is not None:
             if r0 < 70 <= r1:
