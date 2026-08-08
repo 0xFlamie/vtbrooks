@@ -1671,10 +1671,10 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         px = result["price"]
         # 区间常驻: 用户决策 2026-08-08, 不再要求"有事件或贴近边界"才显示
         pos = (px - wy["support"]) / (wy["resistance"] - wy["support"]) * 100
-    # 常驻指标区: 压力/支撑 → Wyckoff区间 → RSI → VWAP → 费率, 无emoji(用户指定版式 2026-08-08)
+    # 常驻指标区: 压力/支撑 → Wyckoff区间 → RSI → VWAP → 费率, 无emoji, 标签统一宽度10(值列同一起点)
     if lv:
-        L.append(f"{han_pad('压力:', 8)} {lv['resistance']}")
-        L.append(f"{han_pad('支撑:', 8)} {lv['support']}")
+        L.append(f"{han_pad('压力:', 10)} {lv['resistance']}")
+        L.append(f"{han_pad('支撑:', 10)} {lv['support']}")
     L.append("")
     # 威科夫事件(假突破/假跌破/真突破): 有则显示在 Wyckoff 区间行正上方
     if ctx4 and ctx4.get("wyckoff") and wy.get("event"):
