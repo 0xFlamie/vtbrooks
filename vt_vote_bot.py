@@ -27,6 +27,9 @@ TELEGRAM_CHAT_ID = os.environ.get("VT_TELEGRAM_CHAT", "")
 DS_API_KEY = os.environ.get("VT_DS_API_KEY", "")
 DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
+MS_API_KEY = os.environ.get("VT_MS_API_KEY", "")
+MS_API_URL = "https://api.moonshot.cn/v1/chat/completions"
+MS_MODEL = "kimi-k3"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
 LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
@@ -2547,18 +2550,21 @@ MAG_TIERS = ["<1%", "1-2%", "2-3%", "3%+"]
 MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
-def _judge_call(system, brief):
-    """通用裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 失败重试1次再回 JUDGE_UNAVAILABLE"""
+def _judge_call(system, brief, name="DS", url=None, key=None, model=None):
+    """单裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 失败重试1次再回 JUDGE_UNAVAILABLE"""
+    url = url or DS_API_URL
+    key = key if key is not None else DS_API_KEY
+    model = model or DS_MODEL
     for attempt in (1, 2):
         try:
-            r = _http.post(DS_API_URL, json={
-                "model": DS_MODEL,
+            r = _http.post(url, json={
+                "model": model,
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": brief}],
                 "max_tokens": 400, "temperature": 0.2},
-                headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
+                headers={"Authorization": f"Bearer {key}"}, timeout=20)
             if r.status_code != 200:
-                print(f"WARN: 裁判API {r.status_code}: {r.text[:200]}")
+                print(f"WARN: 裁判{name} {r.status_code}: {r.text[:200]}")
                 if attempt == 1:
                     time.sleep(2)
                     continue
@@ -2585,11 +2591,43 @@ def _judge_call(system, brief):
             return {"verdict": "执行" if direction else "观望", "direction": direction,
                     "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons}
         except Exception as e:
-            print(f"WARN: 裁判异常 {type(e).__name__}: {e}")
+            print(f"WARN: 裁判{name}异常 {type(e).__name__}: {e}")
             if attempt == 1:
                 time.sleep(2)
                 continue
             return dict(JUDGE_UNAVAILABLE)
+
+
+def _dual_judge(system, brief):
+    """双模裁判(2026-08-10 用户要求): DeepSeek + Kimi 并行判决。
+    同向→采用(置信取均值, 理由各取2条带来源标注); 分歧→观望; 单边故障→用另一边"""
+    if not MS_API_KEY:
+        return _judge_call(system, brief)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as ex:
+        f_ds = ex.submit(_judge_call, system, brief)
+        f_km = ex.submit(_judge_call, system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL)
+        ds, km = f_ds.result(), f_km.result()
+    ds_ok, km_ok = ds["confidence"] >= 0, km["confidence"] >= 0
+    if ds_ok and not km_ok:
+        ds["reasons"] = [f"DS: {r}" for r in ds["reasons"]]
+        return ds
+    if km_ok and not ds_ok:
+        km["reasons"] = [f"Kimi: {r}" for r in km["reasons"]]
+        return km
+    if not (ds_ok or km_ok):
+        return ds
+    if ds["direction"] == km["direction"]:
+        return {"verdict": "执行" if ds["direction"] else "观望", "direction": ds["direction"],
+                "confidence": round((ds["confidence"] + km["confidence"]) / 2),
+                "mag_tier": ds["mag_tier"] if ds["mag_tier"] is not None else km["mag_tier"],
+                "reasons": ([f"DS: {r}" for r in ds["reasons"][:2]] +
+                            [f"Kimi: {r}" for r in km["reasons"][:2]])}
+    d_cn = {"LONG": "多", "SHORT": "空", None: "观望"}
+    return {"verdict": "观望", "direction": None, "confidence": min(ds["confidence"], km["confidence"]),
+            "mag_tier": None,
+            "reasons": [f"双模分歧: DeepSeek判{d_cn[ds['direction']]} / Kimi判{d_cn[km['direction']]}, 保守观望",
+                        f"DS: {ds['reasons'][0]}", f"Kimi: {km['reasons'][0]}"]}
 
 
 SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的方向和最大涨跌幅。"
@@ -2626,12 +2664,12 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
-    return _judge_call(SYS_4H, brief)
+    return _dual_judge(SYS_4H, brief)
 
 
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
-    return _judge_call(SYS_15M, build_market_brief(result, events=events, prev=prev))
+    return _dual_judge(SYS_15M, build_market_brief(result, events=events, prev=prev))
 
 
 def ai_judge(result, plan=None):
