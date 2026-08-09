@@ -2785,7 +2785,8 @@ def main():
                 df4 = fetch_klines(sym, "4h", 3, drop_incomplete=False)
                 bar_key = str(df4.index[-1]) if not df4.empty else ""
                 ck = judge4_cache.get(sym)
-                if not ck or ck[0] != bar_key:
+                # 缓存不可用判决(置信-1)直接重判, 不让一次API故障污染整根4h(2026-08-10)
+                if not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0:
                     judge4 = ai_judge_4h(result, prev=ck[1] if ck else None)
                     judge4_cache[sym] = (bar_key, judge4)
                     print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
