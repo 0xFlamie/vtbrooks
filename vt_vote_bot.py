@@ -1445,14 +1445,24 @@ def trend4_label(ctx4):
 
 
 def fetch_fast_price(sym):
-    """实时报价: Coinbase + Binance.US + OKX 三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None"""
+    """实时报价三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None
+    USDC 对用 USDC 计价的所(OKX/Gate, Binance国际美区451), 不用 USDT 对冒充(用户反馈)"""
     coin = sym.replace("USDC", "").replace("USDT", "")
-    sources = [
-        (f"https://api.exchange.coinbase.com/products/{coin}-USD/ticker", lambda d: d.get("price")),
-        (f"https://api.binance.us/api/v3/ticker/price?symbol={coin}USDT", lambda d: d.get("price")),
-        (f"https://www.okx.com/api/v5/market/ticker?instId={coin}-USDT",
-         lambda d: d["data"][0].get("last") if d.get("data") else None),
-    ]
+    if sym.endswith("USDC"):
+        sources = [
+            (f"https://www.okx.com/api/v5/market/ticker?instId={coin}-USDC",
+             lambda d: d["data"][0].get("last") if d.get("data") else None),
+            (f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={coin}_USDC",
+             lambda d: d[0].get("last") if isinstance(d, list) and d else None),
+            (f"https://api.exchange.coinbase.com/products/{coin}-USD/ticker", lambda d: d.get("price")),
+        ]
+    else:
+        sources = [
+            (f"https://api.exchange.coinbase.com/products/{coin}-USD/ticker", lambda d: d.get("price")),
+            (f"https://api.binance.us/api/v3/ticker/price?symbol={coin}USDT", lambda d: d.get("price")),
+            (f"https://www.okx.com/api/v5/market/ticker?instId={coin}-USDT",
+             lambda d: d["data"][0].get("last") if d.get("data") else None),
+        ]
     vals = []
     for url, pick in sources:
         try:
@@ -2567,7 +2577,7 @@ def _judge_call(system, brief):
         reasons = data.get("reasons")
         if not isinstance(reasons, list) or not reasons:
             reasons = [str(data.get("reason", "")).strip() or "无理由"]
-        reasons = [str(x).strip() for x in reasons[:3]]
+        reasons = [str(x).strip() for x in reasons[:4]]
         return {"verdict": "执行" if direction else "观望", "direction": direction,
                 "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons}
     except Exception as e:
