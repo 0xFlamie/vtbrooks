@@ -1679,8 +1679,9 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
     L.append(f"🌐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
-    for rsn in (judge4.get("reasons") or [])[:2]:
-        L.append(f"📝 {rsn}")
+    NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
+    for i, rsn in enumerate((judge4.get("reasons") or [])[:3]):
+        L.append(f"{NUM_EMOJI[i]} {rsn}")
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
     # 因子占比跟方向对齐: 判空显示看跌, 判多显示看涨, 观望显示双侧
     if d15 == "SHORT":
@@ -1690,8 +1691,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
     L.append(f"🌐 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
-    for rsn in (judge15.get("reasons") or [])[:2]:
-        L.append(f"📝 {rsn}")
+    for i, rsn in enumerate((judge15.get("reasons") or [])[:3]):
+        L.append(f"{NUM_EMOJI[i]} {rsn}")
     L.append("")
     L.append(reso)
     if events:
@@ -2579,7 +2580,7 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "威科夫Spring/JOC向上偏多, Upthrust/JOC向下偏空。"
           "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
           "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
-          "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
+          "\"confidence\": 0-100 整数, \"reasons\": [3条理由]}。"
           "magnitude 与方向无关也要给。理由用大白话写，像说给交易新手听：先说什么现象、再说意味着什么，"
           "保留关键数字但不用术语缩写(如: \"波动率压到近一个月最低的四分之一，大行情快来了\")，每条不超过40字。"
           "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
@@ -2594,7 +2595,7 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "均线排列这些更硬的证据，别整段只讲布林带。"
            "证据没有明显变化就维持上次方向，别因噪音翻转。"
            "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
-           "\"confidence\": 0-100 整数, \"reasons\": [2-3条理由]}。"
+           "\"confidence\": 0-100 整数, \"reasons\": [3条理由]}。"
            "理由用大白话写，像说给交易新手听：先说什么现象、再说意味着什么，"
            "保留关键数字但不用术语缩写，每条不超过40字。")
 
