@@ -1659,9 +1659,8 @@ def _dir_emoji(d, conf):
     return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
 
 
-def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None, prev_ps=None):
-    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表, ew=入场窗口
-    prev_ps: 上一条推送的💬白话行, 只显示有变化的行(2026-08-09 用户反馈同文案连推几小时无信息量)"""
+def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None):
+    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表, ew=入场窗口"""
     sym = result["symbol"]
     d4, d15 = judge4.get("direction"), judge15.get("direction")
     c4, c15 = judge4.get("confidence", -1), judge15.get("confidence", -1)
@@ -1738,15 +1737,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"　　进攻: 突破${hi:.2f}(摆动高) → 上涨加速段")
             if wy_nav:
                 L.append(f"　　目标: TR区间顶${wy_nav['resistance']} (宽{wy_nav['width_pct']}%区间上沿)")
-    # 白话信号: 规则生成+统计库引用; 只显示与上条推送相比有变化的行, 重复状态不刷屏
-    ps = plain_signals(result, lv, ctx4)
-    ps_show = [s for s in ps if not prev_ps or s not in prev_ps]
-    if ps_show:
-        L.append("")
-        for s in ps_show:
-            L.append(f"💬 {s}")
+    # 💬 白话信号段已移除(用户决策 2026-08-10): 内容与维度行重复(同属结构维度), 规则文案不如双模解读
     L.append("")
-    result["_ps"] = ps  # 供主循环记录, 下条推送做对比
 
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
@@ -2862,9 +2854,7 @@ def main():
 
                 if is_15m or reversal or events:
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
-                                        events=None if is_15m else (events or None), ew=ew,
-                                        prev_ps=prev_metrics.get("_ps"))
-                    prev_metrics[sym]["_ps"] = result.get("_ps")
+                                        events=None if is_15m else (events or None), ew=ew)
                     ok = send_telegram(msg)
                     tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
