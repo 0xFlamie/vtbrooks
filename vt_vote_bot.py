@@ -1695,6 +1695,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     for i, rsn in enumerate((judge4.get("reasons") or [])[:4]):
         L.append(f"{NUM_EMOJI[i]} {rsn}")
+    L.append("")  # 双层之间空行分隔(用户要求 2026-08-10)
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
     # 因子占比跟方向对齐: 判空显示看跌, 判多显示看涨, 观望显示双侧
     if d15 == "SHORT":
@@ -2622,7 +2623,7 @@ def _merge_dims(dd, kk):
             out.append(f"{dim} | DS: {t1}")
             continue
         if t2 and not t1:
-            out.append(f"{dim} | Kimi: {t2}")
+            out.append(f"{dim} | KK: {t2}")
             continue
         if not t1 and not t2:
             continue
@@ -2632,7 +2633,7 @@ def _merge_dims(dd, kk):
             tag = "共识偏多" if lean > 0 else "共识偏空" if lean < 0 else "共识中性"
             out.append(f"{dim} | {tag}: {t1}")
         else:
-            out.append(f"{dim} | 分歧: DS「{t1}」/ Kimi「{t2}」")
+            out.append(f"{dim} | 分歧: DS「{t1}」/ KK「{t2}」")
     return out
 
 
@@ -2652,7 +2653,7 @@ def _dual_judge(system, brief):
         ds["reasons"] = [f"DS: {r}" for r in ds["reasons"]]
         return ds
     if km_ok and not ds_ok:
-        km["reasons"] = [f"Kimi: {r}" for r in km["reasons"]]
+        km["reasons"] = [f"KK: {r}" for r in km["reasons"]]
         return km
     if not (ds_ok or km_ok):
         return ds
@@ -2661,7 +2662,7 @@ def _dual_judge(system, brief):
             reasons = _merge_dims(ds["dims"], km["dims"])
         else:  # 旧格式兜底: 理由各取2条带来源标注
             reasons = ([f"DS: {r}" for r in ds["reasons"][:2]] +
-                       [f"Kimi: {r}" for r in km["reasons"][:2]])
+                       [f"KK: {r}" for r in km["reasons"][:2]])
         return {"verdict": "执行" if ds["direction"] else "观望", "direction": ds["direction"],
                 "confidence": round((ds["confidence"] + km["confidence"]) / 2),
                 "mag_tier": ds["mag_tier"] if ds["mag_tier"] is not None else km["mag_tier"],
@@ -2669,7 +2670,7 @@ def _dual_judge(system, brief):
     d_cn = {"LONG": "多", "SHORT": "空", None: "观望"}
     return {"verdict": "观望", "direction": None, "confidence": min(ds["confidence"], km["confidence"]),
             "mag_tier": None,
-            "reasons": [f"双模分歧: DeepSeek判{d_cn[ds['direction']]} / Kimi判{d_cn[km['direction']]}, 保守观望",
+            "reasons": [f"双模分歧: DS判{d_cn[ds['direction']]} / KK判{d_cn[km['direction']]}, 保守观望",
                         f"DS: {ds['reasons'][0]}", f"Kimi: {km['reasons'][0]}"]}
 
 
