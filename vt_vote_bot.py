@@ -1394,7 +1394,7 @@ def format_update(result, judge, plan=None):
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🌐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
+        L.append(f"🌏 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
     L.append(trigger_line(result))
     L.append("")
 
@@ -1688,7 +1688,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
-    L.append(f"🌐 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
+    L.append(f"🌏 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     for i, rsn in enumerate((judge4.get("reasons") or [])[:4]):
         L.append(f"{NUM_EMOJI[i]} {rsn}")
@@ -1700,7 +1700,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         fac = f"因子看涨 {bull_pct}%"
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
-    L.append(f"🌐 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
+    L.append(f"🌏 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     for i, rsn in enumerate((judge15.get("reasons") or [])[:4]):
         L.append(f"{NUM_EMOJI[i]} {rsn}")
     L.append("")
@@ -1844,7 +1844,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4s = {"trend_up": "上升", "trend_down": "下降", "range": "震荡"}.get(ctx4["brooks"].get("state"), "-")
-        L.append(f"🌐 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
+        L.append(f"🌏 4h: {trend4_label(ctx4)} | Brooks4h {b4s} | 挤压{ctx4['squeeze_pct']:.0f}%分位 | RSI{rsi_tag(ctx4['rsi4h'])}")
     L.append(trigger_line(result))
     L.append("")
 
