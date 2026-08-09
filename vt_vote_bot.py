@@ -29,7 +29,7 @@ DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
 MS_API_KEY = os.environ.get("VT_MS_API_KEY", "")
 MS_API_URL = "https://api.moonshot.cn/v1/chat/completions"
-MS_MODEL = "kimi-k3"
+MS_MODEL = "kimi-k2.6"  # 直出模型6s级(2026-08-10实测), k3思考模型16s太慢不适合高频判决
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
 LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
@@ -2550,14 +2550,12 @@ MAG_TIERS = ["<1%", "1-2%", "2-3%", "3%+"]
 MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
-def _judge_call(system, brief, name="DS", url=None, key=None, model=None):
+def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
+                temp=0.2, max_tok=400, req_timeout=20):
     """单裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 失败重试1次再回 JUDGE_UNAVAILABLE"""
     url = url or DS_API_URL
     key = key if key is not None else DS_API_KEY
     model = model or DS_MODEL
-    temp = 1.0 if name == "Kimi" else 0.2  # kimi-k3 推理模型只收 temperature=1
-    max_tok = 2000 if name == "Kimi" else 400  # k3 是思考模型, reasoning 消耗 token, 400 会截断正文
-    req_timeout = 60 if name == "Kimi" else 20  # 思考模型推理慢, 20s 不够
     for attempt in (1, 2):
         try:
             r = _http.post(url, json={
