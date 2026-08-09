@@ -2607,7 +2607,8 @@ def _dual_judge(system, brief):
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(2) as ex:
         f_ds = ex.submit(_judge_call, system, brief)
-        f_km = ex.submit(_judge_call, system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL, 1.0)  # moonshot 新模型温度锁1
+        f_km = ex.submit(_judge_call, system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL,
+                         1.0, 2000, 60)  # moonshot 新模型温度锁1, 思考占额度, 推理慢
         ds, km = f_ds.result(), f_km.result()
     ds_ok, km_ok = ds["confidence"] >= 0, km["confidence"] >= 0
     if ds_ok and not km_ok:
