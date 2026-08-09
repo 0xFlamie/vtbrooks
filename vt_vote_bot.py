@@ -1693,6 +1693,23 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         L.append(f"　　{han_pad('入场区:', 8)} {ew['zone']}")
         L.append(f"　　{han_pad('失效位:', 8)} ${ew['invalid']:.2f} ({inv_rel}{ew['dist']:.2f}%)")
         L.append(f"　　{han_pad('依据:', 8)} {ew['basis']}")
+    # 持仓导航: 15m有方向时给防守/进攻/目标位(纯规则结构位, 2026-08-09 用户要求: 开单后的延续性指引)
+    if d15 and lv:
+        wy_nav = (ctx4 or {}).get("wyckoff")
+        hi, lo = lv["swing_high"], lv["swing_low"]
+        L.append("")
+        if d15 == "SHORT":
+            L.append("🧭 持仓导航 (持空)")
+            L.append(f"　　防守: 站稳${hi:.2f}(摆动高)上方 → 空头逻辑失效, 该撤")
+            L.append(f"　　进攻: 跌破${lo:.2f}(摆动低) → 下跌加速段")
+            if wy_nav:
+                L.append(f"　　目标: TR区间底${wy_nav['support']} (宽{wy_nav['width_pct']}%区间下沿)")
+        else:
+            L.append("🧭 持仓导航 (持多)")
+            L.append(f"　　防守: 跌破${lo:.2f}(摆动低)下方 → 多头逻辑失效, 该撤")
+            L.append(f"　　进攻: 突破${hi:.2f}(摆动高) → 上涨加速段")
+            if wy_nav:
+                L.append(f"　　目标: TR区间顶${wy_nav['resistance']} (宽{wy_nav['width_pct']}%区间上沿)")
     # 白话信号: 规则生成+统计库引用, 常态化显示
     ps = plain_signals(result, lv, ctx4)
     if ps:
