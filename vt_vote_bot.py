@@ -2556,13 +2556,14 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None):
     key = key if key is not None else DS_API_KEY
     model = model or DS_MODEL
     temp = 1.0 if name == "Kimi" else 0.2  # kimi-k3 推理模型只收 temperature=1
+    max_tok = 2000 if name == "Kimi" else 400  # k3 是思考模型, reasoning 消耗 token, 400 会截断正文
     for attempt in (1, 2):
         try:
             r = _http.post(url, json={
                 "model": model,
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": brief}],
-                "max_tokens": 400, "temperature": temp},
+                "max_tokens": max_tok, "temperature": temp},
                 headers={"Authorization": f"Bearer {key}"}, timeout=20)
             if r.status_code != 200:
                 print(f"WARN: 裁判{name} {r.status_code}: {r.text[:200]}")
