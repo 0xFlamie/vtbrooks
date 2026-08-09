@@ -1445,13 +1445,25 @@ def trend4_label(ctx4):
 
 
 def fetch_fast_price(sym):
-    """秒级轻量报价(快检专用): Coinbase ticker, 失败返回 None"""
+    """实时报价: Coinbase + Binance.US + OKX 三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None"""
     coin = sym.replace("USDC", "").replace("USDT", "")
-    try:
-        d = http_get_json(f"https://api.exchange.coinbase.com/products/{coin}-USD/ticker")
-        return float(d["price"]) if d and d.get("price") else None
-    except Exception:
-        return None
+    sources = [
+        (f"https://api.exchange.coinbase.com/products/{coin}-USD/ticker", lambda d: d.get("price")),
+        (f"https://api.binance.us/api/v3/ticker/price?symbol={coin}USDT", lambda d: d.get("price")),
+        (f"https://www.okx.com/api/v5/market/ticker?instId={coin}-USDT",
+         lambda d: d["data"][0].get("last") if d.get("data") else None),
+    ]
+    vals = []
+    for url, pick in sources:
+        try:
+            d = http_get_json(url, timeout=5)
+            v = pick(d) if d else None
+            if v:
+                vals.append(float(v))
+        except Exception:
+            continue
+    vals.sort()
+    return vals[len(vals) // 2] if vals else None
 
 
 def detect_events(sym, result, prev):
@@ -1699,13 +1711,13 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         hi, lo = lv["swing_high"], lv["swing_low"]
         L.append("")
         if d15 == "SHORT":
-            L.append("🧭 持仓导航 (持空)")
+            L.append("🧭 持仓导航 (若持空)")
             L.append(f"　　防守: 站稳${hi:.2f}(摆动高)上方 → 空头逻辑失效, 该撤")
             L.append(f"　　进攻: 跌破${lo:.2f}(摆动低) → 下跌加速段")
             if wy_nav:
                 L.append(f"　　目标: TR区间底${wy_nav['support']} (宽{wy_nav['width_pct']}%区间下沿)")
         else:
-            L.append("🧭 持仓导航 (持多)")
+            L.append("🧭 持仓导航 (若持多)")
             L.append(f"　　防守: 跌破${lo:.2f}(摆动低)下方 → 多头逻辑失效, 该撤")
             L.append(f"　　进攻: 突破${hi:.2f}(摆动高) → 上涨加速段")
             if wy_nav:
