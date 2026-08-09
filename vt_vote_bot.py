@@ -2571,9 +2571,13 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
                     continue
                 return dict(JUDGE_UNAVAILABLE)
             text = r.json()["choices"][0]["message"]["content"]
-            # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
-            m = re.search(r"\{[^{}]*\}", text, re.S)
-            data = json.loads(m.group(0)) if m else {}
+            # 容忍 ```json 围栏和前后多余文字; 贪婪匹配首尾大括号(dims 嵌套对象, 非贪婪会截断)
+            m = re.search(r"\{.*\}", text, re.S)
+            try:
+                data = json.loads(m.group(0)) if m else {}
+            except json.JSONDecodeError:
+                m2 = re.search(r"\{[^{}]*\}", text, re.S)
+                data = json.loads(m2.group(0)) if m2 else {}
             # 方向制: 含"多"→LONG, 含"空"→SHORT, 否则观望
             d_str = str(data.get("direction", ""))
             direction = "LONG" if "多" in d_str else "SHORT" if "空" in d_str else None
@@ -2585,18 +2589,51 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
                 if label in mag_str:
                     mag_tier = t
                     break
+            dims = data.get("dims")
+            dims = {k: str(v).strip() for k, v in dims.items()} if isinstance(dims, dict) else None
             reasons = data.get("reasons")
             if not isinstance(reasons, list) or not reasons:
-                reasons = [str(data.get("reason", "")).strip() or "无理由"]
+                reasons = list(dims.values()) if dims else [str(data.get("reason", "")).strip() or "无理由"]
             reasons = [str(x).strip() for x in reasons[:4]]
             return {"verdict": "执行" if direction else "观望", "direction": direction,
-                    "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons}
+                    "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons, "dims": dims}
         except Exception as e:
             print(f"WARN: 裁判{name}异常 {type(e).__name__}: {e}")
             if attempt == 1:
                 time.sleep(2)
                 continue
             return dict(JUDGE_UNAVAILABLE)
+
+
+def _dim_lean(text):
+    """维度文本的多空倾向: 方向词计数, >0偏多 <0偏空 =0中性"""
+    bull = ("偏多", "做多", "看涨", "上行", "上涨", "突破", "支撑", "回踩", "反弹", "买盘", "多头", "新高")
+    bear = ("偏空", "做空", "看跌", "下行", "下跌", "回落", "压力", "卖压", "抛压", "空头", "跌破", "新低")
+    s = sum(t.count(w) for w in bull) - sum(t.count(w) for w in bear)
+    return 1 if s > 0 else -1 if s < 0 else 0
+
+
+def _merge_dims(dd, kk):
+    """双模维度合并(2026-08-10): 同向标共识, 反向标分歧各引一句; 单边缺失用另一边"""
+    out = []
+    for dim in ("趋势", "动量", "结构", "情绪"):
+        t1, t2 = dd.get(dim, ""), kk.get(dim, "")
+        if t1 and not t2:
+            out.append(f"{dim} | DS: {t1}")
+            continue
+        if t2 and not t1:
+            out.append(f"{dim} | Kimi: {t2}")
+            continue
+        if not t1 and not t2:
+            continue
+        l1, l2 = _dim_lean(t1), _dim_lean(t2)
+        if l1 == l2 or l1 == 0 or l2 == 0:
+            lean = l1 or l2
+            tag = "共识偏多" if lean > 0 else "共识偏空" if lean < 0 else "共识中性"
+            out.append(f"{dim} | {tag}: {t1}")
+        else:
+            out.append(f"{dim} | 分歧: DS「{t1}」/ Kimi「{t2}」")
+    return out
 
 
 def _dual_judge(system, brief):
@@ -2620,11 +2657,15 @@ def _dual_judge(system, brief):
     if not (ds_ok or km_ok):
         return ds
     if ds["direction"] == km["direction"]:
+        if ds.get("dims") and km.get("dims"):
+            reasons = _merge_dims(ds["dims"], km["dims"])
+        else:  # 旧格式兜底: 理由各取2条带来源标注
+            reasons = ([f"DS: {r}" for r in ds["reasons"][:2]] +
+                       [f"Kimi: {r}" for r in km["reasons"][:2]])
         return {"verdict": "执行" if ds["direction"] else "观望", "direction": ds["direction"],
                 "confidence": round((ds["confidence"] + km["confidence"]) / 2),
                 "mag_tier": ds["mag_tier"] if ds["mag_tier"] is not None else km["mag_tier"],
-                "reasons": ([f"DS: {r}" for r in ds["reasons"][:2]] +
-                            [f"Kimi: {r}" for r in km["reasons"][:2]])}
+                "reasons": reasons, "dims": None}
     d_cn = {"LONG": "多", "SHORT": "空", None: "观望"}
     return {"verdict": "观望", "direction": None, "confidence": min(ds["confidence"], km["confidence"]),
             "mag_tier": None,
@@ -2637,24 +2678,26 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "威科夫Spring/JOC向上偏多, Upthrust/JOC向下偏空。"
           "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
           "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
-          "\"confidence\": 0-100 整数, \"reasons\": [4条理由]}。"
-          "magnitude 与方向无关也要给。理由用大白话写，像说给交易新手听：先说什么现象、再说意味着什么，"
-          "保留关键数字但不用术语缩写(如: \"波动率压到近一个月最低的四分之一，大行情快来了\")，每条不超过40字。"
+          "\"confidence\": 0-100 整数, "
+          "\"dims\": {\"趋势\": \"...\", \"动量\": \"...\", \"结构\": \"...\", \"情绪\": \"...\"}}。"
+          "dims 固定四个维度: 趋势=均线排列/Always In; 动量=RSI/量比/连阴阳; 结构=威科夫/挤压/关键位; 情绪=费率/持仓/多空比。"
+          "每个维度一句话不超过30字，先说现象再说含义(如\"均线多头排列，顺势占优\")，该维度无明确信号就写\"中性: 简述\"。"
+          "magnitude 与方向无关也要给。用大白话，保留关键数字，不用术语缩写。"
           "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
-          "要翻转方向，必须在理由里写清新出现的反转证据是什么。")
+          "要翻转方向，必须在dims里写清新出现的反转证据是什么。")
 
 SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时的方向(入场时机)。"
            "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
            "简报末尾会给出本轮扫描触发的异动事件和上一次判决。异动要结合走势解读，不要复述事件本身："
            "同样的RSI超买，在强势上升趋势里是动能、在区间顶部缩量时是回落前兆；放量+逼近压力，"
-           "突破失败和真突破的含义完全相反。不同组合给不同解读，理由里优先写你对异动的判断。"
-           "布林带只是位置参考之一且最多在一条理由里提一次；理由优先写量能变化、摆动高低点/结构位、"
-           "均线排列这些更硬的证据，别整段只讲布林带。"
-           "证据没有明显变化就维持上次方向，别因噪音翻转。"
+           "突破失败和真突破的含义完全相反。不同组合给不同解读。"
            "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
-           "\"confidence\": 0-100 整数, \"reasons\": [4条理由]}。"
-           "理由用大白话写，像说给交易新手听：先说什么现象、再说意味着什么，"
-           "保留关键数字但不用术语缩写，每条不超过40字。")
+           "\"confidence\": 0-100 整数, "
+           "\"dims\": {\"趋势\": \"...\", \"动量\": \"...\", \"结构\": \"...\", \"情绪\": \"...\"}}。"
+           "dims 固定四个维度: 趋势=均线/VWAP/因子投票; 动量=RSI/量比/本轮异动(有异动优先写); 结构=摆动高低点/布林位置(布林最多在结构里提一次); 情绪=费率/多空比/上次判决连续性。"
+           "每个维度一句话不超过30字，先说现象再说含义，该维度无明确信号就写\"中性: 简述\"。"
+           "证据没有明显变化就维持上次方向，别因噪音翻转。"
+           "用大白话写，像说给交易新手听，保留关键数字但不用术语缩写。")
 
 
 def ai_judge_4h(result, prev=None):
