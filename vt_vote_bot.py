@@ -2633,6 +2633,28 @@ def main():
     judge15_prev = {}  # sym → 上次15m判决, 注入简报保持连续性(迟滞)
     prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
     fast_ref = {}      # sym → 快检基准(价/阈值/摆动极值/VWAP), 3分钟休眠期10秒快检用
+    # 状态持久化(2026-08-09 用户要求): 重启不失忆, 上次判决/快照/快检基准全部恢复
+    STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_state.json")
+
+    def save_state():
+        try:
+            json.dump({"judge4_cache": judge4_cache, "judge15_prev": judge15_prev,
+                       "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref},
+                      open(STATE_FILE, "w"))
+        except Exception as e:
+            print(f"WARN: 状态保存失败 {e}")
+
+    if os.path.exists(STATE_FILE):
+        try:
+            st = json.load(open(STATE_FILE))
+            judge4_cache.update(st.get("judge4_cache", {}))
+            judge15_prev.update(st.get("judge15_prev", {}))
+            last_dirs.update(st.get("last_dirs", {}))
+            prev_metrics.update(st.get("prev_metrics", {}))
+            fast_ref.update(st.get("fast_ref", {}))
+            print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)}")
+        except Exception as e:
+            print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
     while True:
         now = pd.Timestamp.now()
@@ -2709,6 +2731,7 @@ def main():
             except Exception as e:
                 print(f"错误: {e}")
 
+        save_state()  # 每轮全扫后落盘, 重启/部署不丢判决连续性
         if args.loop == 0:
             break
         # 睡到下一个3分钟整点, 期间每10秒快检报价: 急动/破摆动极值/穿VWAP → 立即全扫

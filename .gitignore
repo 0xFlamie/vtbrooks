@@ -1,5 +1,10 @@
-vt_bot.log
+judge_journal.json
+judge_lessons.json
+market_stats.json
+squeeze_stats.json
 vt_predictions.json
+oi_snapshots.json
+runtime_state.json
+vt_bot.log
 __pycache__/
-*.pyc
-.DS_Store
+.env
