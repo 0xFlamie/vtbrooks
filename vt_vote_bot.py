@@ -2488,6 +2488,30 @@ def build_market_brief(result, plan=None, events=None, prev=None):
         if vw:
             L.append(f"VWAP(日内): ${vw[0]:.2f} | 价在VWAP{'上' if vw[1] >= 0 else '下'} ({vw[1]:+.2f}%)")
 
+    # 布林带位置(15m+1h, 20/2): 用户做空常用依据(缩量反弹打上轨/1h中轨), 2026-08-09 加入简报
+    for tf in ("15m", "1h"):
+        try:
+            dfb = fetch_klines(sym, tf, 60)
+            cb = dfb["close"]
+            mid = float(cb.rolling(20).mean().iloc[-1])
+            sd = float(cb.rolling(20).std().iloc[-1])
+            up, lo = mid + 2 * sd, mid - 2 * sd
+            if px >= up:
+                pos = "上轨外(透支)"
+            elif px >= (mid + up) / 2:
+                pos = "贴近上轨(压力区)"
+            elif px >= mid:
+                pos = "中上轨之间"
+            elif px >= (mid + lo) / 2:
+                pos = "中下轨之间"
+            elif px >= lo:
+                pos = "贴近下轨(支撑区)"
+            else:
+                pos = "下轨外(超跌)"
+            L.append(f"布林{tf}: 上${up:.1f} 中${mid:.1f} 下${lo:.1f} | 价在{pos}")
+        except Exception:
+            pass
+
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
