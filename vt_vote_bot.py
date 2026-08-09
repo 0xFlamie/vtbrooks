@@ -1754,6 +1754,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
     if ctx4 and ctx4.get("wyckoff"):
         L.append(f"Wyckoff: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
+    else:
+        L.append("Wyckoff: 无有效区间(趋势市或区间超宽), 看趋势/摆动位")
     # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
     rsi_parts = []
     if lv:
