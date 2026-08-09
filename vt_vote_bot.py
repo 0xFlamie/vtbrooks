@@ -2609,7 +2609,7 @@ def _dim_lean(text):
     """维度文本的多空倾向: 方向词计数, >0偏多 <0偏空 =0中性"""
     bull = ("偏多", "做多", "看涨", "上行", "上涨", "突破", "支撑", "回踩", "反弹", "买盘", "多头", "新高")
     bear = ("偏空", "做空", "看跌", "下行", "下跌", "回落", "压力", "卖压", "抛压", "空头", "跌破", "新低")
-    s = sum(t.count(w) for w in bull) - sum(t.count(w) for w in bear)
+    s = sum(text.count(w) for w in bull) - sum(text.count(w) for w in bear)
     return 1 if s > 0 else -1 if s < 0 else 0
 
 
