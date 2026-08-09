@@ -2187,7 +2187,7 @@ def _wyckoff(df, atr4h_pct):
         sup, res = float(l[win].min()), float(h[win].max())
         width_pct = (res - sup) / ((res + sup) / 2) * 100
         # TR 宽度上限随波动率自适应: 约8倍4h ATR (ETH 4h 10天区间常见5-10%), 下限0.3%防死盘
-        if width_pct > max(6.0, 8 * atr4h_pct) or width_pct < 0.3:
+        if width_pct > max(7.0, 8 * atr4h_pct) or width_pct < 0.3:  # 地板7.0: 低波动期8×ATR只有4-5%, 6.0会误拒有效TR(2026-08-10)
             return None
         vavg = float(np.mean(v[-20:])) or 1.0
         out = {"tr": True, "support": round(sup, 2), "resistance": round(res, 2),
@@ -2895,9 +2895,9 @@ def main():
                 chg = (px - ref["px"]) / ref["px"] * 100
                 if abs(chg) >= ref["thr"]:
                     trig = f"{'急涨' if chg > 0 else '急跌'}{abs(chg):.1f}%(阈值{ref['thr']:.1f}%)"
-                elif ref["hi"] and px > ref["hi"]:
+                elif ref["hi"] and ref["px"] <= ref["hi"] < px:  # 边沿: 基准价还在下方才算突破(2026-08-10 刷屏事故)
                     trig = f"突破摆动高点${ref['hi']:.2f}"
-                elif ref["lo"] and px < ref["lo"]:
+                elif ref["lo"] and px < ref["lo"] <= ref["px"]:
                     trig = f"跌破摆动低点${ref['lo']:.2f}"
                 elif ref["vwap"] and (px - ref["vwap"]) * (ref["px"] - ref["vwap"]) < 0:
                     trig = f"穿越VWAP(${ref['vwap']:.2f})"
