@@ -2548,41 +2548,48 @@ MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
 def _judge_call(system, brief):
-    """通用裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 任何失败返回 JUDGE_UNAVAILABLE"""
-    try:
-        r = _http.post(DS_API_URL, json={
-            "model": DS_MODEL,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": brief}],
-            "max_tokens": 400, "temperature": 0.2},
-            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
-        if r.status_code != 200:
-            print(f"WARN: 裁判API {r.status_code}: {r.text[:200]}")
+    """通用裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 失败重试1次再回 JUDGE_UNAVAILABLE"""
+    for attempt in (1, 2):
+        try:
+            r = _http.post(DS_API_URL, json={
+                "model": DS_MODEL,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": brief}],
+                "max_tokens": 400, "temperature": 0.2},
+                headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=20)
+            if r.status_code != 200:
+                print(f"WARN: 裁判API {r.status_code}: {r.text[:200]}")
+                if attempt == 1:
+                    time.sleep(2)
+                    continue
+                return dict(JUDGE_UNAVAILABLE)
+            text = r.json()["choices"][0]["message"]["content"]
+            # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
+            m = re.search(r"\{[^{}]*\}", text, re.S)
+            data = json.loads(m.group(0)) if m else {}
+            # 方向制: 含"多"→LONG, 含"空"→SHORT, 否则观望
+            d_str = str(data.get("direction", ""))
+            direction = "LONG" if "多" in d_str else "SHORT" if "空" in d_str else None
+            confidence = int(data.get("confidence", -1))
+            # 幅度档: 解析 "3%+" / "2-3%" / "1-2%" / "<1%" → tier 0-3, 无法解析→None
+            mag_str = str(data.get("magnitude", ""))
+            mag_tier = None
+            for t, label in ((3, "3%+"), (2, "2-3"), (1, "1-2"), (0, "<1")):
+                if label in mag_str:
+                    mag_tier = t
+                    break
+            reasons = data.get("reasons")
+            if not isinstance(reasons, list) or not reasons:
+                reasons = [str(data.get("reason", "")).strip() or "无理由"]
+            reasons = [str(x).strip() for x in reasons[:4]]
+            return {"verdict": "执行" if direction else "观望", "direction": direction,
+                    "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons}
+        except Exception as e:
+            print(f"WARN: 裁判异常 {type(e).__name__}: {e}")
+            if attempt == 1:
+                time.sleep(2)
+                continue
             return dict(JUDGE_UNAVAILABLE)
-        text = r.json()["choices"][0]["message"]["content"]
-        # 容忍 ```json 围栏和前后多余文字, 提取第一个 {...} 块
-        m = re.search(r"\{[^{}]*\}", text, re.S)
-        data = json.loads(m.group(0)) if m else {}
-        # 方向制: 含"多"→LONG, 含"空"→SHORT, 否则观望
-        d_str = str(data.get("direction", ""))
-        direction = "LONG" if "多" in d_str else "SHORT" if "空" in d_str else None
-        confidence = int(data.get("confidence", -1))
-        # 幅度档: 解析 "3%+" / "2-3%" / "1-2%" / "<1%" → tier 0-3, 无法解析→None
-        mag_str = str(data.get("magnitude", ""))
-        mag_tier = None
-        for t, label in ((3, "3%+"), (2, "2-3"), (1, "1-2"), (0, "<1")):
-            if label in mag_str:
-                mag_tier = t
-                break
-        reasons = data.get("reasons")
-        if not isinstance(reasons, list) or not reasons:
-            reasons = [str(data.get("reason", "")).strip() or "无理由"]
-        reasons = [str(x).strip() for x in reasons[:4]]
-        return {"verdict": "执行" if direction else "观望", "direction": direction,
-                "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons}
-    except Exception as e:
-        print(f"WARN: 裁判异常 {type(e).__name__}: {e}")
-        return dict(JUDGE_UNAVAILABLE)
 
 
 SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的方向和最大涨跌幅。"
