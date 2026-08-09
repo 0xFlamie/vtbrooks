@@ -29,7 +29,7 @@ DS_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DS_MODEL = "deepseek-chat"
 MS_API_KEY = os.environ.get("VT_MS_API_KEY", "")
 MS_API_URL = "https://api.moonshot.cn/v1/chat/completions"
-MS_MODEL = "kimi-k2.6"  # 直出模型6s级(2026-08-10实测), k3思考模型16s太慢不适合高频判决
+MS_MODEL = "kimi-k2.5"  # 2026-08-10实测: k2.5/k2.6/k3全是思考模型(温度锁1+reasoning占额度), k2.5最快(18s/4000tok)
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
 LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
@@ -2608,7 +2608,7 @@ def _dual_judge(system, brief):
     with ThreadPoolExecutor(2) as ex:
         f_ds = ex.submit(_judge_call, system, brief)
         f_km = ex.submit(_judge_call, system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL,
-                         1.0, 2000, 60)  # moonshot 新模型温度锁1, 思考占额度, 推理慢
+                         1.0, 4000, 60)  # 思考模型: 温度锁1, reasoning占~1000tok, 18s级
         ds, km = f_ds.result(), f_km.result()
     ds_ok, km_ok = ds["confidence"] >= 0, km["confidence"] >= 0
     if ds_ok and not km_ok:
