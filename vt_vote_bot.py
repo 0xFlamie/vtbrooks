@@ -2404,6 +2404,10 @@ def build_brief_4h(result):
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
         L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f}) | 4hRSI: {rsi_tag(ctx4['rsi4h'])}")
+        vr4 = ctx4.get("vol_ratio4h", 0)
+        # 量比常驻简报(2026-08-09 用户要求: 量能是4h方向关键证据, 不再只在>2倍时才提)
+        vr_word = "明显放量" if vr4 > 1.5 else "明显缩量" if vr4 < 0.8 else "平量"
+        L.append(f"4h量比: {vr4:.2f} ({vr_word}, 相对近20根均量, {'阳线' if ctx4.get('up4') else '阴线'})")
         mst = market_stats(sym)
         if mst:
             yrs = "近4年"
