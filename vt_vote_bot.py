@@ -2143,8 +2143,39 @@ def _cb_15m_history(sym, days=200):
     return df
 
 
-def _15m_history(sym, days=400):
-    """Hyperliquid 15m K线分页(统计库用), 约400天; 失败返回 None"""
+def _bn_15m_history(sym, days=2000):
+    """Binance.US 15m 分页(1000根/页): 2000天≈192页, 约2分钟; 统计用途深度优先(2026-08-10 用户要求)"""
+    coin = sym.replace("USDC", "").replace("USDT", "")
+    t1 = int(time.time() * 1000)
+    t0 = t1 - days * 86400 * 1000
+    rows = []
+    try:
+        while t0 < t1:
+            d = http_get_json(f"https://api.binance.us/api/v3/klines?symbol={coin}USDT"
+                              f"&interval=15m&limit=1000&startTime={t0}&endTime={t1}", timeout=20)
+            if not isinstance(d, list) or not d:
+                break
+            rows.extend(d)
+            last = int(d[-1][0])
+            if last <= t0:
+                break
+            t0 = last + 1
+            time.sleep(0.15)
+        if len(rows) > 10000:
+            df = pd.DataFrame([{"date": pd.to_datetime(int(x[0]), unit="ms"),
+                                "open": float(x[1]), "high": float(x[2]), "low": float(x[3]),
+                                "close": float(x[4]), "volume": float(x[5])} for x in rows])
+            return df.drop_duplicates("date").set_index("date").sort_index()
+    except Exception:
+        pass
+    return None
+
+
+def _15m_history(sym, days=2000):
+    """15m 深历史(统计库用): Binance.US 2000天主选; HL(~52天)/Coinbase(200天)兜底"""
+    df = _bn_15m_history(sym, days)
+    if df is not None:
+        return df
     coin = sym.replace("USDT", "").replace("USDC", "")
     t1 = int(time.time() * 1000)
     t0 = t1 - days * 86400 * 1000
@@ -2746,7 +2777,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
                   "30-45" if r15 <= 45 else "45-55" if r15 <= 55 else "55-70")
             t = m15.get(f"rsi{rb}")
             if t:
-                L.append(f"统计(近200天15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
+                L.append(f"统计(近5年15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
             vr_ = lv["vol_ratio"]
             vb = "<0.6" if vr_ < 0.6 else "0.6-1.2" if vr_ < 1.2 else "1.2-2" if vr_ < 2 else ">2"
             t = m15.get(f"量比{vb}{'阳' if lv.get('up15') else '阴'}")
