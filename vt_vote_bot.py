@@ -1575,6 +1575,19 @@ def detect_events(sym, result, prev):
         pass
     cur["fr_val"] = fr_now
     cur["fr_ext"] = bool(fr_now is not None and abs(fr_now) * 100 > 0.05)
+    # 统计形态触发(2026-08-10 五年训练结论): 高费率+趋势位置组合
+    ret7d = None
+    try:
+        c4 = fetch_klines(sym, "4h", 50)["close"]
+        if len(c4) >= 43:
+            ret7d = float((c4.iloc[-1] / c4.iloc[-43] - 1) * 100)
+    except Exception:
+        pass
+    fr8pct = fr_now * 100 if fr_now is not None else None
+    cur["ret7d"] = ret7d
+    cur["sig_relief"] = bool(fr8pct is not None and fr8pct >= 0.03 and ret7d is not None and ret7d < -5)
+    cur["sig_top"] = bool(fr8pct is not None and fr8pct >= 0.05 and ret7d is not None and ret7d > 5)
+    cur["sig_sqtrend"] = bool(cur.get("sq") is not None and cur["sq"] < 20 and ret7d is not None and ret7d > 5)
     ev = []
     if prev:
         p0 = prev.get("px")
@@ -1634,6 +1647,13 @@ def detect_events(sym, result, prev):
         if cur["fr_ext"] and not prev.get("fr_ext"):
             side = "多付空, 多头过热" if cur["fr_val"] > 0 else "空付多, 空头过热"
             ev.append(f"费率进入极端区({cur['fr_val'] * 100:.3f}%, {side})")
+        # 统计形态(五年训练 2026-08-10): 边沿触发
+        if cur.get("sig_relief") and not prev.get("sig_relief"):
+            ev.append(f"统计形态: 费率{cur['fr_val'] * 100:.3f}%+7日跌{abs(cur['ret7d']):.0f}% → 后24h跌≥0.5%历史占90%(下跌中继, 偏空)")
+        if cur.get("sig_top") and not prev.get("sig_top"):
+            ev.append(f"统计形态: 费率{cur['fr_val'] * 100:.3f}%+7日涨{cur['ret7d']:.0f}% → 后24h回落≥0.5%历史占87%(亢奋见顶, 偏空)")
+        if cur.get("sig_sqtrend") and not prev.get("sig_sqtrend"):
+            ev.append(f"统计形态: 7日涨{cur['ret7d']:.0f}%+挤压{cur['sq']:.0f}%分位 → 后24h涨≥0.5%历史占87%(趋势压缩突破, 偏多)")
         for key, label in (("near_hi", f"逼近压力位${lv['swing_high']:.2f}"), ("near_lo", f"逼近支撑位${lv['swing_low']:.2f}")):
             if not prev.get(key) and cur[key]:
                 ev.append(label)
