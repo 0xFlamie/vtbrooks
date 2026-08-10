@@ -1760,6 +1760,10 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 L.append(f"{NUM_EMOJI[n]} {rsn}")
                 n += 1
 
+    ctx4 = compute_4h_context(sym)
+    lv = compute_levels(sym, d4 or d15 or result["signal"])
+    wy = (ctx4 or {}).get("wyckoff")
+    px = result["price"]
     _render_reasons(judge4)
     L.append("")  # 双层之间空行分隔(用户要求 2026-08-10)
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
@@ -1772,11 +1776,29 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
     L.append(f"🌏 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
     _render_reasons(judge15)
+    # KK反对的落实: 给反弹/回落的一二位目标(规则计算), 并提示到位后可顺主裁方向(2026-08-10 用户要求)
+    kk_line = next((r for r in (judge15.get("reasons") or []) if r.startswith("⚠️ KK反对")), None)
+    if kk_line and lv:
+        vw_now = compute_vwap(sym)
+        cands = [("EMA20", lv["ema20"]), ("EMA50", lv["ema50"]),
+                 ("摆动高", lv["swing_high"]), ("摆动低", lv["swing_low"])]
+        if vw_now:
+            cands.append(("VWAP", vw_now[0]))
+        if "判多" in kk_line:
+            tg = sorted([c for c in cands if c[1] > px], key=lambda x: x[1])[:2]
+            if tg:
+                line = f"　↳ 若反弹: 一位${tg[0][1]:.2f}({tg[0][0]})"
+                if len(tg) > 1:
+                    line += f" 二位${tg[1][1]:.2f}({tg[1][0]}), 到位滞涨可继续顺主裁方向"
+                L.append(line)
+        elif "判空" in kk_line:
+            tg = sorted([c for c in cands if c[1] < px], key=lambda x: -x[1])[:2]
+            if tg:
+                line = f"　↳ 若回落: 一位${tg[0][1]:.2f}({tg[0][0]})"
+                if len(tg) > 1:
+                    line += f" 二位${tg[1][1]:.2f}({tg[1][0]}), 到位企稳可继续顺主裁方向"
+                L.append(line)
     L.append("")
-    ctx4 = compute_4h_context(sym)
-    lv = compute_levels(sym, d4 or d15 or result["signal"])
-    wy = (ctx4 or {}).get("wyckoff")
-    px = result["price"]
     if others:
         L.append("⚡ 异动: " + "; ".join(others))
         L.append("")
