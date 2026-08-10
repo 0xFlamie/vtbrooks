@@ -1482,6 +1482,24 @@ def fetch_news(seen):
     return out[:2]
 
 
+def translate_title(title):
+    """英文新闻标题→中文(DS快翻, 2026-08-10 用户要求推送中文显示); 失败回原文"""
+    if not any(ord(c) < 0x2E80 for c in title):  # 已是中文不翻
+        return title
+    try:
+        r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
+            {"role": "system", "content": "把英文新闻标题翻译成中文, 一句话不超过30字, 只输出译文, 不加引号"},
+            {"role": "user", "content": title}], "max_tokens": 100, "temperature": 0.2},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=15)
+        if r.status_code == 200:
+            t = r.json()["choices"][0]["message"]["content"].strip()
+            if t:
+                return t
+    except Exception:
+        pass
+    return title
+
+
 def fetch_fast_price(sym):
     """实时报价三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None
     USDC 对用 USDC 计价的所(OKX/Gate, Binance国际美区451), 不用 USDT 对冒充(用户反馈)"""
@@ -1701,14 +1719,13 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     c4, c15 = judge4.get("confidence", -1), judge15.get("confidence", -1)
 
     if d4 and d4 == d15:
-        head, reso = ("🟢" if d4 == "LONG" else "🔴"), f"✅ 层级共振 {'做多' if d4 == 'LONG' else '做空'}"
+        head = "🟢" if d4 == "LONG" else "🔴"
     elif d4 and d15:
-        head, reso = "⚠️", f"⚠️ 层级背离 (4h{'多' if d4 == 'LONG' else '空'} / 15m{'多' if d15 == 'LONG' else '空'})"
+        head = "⚠️"
     elif d4 or d15:
-        d = d4 or d15
-        head, reso = ("🟢" if d == "LONG" else "🔴"), f"单层信号 ({'4h' if d4 else '15m'}{['', '多', '空'][d == 'LONG' and 1 or 2]})"
+        head = "🟢" if (d4 or d15) == "LONG" else "🔴"
     else:
-        head, reso = "⚪", "⚪ 双层观望"
+        head = "⚪"
 
     tag = "🔄反转加推 " if is_reversal else ""
     # 距4h收线倒计时: 4h K线按 UTC 0/4/8/12/16/20 点收线, 与本地时区无关
@@ -1721,14 +1738,29 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     now_cn = pd.Timestamp.now(tz="UTC").tz_convert("Asia/Shanghai")  # 卡片时间戳用北京时间(用户在国内), 倒计时仍按UTC收线算
     L.append(f"{head} {sym} {tag}信号 | {now_cn:%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
+    # 突发新闻中文行置顶(现价下/4h层上, 用户指定 2026-08-10); 其余异动留在中部⚡行
+    news = [e for e in (events or []) if e.startswith("📰")]
+    others = [e for e in (events or []) if not e.startswith("📰")]
+    for nw in news:
+        L.append(nw)
     L.append("")
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
     L.append(f"🌏 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
     NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
-    for i, rsn in enumerate((judge4.get("reasons") or [])[:4]):
-        L.append(f"{NUM_EMOJI[i]} {rsn}")
+
+    def _render_reasons(judge):
+        """⚠️复核反对行不编号, 其余按1️⃣-4️⃣编号"""
+        n = 0
+        for rsn in (judge.get("reasons") or []):
+            if rsn.startswith("⚠️"):
+                L.append(rsn)
+            elif n < 4:
+                L.append(f"{NUM_EMOJI[n]} {rsn}")
+                n += 1
+
+    _render_reasons(judge4)
     L.append("")  # 双层之间空行分隔(用户要求 2026-08-10)
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
     # 因子占比跟方向对齐: 判空显示看跌, 判多显示看涨, 观望显示双侧
@@ -1739,22 +1771,46 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
     L.append(f"🌏 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
-    for i, rsn in enumerate((judge15.get("reasons") or [])[:4]):
-        L.append(f"{NUM_EMOJI[i]} {rsn}")
+    _render_reasons(judge15)
     L.append("")
-    L.append(reso)
-    if events:
-        L.append("⚡ 异动: " + "; ".join(events))
     ctx4 = compute_4h_context(sym)
     lv = compute_levels(sym, d4 or d15 or result["signal"])
-    if ew:
-        d_txt = "做多" if ew["dir"] == "LONG" else "做空"
-        inv_rel = "下方" if ew["dir"] == "LONG" else "上方"
+    wy = (ctx4 or {}).get("wyckoff")
+    px = result["price"]
+    if others:
+        L.append("⚡ 异动: " + "; ".join(others))
         L.append("")
-        L.append(f"🎯 入场窗口 ({ew['type']}) {d_txt}")
-        L.append(f"　　{han_pad('入场区:', 8)} {ew['zone']}")
-        L.append(f"　　{han_pad('失效位:', 8)} ${ew['invalid']:.2f} ({inv_rel}{ew['dist']:.2f}%)")
-        L.append(f"　　{han_pad('依据:', 8)} {ew['basis']}")
+
+    # 开单建议(2026-08-10 用户要求): 方向+入场/失效+50x双档止损+双档止盈+突破目标+依据, 合并原入场窗口
+    L.append("🧾 开单建议")
+    d_adv = d4 if (d4 and d4 == d15) else (d15 or d4)
+    if d4 and d15 and d4 != d15:
+        L.append(f"　　方向: 观望 (4h{'多' if d4 == 'LONG' else '空'}/15m{'多' if d15 == 'LONG' else '空'}背离, 不动手)")
+    elif not d_adv:
+        L.append("　　方向: 观望 (双层无方向)")
+    else:
+        src = "双层共振" if d4 == d15 else ("仅15m层, 轻仓" if d15 else "仅4h层, 轻仓")
+        L.append(f"　　方向: {'做多' if d_adv == 'LONG' else '做空'} ({src})")
+        if ew and ew["dir"] == d_adv:
+            L.append(f"　　入场: {ew['zone']} ({ew['type']})")
+            L.append(f"　　失效: ${ew['invalid']:.2f} (距现价{ew['dist']:.2f}%)")
+            L.append(f"　　依据: {ew['basis']}")
+        else:
+            L.append("　　入场: 暂无窗口, 等回调贴近结构位或放量突破")
+        if lv:
+            hi, lo, atr = lv["swing_high"], lv["swing_low"], lv["atr14"]
+            if d_adv == "SHORT":
+                L.append(f"　　止损(50x): 一档${px + 0.5 * atr:.2f} 二档${hi:.2f}(摆动高)")
+                tp = f"一撑${lo:.2f}(摆动低)"
+                if wy:
+                    tp += f" 二撑${wy['support']}(TR底); 跌破看${2 * wy['support'] - wy['resistance']:.0f}"
+                L.append(f"　　止盈: {tp}")
+            else:
+                L.append(f"　　止损(50x): 一档${px - 0.5 * atr:.2f} 二档${lo:.2f}(摆动低)")
+                tp = f"一压${hi:.2f}(摆动高)"
+                if wy:
+                    tp += f" 二压${wy['resistance']}(TR顶); 突破看${2 * wy['resistance'] - wy['support']:.0f}"
+                L.append(f"　　止盈: {tp}")
     # 持仓导航: 15m有方向时给防守/进攻/目标位(纯规则结构位, 2026-08-09 用户要求: 开单后的延续性指引)
     if d15 and lv:
         wy_nav = (ctx4 or {}).get("wyckoff")
@@ -1951,11 +2007,13 @@ def compute_levels(sym, sig):
         else:
             resistance = f"${recent_high:.2f}(近5周期高点)、${swing_high:.2f}(近20周期高点)"
             support = f"${swing_low:.2f}(近20周期低点)"
-        # EMA50 按实际位置挂: 在现价上方是压力, 下方是支撑(2026-08-08 用户要求压力行也带EMA)
-        if ema50 >= c15.iloc[-1]:
-            resistance += f"、${ema50:.2f}(EMA50均线)"
-        else:
-            support += f"、${ema50:.2f}(EMA50均线)"
+        # EMA20/EMA50 按实际位置挂: 在现价上方是压力, 下方是支撑(2026-08-08/10 用户要求)
+        last15 = float(c15.iloc[-1])
+        for lbl, val in (("EMA20", ema20), ("EMA50", ema50)):
+            if val >= last15:
+                resistance += f"、${val:.2f}({lbl})"
+            else:
+                support += f"、${val:.2f}({lbl})"
         return {"support": support, "resistance": resistance, "rsi14": rsi14,
                 "atr14": atr14, "ema20": ema20, "ema50": ema50,
                 "vol_ratio": vol_ratio, "vol_word": vol_word,
@@ -2633,37 +2691,6 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
             return dict(JUDGE_UNAVAILABLE)
 
 
-def _dim_lean(text):
-    """维度文本的多空倾向: 方向词计数, >0偏多 <0偏空 =0中性"""
-    bull = ("偏多", "做多", "看涨", "上行", "上涨", "突破", "支撑", "回踩", "反弹", "买盘", "多头", "新高")
-    bear = ("偏空", "做空", "看跌", "下行", "下跌", "回落", "压力", "卖压", "抛压", "空头", "跌破", "新低")
-    s = sum(text.count(w) for w in bull) - sum(text.count(w) for w in bear)
-    return 1 if s > 0 else -1 if s < 0 else 0
-
-
-def _merge_dims(dd, kk):
-    """双模维度合并(2026-08-10): 同向标共识, 反向标分歧各引一句; 单边缺失用另一边"""
-    out = []
-    for dim in ("趋势", "动量", "结构", "情绪"):
-        t1, t2 = dd.get(dim, ""), kk.get(dim, "")
-        if t1 and not t2:
-            out.append(f"{dim} | DS: {t1}")
-            continue
-        if t2 and not t1:
-            out.append(f"{dim} | KK: {t2}")
-            continue
-        if not t1 and not t2:
-            continue
-        l1, l2 = _dim_lean(t1), _dim_lean(t2)
-        if l1 == l2 or l1 == 0 or l2 == 0:
-            lean = l1 or l2
-            tag = "共识偏多" if lean > 0 else "共识偏空" if lean < 0 else "共识中性"
-            out.append(f"{dim} | {tag}: {t1}")
-        else:
-            out.append(f"{dim} | 分歧: DS「{t1}」/ KK「{t2}」")
-    return out
-
-
 def _dual_judge(system, brief):
     """双模裁判(2026-08-10 用户要求): DeepSeek + Kimi 并行判决。
     同向→采用(置信取均值, 理由各取2条带来源标注); 分歧→观望; 单边故障→用另一边"""
@@ -2677,28 +2704,22 @@ def _dual_judge(system, brief):
         ds, km = f_ds.result(), f_km.result()
     ds_ok, km_ok = ds["confidence"] >= 0, km["confidence"] >= 0
     if ds_ok and not km_ok:
-        ds["reasons"] = [f"DS: {r}" for r in ds["reasons"]]
         return ds
     if km_ok and not ds_ok:
         km["reasons"] = [f"KK: {r}" for r in km["reasons"]]
         return km
     if not (ds_ok or km_ok):
         return ds
+    # 主裁复核制(2026-08-10 用户决策): DS 主裁方向/置信/维度, KK 只在反对时出声
+    if ds.get("dims"):
+        ds["reasons"] = [f"{dim} | {txt}" for dim, txt in ds["dims"].items()]
     if ds["direction"] == km["direction"]:
-        if ds.get("dims") and km.get("dims"):
-            reasons = _merge_dims(ds["dims"], km["dims"])
-        else:  # 旧格式兜底: 理由各取2条带来源标注
-            reasons = ([f"DS: {r}" for r in ds["reasons"][:2]] +
-                       [f"KK: {r}" for r in km["reasons"][:2]])
-        return {"verdict": "执行" if ds["direction"] else "观望", "direction": ds["direction"],
-                "confidence": round((ds["confidence"] + km["confidence"]) / 2),
-                "mag_tier": ds["mag_tier"] if ds["mag_tier"] is not None else km["mag_tier"],
-                "reasons": reasons, "dims": None}
+        return ds
     d_cn = {"LONG": "多", "SHORT": "空", None: "观望"}
-    return {"verdict": "观望", "direction": None, "confidence": min(ds["confidence"], km["confidence"]),
-            "mag_tier": None,
-            "reasons": [f"双模分歧: DS判{d_cn[ds['direction']]} / KK判{d_cn[km['direction']]}, 保守观望",
-                        f"DS: {ds['reasons'][0]}", f"Kimi: {km['reasons'][0]}"]}
+    km_say = (km.get("dims") or {}).get("结构") or (km["reasons"][0] if km["reasons"] else "")
+    ds["confidence"] = max(ds["confidence"] - 10, 0)
+    ds["reasons"] = ds["reasons"][:4] + [f"⚠️ KK反对(判{d_cn[km['direction']]}): {km_say}"]
+    return ds
 
 
 SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的方向和最大涨跌幅。"
@@ -2709,7 +2730,8 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "\"confidence\": 0-100 整数, "
           "\"dims\": {\"趋势\": \"...\", \"动量\": \"...\", \"结构\": \"...\", \"情绪\": \"...\"}}。"
           "dims 固定四个维度: 趋势=均线排列/Always In; 动量=RSI/量比/连阴阳; 结构=威科夫/挤压/关键位; 情绪=费率/持仓/多空比。"
-          "每个维度一句话不超过30字，先说现象再说含义(如\"均线多头排列，顺势占优\")，该维度无明确信号就写\"中性: 简述\"。"
+          "每个维度一句话不超过40字，先说现象再说含义(如\"波动率压到近一个月最低的四分之一，大行情快来了\")，"
+          "简报里有历史统计数据的维度必须引用概率(如\"历史此档后12h振幅≥2%占53%\")，该维度无明确信号就写\"中性: 简述\"。"
           "magnitude 与方向无关也要给。用大白话，保留关键数字，不用术语缩写。"
           "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
           "要翻转方向，必须在dims里写清新出现的反转证据是什么。")
@@ -2723,9 +2745,10 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "\"confidence\": 0-100 整数, "
            "\"dims\": {\"趋势\": \"...\", \"动量\": \"...\", \"结构\": \"...\", \"情绪\": \"...\"}}。"
            "dims 固定四个维度: 趋势=均线/VWAP/因子投票; 动量=RSI/量比/本轮异动(有异动优先写); 结构=摆动高低点/布林位置(布林最多在结构里提一次); 情绪=费率/多空比/上次判决连续性。"
-           "每个维度一句话不超过30字，先说现象再说含义，该维度无明确信号就写\"中性: 简述\"。"
+           "每个维度一句话不超过40字，像说给交易新手听: 先说现象、再说意味着什么、能引简报里的统计概率就引"
+           "(如\"缩量到六成，假突破多，历史此档后12h振幅≥2%占52%\")，该维度无明确信号就写\"中性: 简述\"。"
            "证据没有明显变化就维持上次方向，别因噪音翻转。"
-           "用大白话写，像说给交易新手听，保留关键数字但不用术语缩写。")
+           "用大白话写，保留关键数字但不用术语缩写。")
 
 
 def ai_judge_4h(result, prev=None):
@@ -2870,10 +2893,10 @@ def main():
                 events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
                 prev_metrics[sym] = cur_metrics
 
-                # 突发新闻: RSS关键词命中 → 异动事件, 同样喂给裁判(2026-08-10)
+                # 突发新闻: RSS关键词命中 → 翻成中文, 卡片置顶+喂给裁判(2026-08-10)
                 try:
                     for src_name, title in fetch_news(news_seen):
-                        events.append(f"📰 {src_name}: {title}")
+                        events.append(f"📰 {src_name}: {translate_title(title)}")
                 except Exception as e:
                     print(f"  新闻拉取失败: {e}")
 
@@ -2899,7 +2922,7 @@ def main():
 
                 if is_15m or reversal or events:
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
-                                        events=None if is_15m else (events or None), ew=ew)
+                                        events=events or None, ew=ew)
                     ok = send_telegram(msg)
                     tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
