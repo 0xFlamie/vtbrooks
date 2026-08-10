@@ -2099,6 +2099,45 @@ def _cb_4h_history(sym, days=1400):
     return df4 if len(df4) > 500 else None
 
 
+def _cb_15m_history(sym, days=200):
+    """Coinbase 15m 分页(300根/次, 8路并发): HL 15m 只给最近~5000根, 深历史走这里(2026-08-10实测)"""
+    from concurrent.futures import ThreadPoolExecutor
+    cb_sym = {"ETHUSDT": "ETH-USD", "ETHUSDC": "ETH-USD",
+              "BTCUSDT": "BTC-USD", "BTCUSDC": "BTC-USD"}.get(sym)
+    if not cb_sym:
+        return None
+    t_end = int(time.time())
+    t_start = t_end - days * 86400
+    pages = []
+    t = t_end
+    while t > t_start:
+        pages.append((max(t_start, t - 300 * 900), t))
+        t -= 300 * 900
+
+    def _get(pg):
+        p0 = pd.Timestamp(pg[0], unit="s", tz="UTC").isoformat()
+        p1 = pd.Timestamp(pg[1], unit="s", tz="UTC").isoformat()
+        try:
+            d = http_get_json(f"https://api.exchange.coinbase.com/products/{cb_sym}/candles"
+                              f"?granularity=900&start={p0}&end={p1}", timeout=20)
+            return d if isinstance(d, list) else []
+        except Exception:
+            return []
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for d in ex.map(_get, pages):
+            rows.extend(d)
+    if len(rows) < 5000:
+        return None
+    df = pd.DataFrame(rows, columns=["ts", "low", "high", "open", "close", "volume"])
+    df["date"] = pd.to_datetime(df["ts"], unit="s")
+    df = df.drop_duplicates("date").set_index("date").sort_index()
+    for c_ in ["open", "high", "low", "close", "volume"]:
+        df[c_] = df[c_].astype(float)
+    return df
+
+
 def _15m_history(sym, days=400):
     """Hyperliquid 15m K线分页(统计库用), 约400天; 失败返回 None"""
     coin = sym.replace("USDT", "").replace("USDC", "")
@@ -2118,14 +2157,14 @@ def _15m_history(sym, days=400):
                 break
             t0 = last + 1
             time.sleep(0.2)
-        if len(rows) > 5000:
+        if len(rows) > 10000:  # HL 15m 实际只回最近~5000根, 不够就落到 Coinbase 兜底
             df = pd.DataFrame([{"date": pd.to_datetime(int(x["t"]), unit="ms"),
                                 "open": float(x["o"]), "high": float(x["h"]), "low": float(x["l"]),
                                 "close": float(x["c"]), "volume": float(x["v"])} for x in rows])
             return df.drop_duplicates("date").set_index("date").sort_index()
     except Exception:
         pass
-    return None
+    return _cb_15m_history(sym, 200)  # HL 15m 只有近~52天, 不够就走 Coinbase 200天
 
 
 def market_stats(sym, refresh=False):
@@ -2241,7 +2280,7 @@ def market_stats(sym, refresh=False):
         # ── 15m 级统计(近400天): RSI分档/量比分档/贴近20根高点 → 后4h 概率 ──
         try:
             df15h = _15m_history(sym)
-            if df15h is not None and len(df15h) > 20000:
+            if df15h is not None and len(df15h) > 10000:
                 c15, h15, l15, v15 = df15h["close"], df15h["high"], df15h["low"], df15h["volume"]
                 hi16 = h15.shift(-1).rolling(16).max().shift(-15)
                 lo16 = l15.shift(-1).rolling(16).min().shift(-15)
@@ -2702,7 +2741,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
                   "30-45" if r15 <= 45 else "45-55" if r15 <= 55 else "55-70")
             t = m15.get(f"rsi{rb}")
             if t:
-                L.append(f"统计(近400天15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
+                L.append(f"统计(近200天15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
             vr_ = lv["vol_ratio"]
             vb = "<0.6" if vr_ < 0.6 else "0.6-1.2" if vr_ < 1.2 else "1.2-2" if vr_ < 2 else ">2"
             t = m15.get(f"量比{vb}{'阳' if lv.get('up15') else '阴'}")
