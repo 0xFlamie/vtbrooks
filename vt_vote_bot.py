@@ -2199,6 +2199,34 @@ def _cb_15m_history(sym, days=200):
     return df
 
 
+def _bn_4h_history(sym, days=1400):
+    """Binance.US 4h 分页(1000根/页): 统计库主用价源(2026-08-10 发现 HL 分页有洞, 收益max+111%属坏数据)"""
+    coin = sym.replace("USDC", "").replace("USDT", "")
+    t1 = int(time.time() * 1000)
+    t0 = t1 - days * 86400 * 1000
+    rows = []
+    try:
+        while t0 < t1:
+            d = http_get_json(f"https://api.binance.us/api/v3/klines?symbol={coin}USDT"
+                              f"&interval=4h&limit=1000&startTime={t0}&endTime={t1}", timeout=20)
+            if not isinstance(d, list) or not d:
+                break
+            rows.extend(d)
+            last = int(d[-1][0])
+            if last <= t0:
+                break
+            t0 = last + 1
+            time.sleep(0.15)
+        if len(rows) > 2000:
+            df = pd.DataFrame([{"date": pd.to_datetime(int(x[0]), unit="ms"),
+                                "open": float(x[1]), "high": float(x[2]), "low": float(x[3]),
+                                "close": float(x[4]), "volume": float(x[5])} for x in rows])
+            return df.drop_duplicates("date").set_index("date").sort_index()
+    except Exception:
+        pass
+    return _4h_history(sym, days)  # BN 失败才回退 HL(有洞但比没有强)
+
+
 def _bn_15m_history(sym, days=2000):
     """Binance.US 15m 分页(1000根/页): 2000天≈192页, 约2分钟; 统计用途深度优先(2026-08-10 用户要求)"""
     coin = sym.replace("USDC", "").replace("USDT", "")
@@ -2269,7 +2297,7 @@ def market_stats(sym, refresh=False):
     except Exception:
         cache = {}
     try:
-        df = _4h_history(sym)
+        df = _bn_4h_history(sym)
         if df is None:
             return None
         c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
