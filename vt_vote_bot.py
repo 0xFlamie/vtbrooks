@@ -1820,6 +1820,23 @@ def build_data_board(sym, result, lv, ctx4):
                 cand.append((f"7日涨{ret7d:.0f}%+挤压{ctx4['squeeze_pct']:.0f}%分位", "后24h涨≥0.5%", 87, 46))
     except Exception:
         pass
+    # 白话翻译表: 标签 → 人话(2026-08-10 用户要求)
+    def _plain_label(label):
+        s = (label.replace("<=30", "超卖").replace(">=70", "超买")
+             .replace("30-45", "偏弱").replace("45-55", "中性").replace("55-70", "偏强")
+             .replace("RSI", "RSI").replace("量比<0.6", "严重缩量").replace("量比0.6-1.2", "平量")
+             .replace("量比1.2-2", "温和放量").replace("量比>2", "爆量"))
+        return s
+
+    def _plain_suffix(suffix):
+        return (suffix.replace("后12h振幅≥2%", "之后12小时波动超2%")
+                .replace("后12h涨≥1%", "之后12小时涨超1%").replace("后12h跌≥1%", "之后12小时跌超1%")
+                .replace("后12h反弹≥1%", "之后12小时反弹超1%").replace("后12h回落≥1%", "之后12小时回落超1%")
+                .replace("后4h反弹≥0.5%", "之后4小时反弹超0.5%").replace("后4h回落≥0.5%", "之后4小时回落超0.5%")
+                .replace("后4h同向延续≥0.5%", "之后4小时同向延续超0.5%")
+                .replace("后24h跌≥0.5%", "之后24小时跌超0.5%").replace("后24h回落≥0.5%", "之后24小时回落超0.5%")
+                .replace("后24h涨≥0.5%", "之后24小时涨超0.5%"))
+
     # 同标签两个方向都≥65% = 波动放大而非方向优势, 合并成一行避免自相矛盾
     rows = []
     used = set()
@@ -1828,11 +1845,11 @@ def build_data_board(sym, result, lv, ctx4):
             continue
         same = [j for j, (l2, _, p2, _) in enumerate(cand) if j > i and l2 == label and j not in used]
         if same and p >= 65 and all(cand[j][2] >= 65 for j in same):
-            parts = " / ".join([f"{suffix} {p}%"] + [f"{cand[j][1]} {cand[j][2]}%" for j in same])
-            rows.append(f"　{label} → 双向放大({parts}, n={n}), 是波动不是方向")
+            parts = "、".join([f"{_plain_suffix(suffix)}占{p}%"] + [f"{_plain_suffix(cand[j][1])}占{cand[j][2]}%" for j in same])
+            rows.append(f"　{_plain_label(label)}: 近5年{n}次里, {parts}——大涨大跌都常见, 方向没准, 别追单")
             used.update(same)
         else:
-            rows.append(f"　{label} → {suffix}: {p}% (n={n})")
+            rows.append(f"　{_plain_label(label)}: 近5年{n}次里, {_plain_suffix(suffix)}占{p}%")
     if not rows:
         rows.append("　当前无统计优势底牌(各维度接近五五开), 别开单")
     return rows
