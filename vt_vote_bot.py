@@ -1862,6 +1862,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if lv:
         L.append(f"压力: {lv['resistance']}")
         L.append(f"支撑: {lv['support']}")
+        L.append(f"EMA20: ${lv['ema20']:.2f}")
+        L.append(f"EMA50: ${lv['ema50']:.2f}")
     L.append("")
     # 威科夫事件(假突破/假跌破/真突破): 有则显示在 Wyckoff 区间行正上方
     if ctx4 and ctx4.get("wyckoff") and wy.get("event"):
@@ -2029,13 +2031,7 @@ def compute_levels(sym, sig):
         else:
             resistance = f"${recent_high:.2f}(近5周期高点)、${swing_high:.2f}(近20周期高点)"
             support = f"${swing_low:.2f}(近20周期低点)"
-        # EMA20/EMA50 按实际位置挂: 在现价上方是压力, 下方是支撑(2026-08-08/10 用户要求)
-        last15 = float(c15.iloc[-1])
-        for lbl, val in (("EMA20", ema20), ("EMA50", ema50)):
-            if val >= last15:
-                resistance += f"、${val:.2f}({lbl})"
-            else:
-                support += f"、${val:.2f}({lbl})"
+        # EMA 不再并入压力/支撑行, 卡片单独成行(用户指定版式 2026-08-10)
         return {"support": support, "resistance": resistance, "rsi14": rsi14,
                 "atr14": atr14, "ema20": ema20, "ema50": ema50,
                 "vol_ratio": vol_ratio, "vol_word": vol_word,
