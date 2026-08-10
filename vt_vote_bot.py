@@ -2117,15 +2117,20 @@ def _cb_15m_history(sym, days=200):
     def _get(pg):
         p0 = pd.Timestamp(pg[0], unit="s", tz="UTC").isoformat()
         p1 = pd.Timestamp(pg[1], unit="s", tz="UTC").isoformat()
-        try:
-            d = http_get_json(f"https://api.exchange.coinbase.com/products/{cb_sym}/candles"
-                              f"?granularity=900&start={p0}&end={p1}", timeout=20)
-            return d if isinstance(d, list) else []
-        except Exception:
-            return []
+        url = (f"https://api.exchange.coinbase.com/products/{cb_sym}/candles"
+               f"?granularity=900&start={p0}&end={p1}")
+        for _ in range(3):  # 限流重试(2026-08-10: 8路并发64页约2/3被429)
+            try:
+                d = http_get_json(url, timeout=20)
+                if isinstance(d, list) and d:
+                    return d
+            except Exception:
+                pass
+            time.sleep(1.0)
+        return []
 
     rows = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         for d in ex.map(_get, pages):
             rows.extend(d)
     if len(rows) < 5000:
