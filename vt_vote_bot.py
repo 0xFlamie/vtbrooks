@@ -3102,9 +3102,11 @@ def _dual_judge(system, brief):
         ds, km = f_ds.result(), f_km.result()
     ds_ok, km_ok = ds["confidence"] >= 0, km["confidence"] >= 0
     if ds_ok and not km_ok:
+        ds["_src"] = "ds"
         return ds
     if km_ok and not ds_ok:
         km["reasons"] = [f"KK: {r}" for r in km["reasons"]]
+        km["_src"] = "kk"  # 顶班标记: 4h缓存到KK判决时下轮重判, DS康复即拿回话筒
         return km
     if not (ds_ok or km_ok):
         return ds
@@ -3278,8 +3280,8 @@ def main():
                 df4 = fetch_klines(sym, "4h", 3, drop_incomplete=False)
                 bar_key = str(df4.index[-1]) if not df4.empty else ""
                 ck = judge4_cache.get(sym)
-                # 缓存不可用判决(置信-1)直接重判, 不让一次API故障污染整根4h(2026-08-10)
-                if not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0:
+                # 缓存不可用判决(置信-1)或KK顶班判决都重判, 不让API故障/顶班污染整根4h(2026-08-10)
+                if not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0 or ck[1].get("_src") == "kk":
                     judge4 = ai_judge_4h(result, prev=ck[1] if ck else None)
                     judge4_cache[sym] = (bar_key, judge4)
                     print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
