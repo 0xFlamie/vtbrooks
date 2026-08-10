@@ -1775,11 +1775,11 @@ def build_data_board(sym, result, lv, ctx4):
     """数据看板(2026-08-10 用户要求): 只列当前状态命中的、有统计优势(≥65%或≤35%)的历史概率;
     全是五五开就明说无优势。纯规则生成, 数字只来自统计库, 不经AI"""
     mst = market_stats(sym) or {}
-    rows = []
+    cand = []  # (label, suffix, p, n)
 
     def add(label, rec, key, suffix):
         if rec and key in rec and (rec[key] >= 65 or rec[key] <= 35):
-            rows.append(f"　{label} → {suffix}: {rec[key]}% (n={rec['n']})")
+            cand.append((label, suffix, rec[key], rec["n"]))
 
     if ctx4:
         sq = ctx4["squeeze_pct"]
@@ -1813,13 +1813,26 @@ def build_data_board(sym, result, lv, ctx4):
         fr8 = fr * 100 if fr is not None else None
         if fr8 is not None and ret7d is not None:
             if fr8 >= 0.03 and ret7d < -5:
-                rows.append(f"　费率{fr8:.3f}%+7日跌{abs(ret7d):.0f}% → 后24h跌≥0.5%: 90% (n=40)")
+                cand.append((f"费率{fr8:.3f}%+7日跌{abs(ret7d):.0f}%", "后24h跌≥0.5%", 90, 40))
             if fr8 >= 0.05 and ret7d > 5:
-                rows.append(f"　费率{fr8:.3f}%+7日涨{ret7d:.0f}% → 后24h回落≥0.5%: 87% (n=79)")
+                cand.append((f"费率{fr8:.3f}%+7日涨{ret7d:.0f}%", "后24h回落≥0.5%", 87, 79))
             if ret7d > 5 and ctx4 and ctx4["squeeze_pct"] < 20:
-                rows.append(f"　7日涨{ret7d:.0f}%+挤压{ctx4['squeeze_pct']:.0f}%分位 → 后24h涨≥0.5%: 87% (n=46)")
+                cand.append((f"7日涨{ret7d:.0f}%+挤压{ctx4['squeeze_pct']:.0f}%分位", "后24h涨≥0.5%", 87, 46))
     except Exception:
         pass
+    # 同标签两个方向都≥65% = 波动放大而非方向优势, 合并成一行避免自相矛盾
+    rows = []
+    used = set()
+    for i, (label, suffix, p, n) in enumerate(cand):
+        if i in used:
+            continue
+        same = [j for j, (l2, _, p2, _) in enumerate(cand) if j > i and l2 == label and j not in used]
+        if same and p >= 65 and all(cand[j][2] >= 65 for j in same):
+            parts = " / ".join([f"{suffix} {p}%"] + [f"{cand[j][1]} {cand[j][2]}%" for j in same])
+            rows.append(f"　{label} → 双向放大({parts}, n={n}), 是波动不是方向")
+            used.update(same)
+        else:
+            rows.append(f"　{label} → {suffix}: {p}% (n={n})")
     if not rows:
         rows.append("　当前无统计优势底牌(各维度接近五五开), 别开单")
     return rows
