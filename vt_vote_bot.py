@@ -1553,7 +1553,28 @@ def detect_events(sym, result, prev):
         "broke_lo": bool(lv and px < lv["swing_low"]),
         # 波动骤增: 近30分钟振幅 ≥2.5倍ATR 且 ≥0.3%(2026-08-09: 横盘突然放大, AI必须开口)
         "vol_burst": bool(lv and lv["rng_30m"] >= max(2.5 * lv["atr14"], 0.003 * px)),
+        "wy_ev": ((ctx4.get("wyckoff") or {}).get("event") if ctx4 else None),
+        "ema50_up": bool(lv and px >= lv["ema50"]),
     }
+    # 布林带(15m, 20/2): 触轨检测用, 与 compute_levels 共享K线缓存
+    boll_up = boll_lo = None
+    try:
+        cb = fetch_klines(sym, "15m", 60)["close"]
+        mid = cb.rolling(20).mean().iloc[-1]
+        sd = cb.rolling(20).std().iloc[-1]
+        boll_up, boll_lo = float(mid + 2 * sd), float(mid - 2 * sd)
+    except Exception:
+        pass
+    cur["boll_hi"] = bool(boll_up and px >= boll_up)
+    cur["boll_lo"] = bool(boll_lo and px <= boll_lo)
+    # 费率极端: |8h费率|>0.05% = 一方过热
+    fr_now = None
+    try:
+        fr_now = (fetch_sentiment(sym) or {}).get("funding_rate")
+    except Exception:
+        pass
+    cur["fr_val"] = fr_now
+    cur["fr_ext"] = bool(fr_now is not None and abs(fr_now) * 100 > 0.05)
     ev = []
     if prev:
         p0 = prev.get("px")
@@ -1596,6 +1617,23 @@ def detect_events(sym, result, prev):
         v0, v1 = prev.get("vol"), cur["vol"]
         if v0 is not None and v1 is not None and v0 <= 2 < v1:
             ev.append(f"突然放量({v1:.1f}倍均量)")
+        # 威科夫新事件: 假突破/假跌破/真突破出现即推(2026-08-10 用户要求)
+        if cur.get("wy_ev") and cur["wy_ev"] != prev.get("wy_ev"):
+            names = {"spring": "假跌破收回(Spring)", "upthrust": "假突破回落(Upthrust)",
+                     "joc_up": "真突破TR上沿(JOC)", "joc_down": "真跌破TR下沿(JOC)"}
+            ev.append(f"威科夫新事件: {names.get(cur['wy_ev'], cur['wy_ev'])}")
+        # 价格穿越 EMA50(15m多空分水岭)
+        if lv and prev.get("ema50_up") is not None and cur["ema50_up"] != prev["ema50_up"]:
+            ev.append(f"价格{'上穿' if cur['ema50_up'] else '下穿'}EMA50(${lv['ema50']:.2f})")
+        # 布林触轨(15m)
+        if boll_up and not prev.get("boll_hi") and cur["boll_hi"]:
+            ev.append(f"触及布林上轨(${boll_up:.1f})")
+        if boll_lo and not prev.get("boll_lo") and cur["boll_lo"]:
+            ev.append(f"触及布林下轨(${boll_lo:.1f})")
+        # 费率进入极端区(只报进入, 退出不报)
+        if cur["fr_ext"] and not prev.get("fr_ext"):
+            side = "多付空, 多头过热" if cur["fr_val"] > 0 else "空付多, 空头过热"
+            ev.append(f"费率进入极端区({cur['fr_val'] * 100:.3f}%, {side})")
         for key, label in (("near_hi", f"逼近压力位${lv['swing_high']:.2f}"), ("near_lo", f"逼近支撑位${lv['swing_low']:.2f}")):
             if not prev.get(key) and cur[key]:
                 ev.append(label)
