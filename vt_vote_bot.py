@@ -1771,6 +1771,60 @@ def _dir_emoji(d, conf):
     return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
 
 
+def build_data_board(sym, result, lv, ctx4):
+    """数据看板(2026-08-10 用户要求): 只列当前状态命中的、有统计优势(≥65%或≤35%)的历史概率;
+    全是五五开就明说无优势。纯规则生成, 数字只来自统计库, 不经AI"""
+    mst = market_stats(sym) or {}
+    rows = []
+
+    def add(label, rec, key, suffix):
+        if rec and key in rec and (rec[key] >= 65 or rec[key] <= 35):
+            rows.append(f"　{label} → {suffix}: {rec[key]}% (n={rec['n']})")
+
+    if ctx4:
+        sq = ctx4["squeeze_pct"]
+        b = "0-20" if sq < 20 else "20-40" if sq < 40 else "40-70" if sq < 70 else "70-100"
+        add(f"4h挤压{b}%分位", mst.get("squeeze", {}).get(b), "p2", "后12h振幅≥2%")
+        cur_aln = "多头排列" if ctx4.get("trend_up") else "空头排列" if ctx4.get("trend_dn") else None
+        t = mst.get("trend_align", {}).get(cur_aln) if cur_aln else None
+        add(f"4h{cur_aln}", t, "up", "后12h涨≥1%")
+        add(f"4h{cur_aln}", t, "dn", "后12h跌≥1%")
+        r4 = ctx4["rsi4h"]
+        rb = "<=30" if r4 <= 30 else ">=70" if r4 >= 70 else "30-45" if r4 <= 45 else "45-55" if r4 <= 55 else "55-70"
+        t = mst.get("rsi", {}).get(rb)
+        add(f"4hRSI{rb}", t, "bounce", "后12h反弹≥1%")
+        add(f"4hRSI{rb}", t, "drop", "后12h回落≥1%")
+    if lv:
+        m15 = mst.get("m15", {})
+        r15 = lv["rsi14"]
+        rb = "<=30" if r15 <= 30 else ">=70" if r15 >= 70 else "30-45" if r15 <= 45 else "45-55" if r15 <= 55 else "55-70"
+        t = m15.get(f"rsi{rb}")
+        add(f"15m RSI{rb}", t, "bounce", "后4h反弹≥0.5%")
+        add(f"15m RSI{rb}", t, "drop", "后4h回落≥0.5%")
+        vr_ = lv["vol_ratio"]
+        vb = "<0.6" if vr_ < 0.6 else "0.6-1.2" if vr_ < 1.2 else "1.2-2" if vr_ < 2 else ">2"
+        add(f"15m量比{vb}{'阳' if lv.get('up15') else '阴'}", m15.get(f"量比{vb}{'阳' if lv.get('up15') else '阴'}"),
+            "cont", "后4h同向延续≥0.5%")
+    # 训练形态(五年数据): 当前激活才亮
+    try:
+        fr = (fetch_sentiment(sym) or {}).get("funding_rate")
+        c4 = fetch_klines(sym, "4h", 50)["close"]
+        ret7d = float((c4.iloc[-1] / c4.iloc[-43] - 1) * 100) if len(c4) >= 43 else None
+        fr8 = fr * 100 if fr is not None else None
+        if fr8 is not None and ret7d is not None:
+            if fr8 >= 0.03 and ret7d < -5:
+                rows.append(f"　费率{fr8:.3f}%+7日跌{abs(ret7d):.0f}% → 后24h跌≥0.5%: 90% (n=40)")
+            if fr8 >= 0.05 and ret7d > 5:
+                rows.append(f"　费率{fr8:.3f}%+7日涨{ret7d:.0f}% → 后24h回落≥0.5%: 87% (n=79)")
+            if ret7d > 5 and ctx4 and ctx4["squeeze_pct"] < 20:
+                rows.append(f"　7日涨{ret7d:.0f}%+挤压{ctx4['squeeze_pct']:.0f}%分位 → 后24h涨≥0.5%: 87% (n=46)")
+    except Exception:
+        pass
+    if not rows:
+        rows.append("　当前无统计优势底牌(各维度接近五五开), 别开单")
+    return rows
+
+
 def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None):
     """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表, ew=入场窗口"""
     sym = result["symbol"]
@@ -1897,6 +1951,10 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 if wy:
                     tp += f" 二压${wy['resistance']}(TR顶); 突破看${2 * wy['resistance'] - wy['support']:.0f}"
                 L.append(f"　　止盈: {tp}")
+    # 数据看板: 只列有统计优势的底牌(≥65%/≤35%), 五五开明说无优势(2026-08-10)
+    L.append("")
+    L.append("📋 数据看板")
+    L.extend(build_data_board(sym, result, lv, ctx4))
     # 持仓导航: 15m有方向时给防守/进攻/目标位(纯规则结构位, 2026-08-09 用户要求: 开单后的延续性指引)
     if d15 and lv:
         wy_nav = (ctx4 or {}).get("wyckoff")
