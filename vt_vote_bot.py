@@ -1660,9 +1660,10 @@ def detect_events(sym, result, prev):
         s0, s1 = prev.get("sq"), cur["sq"]
         if s0 is not None and s1 is not None:
             if s0 >= 20 > s1:
-                ev.append("挤压进入极值区(<20%)")
+                # 规则解读直接贴事件里(2026-08-10 用户要求): 不等AI, 挤压含义确定
+                ev.append(f"挤压进入极值区({s1:.0f}%分位): 波动率比近800小时80%的时间都安静, 大行情酝酿中, 方向看趋势/结构维度")
             elif s0 < 20 <= s1:
-                ev.append("挤压离开极值区")
+                ev.append(f"挤压离开极值区({s1:.0f}%分位): 波动开始释放, 行情已在路上")
     return ev, cur
 
 
