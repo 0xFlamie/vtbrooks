@@ -3034,7 +3034,7 @@ MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
 def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
-                temp=0.2, max_tok=400, req_timeout=20):
+                temp=0.2, max_tok=400, req_timeout=35):
     """单裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 失败重试1次再回 JUDGE_UNAVAILABLE"""
     url = url or DS_API_URL
     key = key if key is not None else DS_API_KEY
