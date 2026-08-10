@@ -3257,10 +3257,14 @@ def main():
         except Exception as e:
             print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
+    last_timed_slot = None  # 最后推过的15分钟槽, 防止慢扫描吞掉定时推送(2026-08-10)
+    pending_fast = None     # 快检触发的事件, 注入下轮扫描必推+AI解读
     while True:
         now = pd.Timestamp.now()
         minute = now.minute
-        is_15m = minute % 15 == 0  # :00 :15 :30 :45
+        slot = now.hour * 4 + minute // 15
+        # 定时: 边界扫描, 或慢扫描跨过槽位后3分钟内补推
+        is_15m = (minute % 15 == 0) or (slot != last_timed_slot and minute % 15 <= 3)
 
         print(f"\n[{now.strftime('%H:%M:%S')}] {'15分钟定时' if is_15m else '3分钟'}扫描...")
 
@@ -3291,6 +3295,10 @@ def main():
                 # 异动: RSI(15m/4h)穿越/放量/逼位/挤压进出(边沿触发) — 先于15m判决, 事件要喂给裁判解读
                 events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
                 prev_metrics[sym] = cur_metrics
+                # 快检触发的事件直接注入: 必推+AI解读(2026-08-10 修复快检触发但事件阈值不达导致白扫不推)
+                if pending_fast:
+                    events.append(f"⚡快检: {pending_fast}")
+                    pending_fast = None
 
                 # 突发新闻: RSS关键词命中 → 翻成中文, 卡片置顶+喂给裁判(2026-08-10)
                 try:
@@ -3324,6 +3332,8 @@ def main():
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
                                         events=events or None, ew=ew)
                     ok = send_telegram(msg)
+                    if is_15m:
+                        last_timed_slot = slot
                     tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                 else:
@@ -3371,6 +3381,7 @@ def main():
                     trig = f"穿越VWAP(${ref['vwap']:.2f})"
                 if trig:
                     print(f"\n  ⚡ {sym} 快检{trig}, 立即全扫")
+                    pending_fast = f"{sym} {trig}"
                     break
             if trig:
                 break
