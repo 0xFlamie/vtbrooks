@@ -1500,51 +1500,6 @@ def translate_title(title):
     return title
 
 
-def render_chart(sym, lv, wy, ew):
-    """15m K线图(96根): 蜡烛+EMA20/50+摆动位+TR框+入场/失效标注(2026-08-10 可视化); 失败返回 None"""
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        df = fetch_klines(sym, "15m", 100).tail(96)
-        if len(df) < 30:
-            return None
-        fig, ax = plt.subplots(figsize=(10, 5), dpi=110)
-        xs = range(len(df))
-        o, h_, l_, c_ = df["open"].values, df["high"].values, df["low"].values, df["close"].values
-        for i in xs:
-            col = "#26a69a" if c_[i] >= o[i] else "#ef5350"
-            ax.vlines(i, l_[i], h_[i], color=col, linewidth=0.6)
-            ax.add_patch(plt.Rectangle((i - 0.3, min(o[i], c_[i])), 0.6, max(abs(c_[i] - o[i]), 1e-9), color=col))
-        ax.plot(xs, df["close"].ewm(span=20, adjust=False).mean().values, lw=1, color="#1e88e5", label="EMA20")
-        ax.plot(xs, df["close"].ewm(span=50, adjust=False).mean().values, lw=1, color="#fb8c00", label="EMA50")
-        if lv:
-            ax.axhline(lv["swing_high"], ls="--", lw=0.9, color="#ef5350")
-            ax.text(len(df) - 1, lv["swing_high"], f" H {lv['swing_high']:.1f}", color="#ef5350", va="bottom", fontsize=8)
-            ax.axhline(lv["swing_low"], ls="--", lw=0.9, color="#26a69a")
-            ax.text(len(df) - 1, lv["swing_low"], f" L {lv['swing_low']:.1f}", color="#26a69a", va="top", fontsize=8)
-        if wy:
-            ax.add_patch(plt.Rectangle((0, wy["support"]), len(df), wy["resistance"] - wy["support"],
-                                       alpha=0.07, color="#7e57c2", label="TR"))
-        if ew:
-            ax.axhline(ew["invalid"], ls=":", lw=1.1, color="#fdd835")
-            ax.text(1, ew["invalid"], f"SL {ew['invalid']:.1f}", color="#fdd835", fontsize=8, va="bottom")
-        ax.legend(loc="best", fontsize=8)
-        ax.set_title(f"{sym} 15m  ${c_[-1]:.2f}", fontsize=11)
-        step = max(len(df) // 8, 1)
-        ax.set_xticks(list(xs)[::step])
-        ax.set_xticklabels([df.index[i].strftime("%m-%d %H:%M") for i in range(0, len(df), step)], fontsize=7)
-        ax.grid(alpha=0.2)
-        fig.tight_layout()
-        path = f"/tmp/vt_chart_{sym}.png"
-        fig.savefig(path)
-        plt.close(fig)
-        return path
-    except Exception as e:
-        print(f"WARN: 画图失败 {type(e).__name__}: {e}")
-        return None
-
-
 def fetch_fast_price(sym):
     """实时报价三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None
     USDC 对用 USDC 计价的所(OKX/Gate, Binance国际美区451), 不用 USDT 对冒充(用户反馈)"""
@@ -3279,14 +3234,6 @@ def main():
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
                                         events=events or None, ew=ew)
                     ok = send_telegram(msg)
-                    # 图表推送: 定时/反转带K线图(2026-08-10 可视化), 异动只推文本保速度
-                    if is_15m or reversal:
-                        try:
-                            img = render_chart(sym, lv_main, (ctx4_main or {}).get("wyckoff"), ew)
-                            if img:
-                                send_photo(img, f"{sym} 4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}")
-                        except Exception as e:
-                            print(f"  图表推送失败: {e}")
                     tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                 else:
