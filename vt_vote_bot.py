@@ -1447,6 +1447,41 @@ def trend4_label(ctx4):
     return "纠缠"
 
 
+NEWS_FEEDS = [
+    ("Axios", "https://api.axios.com/feed/"),
+    ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    ("CoinTelegraph", "https://cointelegraph.com/rss"),
+]
+# 新闻关键词白名单: 只推可能影响行情的地缘/宏观/币圈原生新闻
+NEWS_KEYWORDS = ("iran", "israel", "fed ", "fomc", "rate cut", "rate hike", "cpi", "inflation",
+                 "sec ", "etf", "bitcoin", "btc", "ethereum", "eth ", "crypto", "tariff",
+                 "war", "missile", "strike", "attack", "sanction", "trump", "powell", "ceasefire")
+
+
+def fetch_news(seen):
+    """RSS 突发新闻(2026-08-10 用户要求): 关键词过滤+link去重(seen集合, 命中与否都标记);
+    返回 [(来源, 标题)], 最多2条防刷屏"""
+    import xml.etree.ElementTree as ET
+    out = []
+    for name, url in NEWS_FEEDS:
+        try:
+            r = _http.get(url, timeout=8)
+            if r.status_code != 200:
+                continue
+            root = ET.fromstring(r.content)
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                if not title or not link or link in seen:
+                    continue
+                seen.add(link)
+                if any(k in title.lower() for k in NEWS_KEYWORDS):
+                    out.append((name, title))
+        except Exception:
+            continue
+    return out[:2]
+
+
 def fetch_fast_price(sym):
     """实时报价三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None
     USDC 对用 USDC 计价的所(OKX/Gate, Binance国际美区451), 不用 USDT 对冒充(用户反馈)"""
@@ -2774,13 +2809,15 @@ def main():
     judge15_prev = {}  # sym → 上次15m判决, 注入简报保持连续性(迟滞)
     prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
     fast_ref = {}      # sym → 快检基准(价/阈值/摆动极值/VWAP), 3分钟休眠期10秒快检用
+    news_seen = set()  # 已处理新闻link, RSS去重用
     # 状态持久化(2026-08-09 用户要求): 重启不失忆, 上次判决/快照/快检基准全部恢复
     STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_state.json")
 
     def save_state():
         try:
             json.dump({"judge4_cache": judge4_cache, "judge15_prev": judge15_prev,
-                       "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref},
+                       "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref,
+                       "news_seen": list(news_seen)[-500:]},
                       open(STATE_FILE, "w"))
         except Exception as e:
             print(f"WARN: 状态保存失败 {e}")
@@ -2793,7 +2830,8 @@ def main():
             last_dirs.update(st.get("last_dirs", {}))
             prev_metrics.update(st.get("prev_metrics", {}))
             fast_ref.update(st.get("fast_ref", {}))
-            print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)}")
+            news_seen.update(st.get("news_seen", []))
+            print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)} 新闻{len(news_seen)}")
         except Exception as e:
             print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
@@ -2831,6 +2869,13 @@ def main():
                 # 异动: RSI(15m/4h)穿越/放量/逼位/挤压进出(边沿触发) — 先于15m判决, 事件要喂给裁判解读
                 events, cur_metrics = detect_events(sym, result, prev_metrics.get(sym))
                 prev_metrics[sym] = cur_metrics
+
+                # 突发新闻: RSS关键词命中 → 异动事件, 同样喂给裁判(2026-08-10)
+                try:
+                    for src_name, title in fetch_news(news_seen):
+                        events.append(f"📰 {src_name}: {title}")
+                except Exception as e:
+                    print(f"  新闻拉取失败: {e}")
 
                 # ── 15m 层: 每次扫描都判, 携带上次判决(迟滞)+本轮异动(AI解读) ──
                 judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
