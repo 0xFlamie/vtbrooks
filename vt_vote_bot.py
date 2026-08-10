@@ -2019,6 +2019,7 @@ def compute_levels(sym, sig):
                 "vol_ratio": vol_ratio, "vol_word": vol_word,
                 "rng_30m": float(h15.iloc[-2:].max() - l15.iloc[-2:].min()),  # 近30分钟振幅, 波动骤增检测用
                 "swing_high": float(swing_high), "swing_low": float(swing_low),  # 数值版, 异动检测用
+                "up15": bool(c15.iloc[-1] >= c15.iloc[-2]),  # 最新15m bar阴阳, 统计匹配用
                 "recent_high": float(recent_high)}
     except Exception:
         return None
@@ -2096,6 +2097,35 @@ def _cb_4h_history(sym, days=1400):
     df4 = df.resample("4h").agg({"open": "first", "high": "max", "low": "min",
                                  "close": "last", "volume": "sum"}).dropna()
     return df4 if len(df4) > 500 else None
+
+
+def _15m_history(sym, days=400):
+    """Hyperliquid 15m K线分页(统计库用), 约400天; 失败返回 None"""
+    coin = sym.replace("USDT", "").replace("USDC", "")
+    t1 = int(time.time() * 1000)
+    t0 = t1 - days * 86400 * 1000
+    rows = []
+    try:
+        while t0 < t1:
+            d = _http.post("https://api.hyperliquid.xyz/info", timeout=20, json={
+                "type": "candleSnapshot",
+                "req": {"coin": coin, "interval": "15m", "startTime": t0, "endTime": t1}}).json()
+            if not isinstance(d, list) or not d:
+                break
+            rows.extend(d)
+            last = int(d[-1]["t"])
+            if last <= t0:
+                break
+            t0 = last + 1
+            time.sleep(0.2)
+        if len(rows) > 5000:
+            df = pd.DataFrame([{"date": pd.to_datetime(int(x["t"]), unit="ms"),
+                                "open": float(x["o"]), "high": float(x["h"]), "low": float(x["l"]),
+                                "close": float(x["c"]), "volume": float(x["v"])} for x in rows])
+            return df.drop_duplicates("date").set_index("date").sort_index()
+    except Exception:
+        pass
+    return None
 
 
 def market_stats(sym, refresh=False):
@@ -2178,6 +2208,71 @@ def market_stats(sym, refresh=False):
         if int(m_dn.sum()) >= 20:
             vol_stats["放量下跌"] = {"n": int(m_dn.sum()), "cont": round(float((dn[m_dn] >= 1).mean()) * 100)}
         stats["volume"] = vol_stats
+
+        # ── 均线排列 → 12h 涨/跌≥1%概率(2026-08-10 维度统计扩充) ──
+        e7 = c.ewm(span=7, adjust=False).mean()
+        e25 = c.ewm(span=25, adjust=False).mean()
+        e99 = c.ewm(span=99, adjust=False).mean()
+        ta_stats = {}
+        for label, m in (("多头排列", (e7 > e25) & (e25 > e99)), ("空头排列", (e7 < e25) & (e25 < e99))):
+            if int(m.sum()) >= 50:
+                ta_stats[label] = {"n": int(m.sum()),
+                                   "up": round(float((up[m] >= 1).mean()) * 100),
+                                   "dn": round(float((dn[m] >= 1).mean()) * 100)}
+        stats["trend_align"] = ta_stats
+
+        # RSI 中段分档补全(原有 <=30/>=70 极值)
+        for label, m in (("30-45", (rsi > 30) & (rsi <= 45)), ("45-55", (rsi > 45) & (rsi <= 55)),
+                         ("55-70", (rsi > 55) & (rsi < 70))):
+            if int(m.sum()) >= 30:
+                rsi_stats[label] = {"n": int(m.sum()),
+                                    "bounce": round(float((up[m] >= 1).mean()) * 100),
+                                    "drop": round(float((dn[m] >= 1).mean()) * 100)}
+
+        # 量比全分档补全(原有仅>2)
+        dlt = c.diff()
+        for label, lo_, hi_ in (("缩量<0.6", 0, 0.6), ("平量0.6-1.2", 0.6, 1.2), ("放量1.2-2", 1.2, 2.0)):
+            for dname, dm, fwd in (("阳线", dlt > 0, up), ("阴线", dlt < 0, dn)):
+                m = (vr >= lo_) & (vr < hi_) & dm
+                if int(m.sum()) >= 30:
+                    vol_stats[f"{label}{dname}"] = {"n": int(m.sum()),
+                                                    "cont": round(float((fwd[m] >= 1).mean()) * 100)}
+
+        # ── 15m 级统计(近400天): RSI分档/量比分档/贴近20根高点 → 后4h 概率 ──
+        try:
+            df15h = _15m_history(sym)
+            if df15h is not None and len(df15h) > 20000:
+                c15, h15, l15, v15 = df15h["close"], df15h["high"], df15h["low"], df15h["volume"]
+                hi16 = h15.shift(-1).rolling(16).max().shift(-15)
+                lo16 = l15.shift(-1).rolling(16).min().shift(-15)
+                up4 = (hi16 - c15) / c15 * 100  # 后4h最大上浮%
+                dn4 = (c15 - lo16) / c15 * 100
+                dlt15 = c15.diff()
+                rsi15 = c15.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean() / (
+                    c15.diff().abs().ewm(alpha=1/14, adjust=False).mean() + 1e-10) * 100
+                vr15 = v15 / v15.rolling(20).mean()
+                m15 = {}
+                for label, m in (("<=30", rsi15 <= 30), ("30-45", (rsi15 > 30) & (rsi15 <= 45)),
+                                 ("45-55", (rsi15 > 45) & (rsi15 <= 55)), ("55-70", (rsi15 > 55) & (rsi15 < 70)),
+                                 (">=70", rsi15 >= 70)):
+                    if int(m.sum()) >= 50:
+                        m15[f"rsi{label}"] = {"n": int(m.sum()),
+                                              "bounce": round(float((up4[m] >= 0.5).mean()) * 100),
+                                              "drop": round(float((dn4[m] >= 0.5).mean()) * 100)}
+                for label, lo_, hi_ in (("<0.6", 0, 0.6), ("0.6-1.2", 0.6, 1.2), ("1.2-2", 1.2, 2.0), (">2", 2.0, 99)):
+                    for dname, dm, fwd in (("阳", dlt15 > 0, up4), ("阴", dlt15 < 0, dn4)):
+                        m = (vr15 >= lo_) & (vr15 < hi_) & dm
+                        if int(m.sum()) >= 50:
+                            m15[f"量比{label}{dname}"] = {"n": int(m.sum()),
+                                                          "cont": round(float((fwd[m] >= 0.5).mean()) * 100)}
+                near_hi = ((h15.rolling(20).max() - c15) / c15 * 100 <= 0.3)
+                if int(near_hi.sum()) >= 50:
+                    m15["贴近20根高点"] = {"n": int(near_hi.sum()),
+                                           "brk": round(float((up4[near_hi] >= 0.5).mean()) * 100),
+                                           "fail": round(float((dn4[near_hi] >= 0.5).mean()) * 100)}
+                stats["m15"] = m15
+        except Exception as e:
+            print(f"WARN: 15m统计失败 {type(e).__name__}: {e}")
 
         # ── 资金费率极值(HL, 2023起): |8h费率|>0.05% → 12h 反向≥1%概率 ──
         try:
@@ -2514,12 +2609,18 @@ def build_brief_4h(result):
         mst = market_stats(sym)
         if mst:
             yrs = "近4年"
+            ta = mst.get("trend_align", {})
+            cur_aln = "多头排列" if ctx4.get("trend_up") else "空头排列" if ctx4.get("trend_dn") else None
+            if cur_aln and cur_aln in ta:
+                t = ta[cur_aln]
+                L.append(f"统计({yrs}): 4h{cur_aln}共{t['n']}次, 后12h涨≥1%占{t['up']}%, 跌≥1%占{t['dn']}%")
             b = "0-20" if sq < 20 else "20-40" if sq < 40 else "40-70" if sq < 70 else "70-100"
             if b in mst.get("squeeze", {}):
                 t = mst["squeeze"][b]
                 L.append(f"统计({yrs}): 挤压{b}%档{t['n']}次, 后12h振幅≥1%占{t['p1']}%, ≥2%占{t['p2']}%, ≥3%占{t['p3']}%")
             r4 = ctx4["rsi4h"]
-            rb = "<=30" if r4 <= 30 else ">=70" if r4 >= 70 else None
+            rb = ("<=30" if r4 <= 30 else ">=70" if r4 >= 70 else
+                  "30-45" if r4 <= 45 else "45-55" if r4 <= 55 else "55-70")
             if rb and rb in mst.get("rsi", {}):
                 t = mst["rsi"][rb]
                 L.append(f"统计: 4hRSI{rb}共{t['n']}次, 后12h反弹≥1%占{t['bounce']}%, 回落≥1%占{t['drop']}%")
@@ -2534,6 +2635,12 @@ def build_brief_4h(result):
                 if vb in mst.get("volume", {}):
                     t = mst["volume"][vb]
                     L.append(f"统计: 4h{vb}共{t['n']}次, 后12h同向延续≥1%占{t['cont']}%")
+            else:  # 全分档常引(2026-08-10): 量比不给>2也带概率
+                vb = "缩量<0.6" if vr4 < 0.6 else "平量0.6-1.2" if vr4 < 1.2 else "放量1.2-2"
+                key = f"{vb}{'阳线' if ctx4.get('up4') else '阴线'}"
+                if key in mst.get("volume", {}):
+                    t = mst["volume"][key]
+                    L.append(f"统计: 4h{key}共{t['n']}次, 后12h同向延续≥1%占{t['cont']}%")
             st_now = fetch_sentiment(sym) or {}
             fr_now = st_now.get("funding_rate")
             if fr_now is not None and abs(fr_now) * 100 > 0.05:
@@ -2587,6 +2694,23 @@ def build_market_brief(result, plan=None, events=None, prev=None):
         L.append(f"EMA20: ${lv['ema20']:.2f} | EMA50: ${lv['ema50']:.2f} | ATR14: ${lv['atr14']:.2f}")
         L.append(f"市场情绪: {rsi_word(lv['rsi14'])}")
         L.append(f"成交量: {lv['vol_word']} (量比 {lv['vol_ratio']:.2f})")
+        # 15m 级历史统计注入(2026-08-10 用户要求: 各维度都要带历史概率)
+        m15 = (market_stats(sym) or {}).get("m15", {})
+        if m15:
+            r15 = lv["rsi14"]
+            rb = ("<=30" if r15 <= 30 else ">=70" if r15 >= 70 else
+                  "30-45" if r15 <= 45 else "45-55" if r15 <= 55 else "55-70")
+            t = m15.get(f"rsi{rb}")
+            if t:
+                L.append(f"统计(近400天15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
+            vr_ = lv["vol_ratio"]
+            vb = "<0.6" if vr_ < 0.6 else "0.6-1.2" if vr_ < 1.2 else "1.2-2" if vr_ < 2 else ">2"
+            t = m15.get(f"量比{vb}{'阳' if lv.get('up15') else '阴'}")
+            if t:
+                L.append(f"统计: 15m量比{vb}共{t['n']}次, 后4h同向延续≥0.5%占{t['cont']}%")
+            if (lv["swing_high"] - px) / px * 100 <= 0.3 and "贴近20根高点" in m15:
+                t = m15["贴近20根高点"]
+                L.append(f"统计: 贴近20根高点共{t['n']}次, 后4h上破≥0.5%占{t['brk']}%, 回落≥0.5%占{t['fail']}%")
         vw = compute_vwap(sym)
         if vw:
             L.append(f"VWAP(日内): ${vw[0]:.2f} | 价在VWAP{'上' if vw[1] >= 0 else '下'} ({vw[1]:+.2f}%)")
