@@ -1500,6 +1500,51 @@ def translate_title(title):
     return title
 
 
+def render_chart(sym, lv, wy, ew):
+    """15m K线图(96根): 蜡烛+EMA20/50+摆动位+TR框+入场/失效标注(2026-08-10 可视化); 失败返回 None"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        df = fetch_klines(sym, "15m", 100).tail(96)
+        if len(df) < 30:
+            return None
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=110)
+        xs = range(len(df))
+        o, h_, l_, c_ = df["open"].values, df["high"].values, df["low"].values, df["close"].values
+        for i in xs:
+            col = "#26a69a" if c_[i] >= o[i] else "#ef5350"
+            ax.vlines(i, l_[i], h_[i], color=col, linewidth=0.6)
+            ax.add_patch(plt.Rectangle((i - 0.3, min(o[i], c_[i])), 0.6, max(abs(c_[i] - o[i]), 1e-9), color=col))
+        ax.plot(xs, df["close"].ewm(span=20, adjust=False).mean().values, lw=1, color="#1e88e5", label="EMA20")
+        ax.plot(xs, df["close"].ewm(span=50, adjust=False).mean().values, lw=1, color="#fb8c00", label="EMA50")
+        if lv:
+            ax.axhline(lv["swing_high"], ls="--", lw=0.9, color="#ef5350")
+            ax.text(len(df) - 1, lv["swing_high"], f" H {lv['swing_high']:.1f}", color="#ef5350", va="bottom", fontsize=8)
+            ax.axhline(lv["swing_low"], ls="--", lw=0.9, color="#26a69a")
+            ax.text(len(df) - 1, lv["swing_low"], f" L {lv['swing_low']:.1f}", color="#26a69a", va="top", fontsize=8)
+        if wy:
+            ax.add_patch(plt.Rectangle((0, wy["support"]), len(df), wy["resistance"] - wy["support"],
+                                       alpha=0.07, color="#7e57c2", label="TR"))
+        if ew:
+            ax.axhline(ew["invalid"], ls=":", lw=1.1, color="#fdd835")
+            ax.text(1, ew["invalid"], f"SL {ew['invalid']:.1f}", color="#fdd835", fontsize=8, va="bottom")
+        ax.legend(loc="best", fontsize=8)
+        ax.set_title(f"{sym} 15m  ${c_[-1]:.2f}", fontsize=11)
+        step = max(len(df) // 8, 1)
+        ax.set_xticks(list(xs)[::step])
+        ax.set_xticklabels([df.index[i].strftime("%m-%d %H:%M") for i in range(0, len(df), step)], fontsize=7)
+        ax.grid(alpha=0.2)
+        fig.tight_layout()
+        path = f"/tmp/vt_chart_{sym}.png"
+        fig.savefig(path)
+        plt.close(fig)
+        return path
+    except Exception as e:
+        print(f"WARN: 画图失败 {type(e).__name__}: {e}")
+        return None
+
+
 def fetch_fast_price(sym):
     """实时报价三源取中位数, 防单源偏离(2026-08-09 用户反馈价格不准); 全失败返回 None
     USDC 对用 USDC 计价的所(OKX/Gate, Binance国际美区451), 不用 USDT 对冒充(用户反馈)"""
@@ -1802,6 +1847,11 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     others = [e for e in (events or []) if not e.startswith("📰")]
     for nw in news:
         L.append(nw)
+    # 💡 结论行: 双模各一句带概率的判断(2026-08-10 用户要求: 明确方向+大概率)
+    if judge4.get("summary"):
+        L.append(f"💡 4h: {judge4['summary']}")
+    if judge15.get("summary"):
+        L.append(f"💡 15m: {judge15['summary']}")
     L.append("")
 
     tier = judge4.get("mag_tier")
@@ -2986,7 +3036,8 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
                 reasons = list(dims.values()) if dims else [str(data.get("reason", "")).strip() or "无理由"]
             reasons = [str(x).strip() for x in reasons[:4]]
             return {"verdict": "执行" if direction else "观望", "direction": direction,
-                    "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons, "dims": dims}
+                    "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons,
+                    "summary": str(data.get("summary", "")).strip(), "dims": dims}
         except Exception as e:
             print(f"WARN: 裁判{name}异常 {type(e).__name__}: {e}")
             if attempt == 1:
@@ -3031,8 +3082,8 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "威科夫Spring/JOC向上偏多, Upthrust/JOC向下偏空。"
           "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
           "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
-          "\"confidence\": 0-100 整数, \"reasons\": [2-4条理由]}。"
-          "理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
+          "\"confidence\": 0-100 整数, \"summary\": \"一句话结论\", \"reasons\": [2-4条理由]}。"
+          "summary不超过30字: 含方向和概率(引用简报统计或置信), 如\"大概率(65%)先回踩1903再反弹\"。理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
           "(如\"价格冲到区间上沿又被打回来还带放量，像有人在高位出货\")；没话说就别硬凑，2条够就不写第3条。"
           "简报里的历史统计只在有区分度时引用(概率≥60%或≤40%), 接近五五开的底噪别引。"
           "magnitude 与方向无关也要给。用大白话，保留关键数字，不用术语缩写，每条不超过40字。"
@@ -3045,8 +3096,8 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "同样的RSI超买，在强势上升趋势里是动能、在区间顶部缩量时是回落前兆；放量+逼近压力，"
            "突破失败和真突破的含义完全相反。不同组合给不同解读。"
            "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
-           "\"confidence\": 0-100 整数, \"reasons\": [2-4条理由]}。"
-           "理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
+           "\"confidence\": 0-100 整数, \"summary\": \"一句话结论\", \"reasons\": [2-4条理由]}。"
+           "summary不超过30字: 含方向和概率, 如\"短线偏空(60%), 反弹到1918附近滞涨再跌\"。理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
            "(如\"15分钟图是双腿回调形态，市场又是空头，反弹是暂时的，顺势做空更稳\")；"
            "有异动时第一条必须先写异动解读；布林带只是位置参考之一，最多提一次；没话说别硬凑，2条够就不写第3条。"
            "简报里的历史统计只在有区分度时引用(≥60%或≤40%), 五五开底噪别引。"
@@ -3217,7 +3268,8 @@ def main():
                 # 入场窗口: 4h有方向时, 15m贴近结构位回调/放量突破(纯规则)
                 lv_main = compute_levels(sym, judge4.get("direction") or judge15.get("direction") or result["signal"])
                 vw_main = compute_vwap(sym)
-                ew = entry_window(result, judge4, compute_4h_context(sym), lv_main, vw_main)
+                ctx4_main = compute_4h_context(sym)
+                ew = entry_window(result, judge4, ctx4_main, lv_main, vw_main)
                 ew_key = (ew["type"], ew["dir"]) if ew else None
                 if ew_key and prev_metrics.get("_ew") != ew_key:
                     events = events + [f"入场窗口开启({ew['type']})"]
@@ -3227,6 +3279,14 @@ def main():
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
                                         events=events or None, ew=ew)
                     ok = send_telegram(msg)
+                    # 图表推送: 定时/反转带K线图(2026-08-10 可视化), 异动只推文本保速度
+                    if is_15m or reversal:
+                        try:
+                            img = render_chart(sym, lv_main, (ctx4_main or {}).get("wyckoff"), ew)
+                            if img:
+                                send_photo(img, f"{sym} 4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}")
+                        except Exception as e:
+                            print(f"  图表推送失败: {e}")
                     tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                 else:
