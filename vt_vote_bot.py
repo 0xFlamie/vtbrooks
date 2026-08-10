@@ -2113,7 +2113,7 @@ def _15m_history(sym, days=400):
             if not isinstance(d, list) or not d:
                 break
             rows.extend(d)
-            last = int(d[-1]["t"])
+            last = max(int(x["t"]) for x in d)  # 15m 响应是倒序, 不能取 d[-1](2026-08-10 实测)
             if last <= t0:
                 break
             t0 = last + 1
