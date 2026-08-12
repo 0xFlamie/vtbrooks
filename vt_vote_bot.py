@@ -1851,7 +1851,7 @@ def build_data_board(sym, result, lv, ctx4):
         else:
             rows.append(f"　{_plain_label(label)}: 近5年{n}次里, {_plain_suffix(suffix)}占{p}%")
     if not rows:
-        rows.append("　当前无统计优势底牌(各维度接近五五开), 别开单")
+        return []  # 无优势底牌时整块不显示(2026-08-12 用户决策: 没信息量的行不占版面)
     return rows
 
 
@@ -1981,10 +1981,12 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 if wy:
                     tp += f" 二压${wy['resistance']}(TR顶); 突破看${2 * wy['resistance'] - wy['support']:.0f}"
                 L.append(f"　　止盈: {tp}")
-    # 数据看板: 只列有统计优势的底牌(≥65%/≤35%), 五五开明说无优势(2026-08-10)
-    L.append("")
-    L.append("📋 数据看板")
-    L.extend(build_data_board(sym, result, lv, ctx4))
+    # 数据看板: 只列有统计优势的底牌(≥65%/≤35%), 无优势整块不显示(2026-08-12)
+    board = build_data_board(sym, result, lv, ctx4)
+    if board:
+        L.append("")
+        L.append("📋 数据看板")
+        L.extend(board)
     # 持仓导航: 15m有方向时给防守/进攻/目标位(纯规则结构位, 2026-08-09 用户要求: 开单后的延续性指引)
     if d15 and lv:
         wy_nav = (ctx4 or {}).get("wyckoff")
