@@ -3161,12 +3161,12 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
-    return _dual_judge(SYS_4H, brief)
+    return _judge_call(SYS_4H, brief)  # 单模(2026-08-12 用户决策: KK成本7-10倍且价值未证明, 回退DS单模)
 
 
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
-    return _dual_judge(SYS_15M, build_market_brief(result, events=events, prev=prev))
+    return _judge_call(SYS_15M, build_market_brief(result, events=events, prev=prev))  # 单模(2026-08-12)
 
 
 def ai_judge(result, plan=None):
