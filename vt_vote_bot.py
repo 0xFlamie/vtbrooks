@@ -2441,8 +2441,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     pm = polymarket_odds()
     if pm:
         L.append("🎲 预测市场: " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
-    # 全行左对齐(2026-08-20 用户要求): 去掉全角/半角缩进
-    return "\n".join(line.lstrip("　 ") for line in L)
+    # 全行左对齐 + 板块标题前强制空行(2026-08-20 用户要求)
+    heads = ("🧾", "📋", "🧭", "🔥", "🚀", "🌊", "🌏")
+    out = []
+    for line in (ln.lstrip("　 ") for ln in L):
+        if line.startswith(heads) and out and out[-1] != "":
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
 
 
 def trigger_line(result):
