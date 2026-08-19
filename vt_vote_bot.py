@@ -108,6 +108,43 @@ INTERVAL_MS = {"5m": 5 * 60_000, "15m": 15 * 60_000, "1h": 3_600_000,
 # K线缓存: (symbol, interval, limit) → (timestamp, df), TTL 60s, 同一轮内复用
 _kline_cache = {}
 
+# 近期新闻(供两层裁判简报读取): [(ts, "来源: 中文标题")], 保留12h/10条, 主循环更新
+RECENT_NEWS = []
+
+# 宏观日历(美东日期): 事件日两层简报注入, AI 提高新闻/宏观权重(2026-08-20 财政部划线漏报事故)
+MACRO_EVENTS = {
+    "2026-09-15": "FOMC议息首日", "2026-09-16": "FOMC议息决议+鲍威尔发布会",
+    "2026-10-07": "FOMC会议纪要", "2026-10-27": "FOMC议息首日", "2026-10-28": "FOMC议息决议",
+    "2026-11-18": "FOMC会议纪要", "2026-12-08": "FOMC议息首日", "2026-12-09": "FOMC议息决议",
+    "2026-12-30": "FOMC会议纪要",
+    "2026-09-11": "美国8月CPI", "2026-10-13": "美国9月CPI",
+    "2026-11-10": "美国10月CPI", "2026-12-10": "美国11月CPI",
+}
+
+
+def _macro_line():
+    """今天是宏观事件日则返回提示行, 否则 None"""
+    try:
+        d = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+        ev = MACRO_EVENTS.get(d)
+        if ev:
+            return f"⚠️ 今日宏观事件: {ev}(美东)。事件日波动放大概率高, 新闻/宏观面的权重上调, 别只看技术面。"
+    except Exception:
+        pass
+    return None
+
+
+def _recent_news_lines(hours=12, limit=5):
+    """近12h新闻行(中文), 供两层简报注入"""
+    try:
+        now = time.time()
+        items = [t for ts, t in RECENT_NEWS if now - ts < hours * 3600][-limit:]
+        if items:
+            return ["近期新闻: " + " | ".join(items)]
+    except Exception:
+        pass
+    return []
+
 
 def _drop_unclosed(df, interval):
     """丢弃最后一根未收盘K线: open_time + 周期 > 当前时间 (按实际请求的 interval 算毫秒)"""
@@ -1451,11 +1488,15 @@ NEWS_FEEDS = [
     ("Axios", "https://api.axios.com/feed/"),
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
     ("CoinTelegraph", "https://cointelegraph.com/rss"),
+    ("GNews加密", "https://news.google.com/rss/search?q=bitcoin+OR+ethereum+OR+crypto&hl=zh-CN&gl=CN&ceid=CN:zh"),
+    ("GNews宏观", "https://news.google.com/rss/search?q=federal+reserve+OR+treasury+OR+FOMC&hl=en-US&gl=US&ceid=US:en"),
 ]
 # 新闻关键词白名单: 只推可能影响行情的地缘/宏观/币圈原生新闻
 NEWS_KEYWORDS = ("iran", "israel", "fed ", "fomc", "rate cut", "rate hike", "cpi", "inflation",
                  "sec ", "etf", "bitcoin", "btc", "ethereum", "eth ", "crypto", "tariff",
-                 "war", "missile", "strike", "attack", "sanction", "trump", "powell", "ceasefire")
+                 "war", "missile", "strike", "attack", "sanction", "trump", "powell", "ceasefire",
+                 "treasury", "buyback", "yield", "财政部", "联储", "降息", "加息", "通胀",
+                 "比特币", "以太坊", "美联储", "纪要", "国债", "收益率", "回购")
 
 
 def fetch_news(seen):
@@ -2867,6 +2908,10 @@ def build_brief_4h(result):
     """4h 层简报: 只含大周期数据(趋势/Brooks4h/挤压/威科夫/合约情绪), 判方向和幅度档"""
     sym = result["symbol"]; px = result["price"]
     L = [f"币种: {sym} | 现价: ${px:.2f}"]
+    ml = _macro_line()
+    if ml:
+        L.append(ml)
+    L.extend(_recent_news_lines())
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4 = ctx4["brooks"]
@@ -2957,6 +3002,10 @@ def build_market_brief(result, plan=None, events=None, prev=None):
 
     L = []
     L.append(f"币种: {sym} | 现价: ${px:.2f}")
+    ml = _macro_line()
+    if ml:
+        L.append(ml)
+    L.extend(_recent_news_lines())
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
@@ -3135,7 +3184,9 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "简报里的历史统计只在有区分度时引用(概率≥60%或≤40%), 接近五五开的底噪别引。"
           "magnitude 与方向无关也要给。用大白话，保留关键数字，不用术语缩写，每条不超过40字。"
           "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
-          "要翻转方向，必须在dims里写清新出现的反转证据是什么。")
+          "要翻转方向，必须在理由里写清新出现的反转证据是什么。"
+          "简报可能含近期新闻和宏观事件日提示：财政部/联储/地缘这类消息会主导未来4-12小时方向，"
+          "出现时必须编进推理链(如\"财政部压收益率=流动性宽松=偏多\"), 不能只看技术面。")
 
 SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时的方向(入场时机)。"
            "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
@@ -3241,7 +3292,7 @@ def main():
         try:
             json.dump({"judge4_cache": judge4_cache, "judge15_prev": judge15_prev,
                        "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref,
-                       "news_seen": list(news_seen)[-500:]},
+                       "news_seen": list(news_seen)[-500:], "recent_news": RECENT_NEWS[-10:]},
                       open(STATE_FILE, "w"))
         except Exception as e:
             print(f"WARN: 状态保存失败 {e}")
@@ -3255,12 +3306,14 @@ def main():
             prev_metrics.update(st.get("prev_metrics", {}))
             fast_ref.update(st.get("fast_ref", {}))
             news_seen.update(st.get("news_seen", []))
+            RECENT_NEWS.extend([tuple(x) for x in st.get("recent_news", [])])
             print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)} 新闻{len(news_seen)}")
         except Exception as e:
             print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
     last_timed_slot = None  # 最后推过的15分钟槽, 防止慢扫描吞掉定时推送(2026-08-10)
     pending_fast = None     # 快检触发的事件, 注入下轮扫描必推+AI解读
+    last_fast = {}          # (sym,触发类型) → 上次触发时间, 快检同向冷却用
     while True:
         now = pd.Timestamp.now()
         minute = now.minute
@@ -3302,10 +3355,14 @@ def main():
                     events.append(f"⚡快检: {pending_fast}")
                     pending_fast = None
 
-                # 突发新闻: RSS关键词命中 → 翻成中文, 卡片置顶+喂给裁判(2026-08-10)
+                # 突发新闻: RSS关键词命中 → 翻成中文, 卡片置顶+进近期新闻列表(两层简报都读)+喂给裁判(2026-08-10/20)
                 try:
                     for src_name, title in fetch_news(news_seen):
-                        events.append(f"📰 {src_name}: {translate_title(title)}")
+                        cn = translate_title(title)
+                        events.append(f"📰 {src_name}: {cn}")
+                        RECENT_NEWS.append((time.time(), f"{src_name}: {cn}"))
+                    now_ts = time.time()
+                    RECENT_NEWS[:] = [x for x in RECENT_NEWS if now_ts - x[0] < 12 * 3600][-10:]
                 except Exception as e:
                     print(f"  新闻拉取失败: {e}")
 
@@ -3372,15 +3429,27 @@ def main():
                 px = fetch_fast_price(sym)
                 if px is None:
                     continue
+                tkey = None
                 chg = (px - ref["px"]) / ref["px"] * 100
                 if abs(chg) >= ref["thr"]:
                     trig = f"{'急涨' if chg > 0 else '急跌'}{abs(chg):.1f}%(阈值{ref['thr']:.1f}%)"
+                    tkey = "up" if chg > 0 else "dn"
                 elif ref["hi"] and ref["px"] <= ref["hi"] < px:  # 边沿: 基准价还在下方才算突破(2026-08-10 刷屏事故)
                     trig = f"突破摆动高点${ref['hi']:.2f}"
+                    tkey = "hi"
                 elif ref["lo"] and px < ref["lo"] <= ref["px"]:
                     trig = f"跌破摆动低点${ref['lo']:.2f}"
+                    tkey = "lo"
                 elif ref["vwap"] and (px - ref["vwap"]) * (ref["px"] - ref["vwap"]) < 0:
                     trig = f"穿越VWAP(${ref['vwap']:.2f})"
+                    tkey = "vwap"
+                # 同向冷却15分钟: 单边行情每段新腿都触发会刷屏(2026-08-19 暴涨连推6次事故)
+                if trig and tkey:
+                    lk = (sym, tkey)
+                    if time.time() - last_fast.get(lk, 0) < 900:
+                        trig = None
+                        continue
+                    last_fast[lk] = time.time()
                 if trig:
                     print(f"\n  ⚡ {sym} 快检{trig}, 立即全扫")
                     pending_fast = f"{sym} {trig}"
