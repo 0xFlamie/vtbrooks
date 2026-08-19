@@ -2171,6 +2171,37 @@ def confluence(result, d4, lv, ctx4, board_rows):
     return score, [name for name, ok in checks if not ok]
 
 
+def self_review_block():
+    """AI自我复盘材料(2026-08-20 用户决策, 推翻08-05"历史不注入"): 近30次判决成绩+错例+错题本,
+    注入两层简报, 让裁判知道自己哪边老错并据此校准置信度"""
+    try:
+        done = [e for e in load_journal()["entries"] if e.get("dir_score_4h") is not None and e.get("direction")]
+        if len(done) < 10:
+            return None
+        recent = done[-30:]
+        lines = []
+        for d, name in (("LONG", "判多"), ("SHORT", "判空")):
+            xs = [e["dir_score_4h"] for e in recent if e["direction"] == d]
+            if xs:
+                win = sum(1 for s in xs if s >= 0.5) / len(xs) * 100
+                lines.append(f"{name}{len(xs)}次判对率{win:.0f}%")
+        wrong = [e for e in recent if e["dir_score_4h"] <= -0.5][-3:]
+        for e in wrong:
+            rsn = (e.get("reasons") or ["?"])[0][:30]
+            d_cn = "多" if e["direction"] == "LONG" else "空"
+            lines.append(f"错例{e['time'][5:16]}: 判{d_cn}@${e['entry_px']:.0f}实走反向{e['dir_score_4h']}ATR, 当时理由「{rsn}」")
+        try:
+            lessons = load_lessons()
+            if lessons:
+                txt = lessons if isinstance(lessons, str) else json.dumps(lessons, ensure_ascii=False)
+                lines.append("错题本: " + txt[-200:])
+        except Exception:
+            pass
+        return "你的近期判决复盘: " + " ; ".join(lines) if lines else None
+    except Exception:
+        return None
+
+
 def build_data_board(sym, result, lv, ctx4):
     """数据看板(2026-08-10 用户要求): 只列当前状态命中的、有统计优势(≥65%或≤35%)的历史概率;
     全是五五开就明说无优势。纯规则生成, 数字只来自统计库, 不经AI"""
@@ -3289,6 +3320,9 @@ def build_brief_4h(result):
     if ml:
         L.append(ml)
     L.extend(_recent_news_lines())
+    sr = self_review_block()
+    if sr:
+        L.append(sr)
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4 = ctx4["brooks"]
@@ -3386,6 +3420,9 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     if ml:
         L.append(ml)
     L.extend(_recent_news_lines())
+    sr = self_review_block()
+    if sr:
+        L.append(sr)
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
@@ -3566,7 +3603,7 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "(如\"价格冲到区间上沿又被打回来还带放量，像有人在高位出货\")；没话说就别硬凑，2条够就不写第3条。"
           "简报里的历史统计只在有区分度时引用(概率≥60%或≤40%), 接近五五开的底噪别引。"
           "magnitude 与方向无关也要给。置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=趋势+量能+结构+统计全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。用大白话，保留关键数字，不用术语缩写，每条不超过40字。"
-          "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
+          "你是会复盘的裁判: 简报含你自己最近的判决成绩和错例, 据此校准——哪个方向老错就压那个方向的置信, 重复犯错的模式要避开。简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
           "要翻转方向，必须在理由里写清新出现的反转证据是什么。"
           "简报可能含近期新闻和宏观事件日提示：财政部/联储/地缘这类消息会主导未来4-12小时方向，"
           "出现时必须编进推理链(如\"财政部压收益率=流动性宽松=偏多\"), 不能只看技术面。")
@@ -3582,7 +3619,7 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "(如\"15分钟图是双腿回调形态，市场又是空头，反弹是暂时的，顺势做空更稳\")；"
            "有异动时第一条必须先写异动解读；布林带只是位置参考之一，最多提一次；没话说别硬凑，2条够就不写第3条。"
            "简报里的历史统计只在有区分度时引用(≥60%或≤40%), 五五开底噪别引。"
-           "证据没有明显变化就维持上次方向，别因噪音翻转。"
+           "证据没有明显变化就维持上次方向，别因噪音翻转。简报含你自己的近期判决复盘: 哪边老错就压哪边置信, 别重复犯同一个错。"
            "置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=趋势+量能+结构+统计全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。用大白话写，保留关键数字但不用术语缩写，每条不超过40字。")
 
 
