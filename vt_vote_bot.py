@@ -216,13 +216,55 @@ def news_editor(items, mem):
         return []
 
 
+def update_world_view(sym, force=False):
+    """盘面综述(2026-08-20 用户要求: 别呆板罗列, 要像交易员一样形成叙事):
+    事件线+近期新闻+预测市场赔率+价格动作+宏观日历 → 一段4-6句的当前市场叙事, 30分钟刷新, 注入两层简报"""
+    mem = load_news_memory()
+    wv = mem.get("world_view") or {}
+    if not force and time.time() - wv.get("ts", 0) < 1800 and wv.get("text"):
+        return wv["text"]
+    try:
+        threads = _threads_line(mem) or "无"
+        now = time.time()
+        recent = " | ".join(t for ts, t in RECENT_NEWS if now - ts < 12 * 3600) or "无"
+        pm = polymarket_odds()
+        pm_txt = " | ".join(f"{x['topic']}{x['prob']}%" for x in pm) or "无"
+        c4 = fetch_klines(sym, "4h", 50)["close"]
+        chg24 = float((c4.iloc[-1] / c4.iloc[-7] - 1) * 100)
+        chg7d = float((c4.iloc[-1] / c4.iloc[-43] - 1) * 100) if len(c4) >= 43 else 0.0
+        macro = _macro_line() or "今日无宏观事件日"
+        sys_p = ("你是专业加密交易员。根据给定材料写当前盘面综述, 4-6句大白话: 市场在交易什么主线, "
+                 "风险偏好怎样, 哪些事件在发酵(走向如何), 对加密的传导路径, 未来24-48小时最该盯什么。"
+                 "忌空话套话, 每句落到具体事件或数字; 像写给同行的晨会笔记, 不是新闻播报。")
+        user = (f"价格: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
+                f"{threads}\n近期新闻: {recent}\n预测市场: {pm_txt}")
+        r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
+            {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
+            "max_tokens": 400, "temperature": 0.3},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
+        if r.status_code == 200:
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            if text:
+                mem["world_view"] = {"text": text, "ts": time.time()}
+                save_news_memory(mem)
+                return text
+    except Exception as e:
+        print(f"WARN: 盘面综述生成失败 {type(e).__name__}: {e}")
+    return wv.get("text")
+
+
 def _recent_news_lines(hours=12, limit=5):
-    """简报注入: 事件线(记忆) + 近12h即时新闻(中文)"""
+    """简报注入: 盘面综述(叙事) + 近12h即时新闻(中文)。综述优先, 没有才退化到事件线罗列"""
     lines = []
     try:
-        tl = _threads_line(load_news_memory())
-        if tl:
-            lines.append(tl)
+        mem = load_news_memory()
+        wv = (mem.get("world_view") or {}).get("text")
+        if wv:
+            lines.append(f"盘面综述: {wv}")
+        else:
+            tl = _threads_line(mem)
+            if tl:
+                lines.append(tl)
     except Exception:
         pass
     try:
@@ -3588,6 +3630,7 @@ def main():
                             continue  # 同新闻已定价, 跳过
                         fresh.append((src_name, title))
                     if fresh:
+                        got_hard_news = False
                         for it in news_editor(fresh, load_news_memory()):
                             if not it.get("relevant"):
                                 continue
@@ -3595,10 +3638,15 @@ def main():
                             tag = f"{it.get('horizon','')}·{it.get('dir','')}"
                             events.append(f"📰 [{tag}] {it['src']}: {cn} — {it.get('note','')}")
                             RECENT_NEWS.append((time.time(), f"{it['src']}: {cn}"))
+                            if it.get("horizon") == "即时":
+                                got_hard_news = True
+                        if got_hard_news:
+                            update_world_view(sym, force=True)  # 即时新闻落地后立刻重写盘面综述
                     now_ts = time.time()
                     RECENT_NEWS[:] = [x for x in RECENT_NEWS if now_ts - x[0] < 12 * 3600][-10:]
                 except Exception as e:
                     print(f"  新闻拉取失败: {e}")
+                update_world_view(sym)  # 30分钟节流, 保证裁判读到的综述不过夜
 
                 # 预测市场重定价: 主题赔率变动≥6pp → 市场预期变了, 推送+喂裁判(2026-08-20)
                 try:
