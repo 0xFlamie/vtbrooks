@@ -1825,6 +1825,52 @@ def _dir_emoji(d, conf):
     return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
 
 
+# Polymarket 热点观察: (主题, 搜索词); 预测市场赔率=市场预期的后续判断(2026-08-20 用户要求)
+PM_WATCH = [
+    ("联储降息", "Fed rate cut 2026"),
+    ("伊朗停火", "Iran Israel ceasefire"),
+    ("美国衰退", "US recession"),
+    ("BTC新高", "Bitcoin all time high"),
+]
+_pm_cache = {"ts": 0, "data": None}
+
+
+def polymarket_odds():
+    """Polymarket 热点赔率: [{topic, prob, q}], 只取未结束且概率在1-99之间的活跃市场; 15分钟缓存"""
+    if time.time() - _pm_cache["ts"] < 900 and _pm_cache["data"] is not None:
+        return _pm_cache["data"]
+    out = []
+    now_ms = time.time() * 1000
+    for topic, q in PM_WATCH:
+        try:
+            d = http_get_json("https://gamma-api.polymarket.com/public-search?q="
+                              + requests.utils.quote(q) + "&limit_per_type=2", timeout=8)
+            best = None
+            for ev in (d or {}).get("events") or []:
+                for m in ev.get("markets") or []:
+                    if m.get("closed"):
+                        continue
+                    end = m.get("endDate") or m.get("end_date_iso")
+                    if end and pd.Timestamp(end).timestamp() * 1000 < now_ms:
+                        continue
+                    p = m.get("outcomePrices")
+                    if not p:
+                        continue
+                    yes = float(json.loads(p)[0])
+                    if not (0.01 < yes < 0.99):
+                        continue
+                    vol = float(m.get("volumeNum") or 0)
+                    if best is None or vol > best[1]:
+                        best = (yes, vol, (m.get("question") or "")[:40])
+            if best:
+                out.append({"topic": topic, "prob": round(best[0] * 100), "q": best[2]})
+        except Exception:
+            continue
+    _pm_cache["ts"] = time.time()
+    _pm_cache["data"] = out
+    return out
+
+
 def market_mood(sym):
     """整体市场情绪(2026-08-20 用户要求): 恐贪指数+24h涨跌+费率+多空比 → 一行综合判断。
     返回 (卡片行, 简报行) 或 None"""
@@ -2166,6 +2212,9 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     mood = market_mood(sym)
     if mood:
         L.append(mood[0])
+    pm = polymarket_odds()
+    if pm:
+        L.append("🎲 预测市场: " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
     return "\n".join(L)
 
 
@@ -3042,6 +3091,9 @@ def build_brief_4h(result):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    pm = polymarket_odds()
+    if pm:
+        L.append("预测市场(Polymarket赔率=市场预期的后续走势): " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
     return "\n".join(L)
 
 
@@ -3129,6 +3181,9 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    pm = polymarket_odds()
+    if pm:
+        L.append("预测市场(Polymarket赔率=市场预期的后续走势): " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
     if events:
         L.append("本轮扫描触发异动: " + "; ".join(events))
     else:
@@ -3439,6 +3494,17 @@ def main():
                 except Exception as e:
                     print(f"  新闻拉取失败: {e}")
 
+                # 预测市场重定价: 主题赔率变动≥6pp → 市场预期变了, 推送+喂裁判(2026-08-20)
+                try:
+                    pm_now = {x["topic"]: x["prob"] for x in polymarket_odds()}
+                    pm_prev = prev_metrics[sym].get("_pm", {})
+                    for topic, prob in pm_now.items():
+                        if topic in pm_prev and abs(prob - pm_prev[topic]) >= 6:
+                            events.append(f"🎲 预测市场重定价: {topic} {pm_prev[topic]}%→{prob}%")
+                    prev_metrics[sym]["_pm"] = pm_now
+                except Exception:
+                    pass
+
                 # ── 15m 层: 每次扫描都判, 携带上次判决(迟滞)+本轮异动(AI解读) ──
                 judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
                 judge15_prev[sym] = judge15
@@ -3456,7 +3522,7 @@ def main():
                 ctx4_main = compute_4h_context(sym)
                 ew = entry_window(result, judge4, ctx4_main, lv_main, vw_main)
                 ew_key = (ew["type"], ew["dir"]) if ew else None
-                if ew_key and prev_metrics.get("_ew") != ew_key:
+                if ew_key and prev_metrics[sym].get("_ew") != ew_key:  # 修复: 之前读顶层dict永远None, 窗口开启事件每轮重复触发
                     events = events + [f"入场窗口开启({ew['type']})"]
                 prev_metrics[sym]["_ew"] = ew_key
 
