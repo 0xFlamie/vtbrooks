@@ -173,10 +173,13 @@ def news_editor(items, mem):
     sys_p = ("你是交易信号新闻编辑。逐条判断新闻标题, 只输出JSON数组, 与输入顺序一致:\n"
              "[{\"i\": 0, \"relevant\": true, \"category\": \"...\", \"horizon\": \"即时\", \"dir\": \"利多\", "
              "\"thread\": \"...\", \"note\": \"...\"}]\n"
-             "规则: relevant=是否影响加密/美股/宏观市场(币圈喊单/价格预测/广告/水文=false); "
-             "category∈{货币政策,宏观数据,地缘,监管法案,行业公司,其他}; horizon∈{即时(<24h),中期(数天),长期(数周+)}; "
-             "dir=对风险资产方向∈{利多,利空,中性}(产业链可推导, 如OpenAI千亿建数据中心→利多芯片股); "
-             "thread=事件主题2-6字(如伊朗局势/联储路径/AI资本开支), 属于已有主题线就用同名, 新事件起新名; "
+             "规则: relevant=是否影响加密/美股/宏观/大宗商品市场(币圈喊单/价格预测/广告/水文=false; "
+             "拿不准但有潜在影响的=true, 宁可宽进); "
+             "category∈{货币政策,宏观数据,地缘,监管法案,能源大宗,债券利率,汇率美元,黄金避险,行业公司,AI科技,加密行业,其他}; "
+             "horizon∈{即时(<24h),中期(数天),长期(数周+)}; "
+             "dir=对风险资产方向∈{利多,利空,中性}(允许产业链推导: 如OpenAI千亿建数据中心→利多芯片股, "
+             "油价飙→通胀预期→利空风险资产, 美元走强→利空加密); "
+             "thread=事件主题2-6字(如伊朗局势/联储路径/AI资本开支/油价冲击), 属于已有主题线就用同名, 新事件起新名; "
              "note=一句话≤25字说清市场影响。\n已有主题线: " + mem_txt)
     user = "\n".join(f"{i}. [{src}] {t}" for i, (src, t) in enumerate(items))
     try:
@@ -1576,6 +1579,9 @@ NEWS_FEEDS = [
     ("CoinTelegraph", "https://cointelegraph.com/rss"),
     ("GNews加密", "https://news.google.com/rss/search?q=bitcoin+OR+ethereum+OR+crypto&hl=zh-CN&gl=CN&ceid=CN:zh"),
     ("GNews宏观", "https://news.google.com/rss/search?q=federal+reserve+OR+treasury+OR+FOMC&hl=en-US&gl=US&ceid=US:en"),
+    ("GNews大宗", "https://news.google.com/rss/search?q=oil+OR+gold+OR+dollar+OR+treasury+yield&hl=en-US&gl=US&ceid=US:en"),
+    ("GNews美股", "https://news.google.com/rss/search?q=stock+market+OR+nasdaq+OR+nvidia+OR+AI&hl=en-US&gl=US&ceid=US:en"),
+    ("GNews监管", "https://news.google.com/rss/search?q=%E7%9B%91%E7%AE%A1+OR+%E6%B3%95%E6%A1%88+OR+%E6%94%BF%E7%AD%96+%E5%8A%A0%E5%AF%86&hl=zh-CN&gl=CN&ceid=CN:zh"),
 ]
 # 新闻关键词白名单: 只推可能影响行情的地缘/宏观/币圈原生新闻
 NEWS_KEYWORDS = ("iran", "israel", "fed ", "fomc", "rate cut", "rate hike", "cpi", "inflation",
