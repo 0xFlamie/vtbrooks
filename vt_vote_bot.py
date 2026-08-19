@@ -156,11 +156,15 @@ def save_news_memory(mem):
 
 
 def _threads_line(mem, limit=6):
-    """进行中事件线 → 简报注入文本"""
+    """进行中事件线 → 简报注入文本; 超5天无更新的主题线视为已冷却, 不再注入(2026-08-20)"""
     th = mem.get("threads") or {}
     if not th:
         return None
-    items = sorted(th.items(), key=lambda kv: kv[1].get("last", ""), reverse=True)[:limit]
+    cutoff = (pd.Timestamp.now() - pd.Timedelta(days=5)).isoformat()
+    live = {k: v for k, v in th.items() if v.get("last", "") > cutoff}
+    items = sorted(live.items(), key=lambda kv: kv[1].get("last", ""), reverse=True)[:limit]
+    if not items:
+        return None
     return "进行中事件: " + " | ".join(f"{k}({v.get('dir','?')}/{v.get('horizon','?')}): {v.get('summary','')}"
                                      for k, v in items)
 
@@ -275,8 +279,10 @@ def update_world_view(sym, force=False):
         sys_p = ("你是只交易ETH的加密交易员。根据给定材料写当前盘面综述(交易笔记), 4-6句大白话: 市场在交易什么主线, "
                  "对ETH的传导路径是什么, 风险偏好怎样, 哪些事件在发酵(走向如何), 未来24-48小时最该盯什么。"
                  "一切围绕ETH走势说话, 美股/大宗/地缘只提到它们影响ETH的那一环; "
+                 "材料里有日期/时间线索的优先用最新的, 一周前的旧闻不要引用(时效性错误比没信息更糟); "
                  "忌空话套话, 每句落到具体事件或数字; 像写给同行的晨会笔记, 不是新闻播报。")
-        user = (f"价格: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
+        user = (f"今天是{pd.Timestamp.now(tz='Asia/Shanghai'):%Y-%m-%d}(北京) | "
+                f"价格: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
                 f"{threads}\n近期新闻: {recent}\n预测市场: {pm_txt}")
         r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
             {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
@@ -1691,9 +1697,11 @@ def _title_sim(a, b):
 
 
 def fetch_news(seen):
-    """RSS 拉新(不做关键词过滤, 2026-08-20起由DS编辑席判价值): link去重, 每源最多8条, 共≤15条"""
+    """RSS 拉新(不做关键词过滤, 2026-08-20起由DS编辑席判价值): link去重, 只收24h内发布(防旧闻污染综述), 每源最多8条, 共≤15条"""
     import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
     out = []
+    now = time.time()
     for name, url in NEWS_FEEDS:
         per = 0
         try:
@@ -1706,6 +1714,13 @@ def fetch_news(seen):
                 link = (item.findtext("link") or "").strip()
                 if not title or not link or link in seen:
                     continue
+                pub = item.findtext("pubDate") or ""
+                try:
+                    if pub and now - parsedate_to_datetime(pub).timestamp() > 86400:
+                        seen.add(link)
+                        continue  # 超24h旧闻: 标记已读但不进系统(2026-08-20 CLARITY旧闻事故)
+                except Exception:
+                    pass
                 seen.add(link)
                 out.append((name, title))
                 per += 1
