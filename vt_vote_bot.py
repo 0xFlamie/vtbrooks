@@ -173,8 +173,8 @@ def news_editor(items, mem):
     sys_p = ("你是只交易ETH的加密交易员兼任新闻编辑。逐条判断新闻标题, 只输出JSON数组, 与输入顺序一致:\n"
              "[{\"i\": 0, \"relevant\": true, \"category\": \"...\", \"horizon\": \"即时\", \"dir\": \"利多\", "
              "\"thread\": \"...\", \"note\": \"...\"}]\n"
-             "规则: relevant=是否影响ETH/加密/整体风险偏好(币圈喊单/价格预测/广告/水文=false; "
-             "个股新闻除非能传导到流动性/风险偏好/产业链叙事(如英伟达之于AI资本开支), 否则=false(如Moderna疫苗); "
+             "规则: relevant=是否影响ETH/BTC/加密/整体风险偏好(币圈喊单/价格预测/广告/水文=false; "
+             "美股个股/行业新闻一律=false——英伟达这种也不留(2026-08-20 用户决策), 除非直接关乎流动性/系统性风险; "
              "拿不准但有潜在影响的=true, 宁可宽进); "
              "category∈{货币政策,宏观数据,地缘,监管法案,能源大宗,债券利率,汇率美元,黄金避险,行业公司,AI科技,加密行业,其他}; "
              "horizon∈{即时(<24h),中期(数天),长期(数周+)}; "
@@ -215,6 +215,43 @@ def news_editor(items, mem):
     except Exception as e:
         print(f"WARN: 新闻编辑异常 {type(e).__name__}: {e}")
         return []
+
+
+def event_preview(sym):
+    """宏观事件日预判(2026-08-20 用户要求: FOMC这种要有提前情景推演):
+    事件日当天生成一次(美东日期), 市场预期+三情景ETH路径+关键位, 落盘供卡片/简报/推送"""
+    try:
+        today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+        ev = MACRO_EVENTS.get(today)
+        if not ev:
+            return None
+        mem = load_news_memory()
+        ep = mem.get("event_preview") or {}
+        if ep.get("date") == today and ep.get("text"):
+            return ep["text"]
+        wv = (mem.get("world_view") or {}).get("text", "无")
+        lv = compute_levels(sym, "LONG")
+        lv_txt = f"摆动高${lv['swing_high']:.2f} 摆动低${lv['swing_low']:.2f}" if lv else "无"
+        pm = next((x for x in polymarket_odds() if x["topic"] == "联储降息"), None)
+        pm_txt = f"预测市场联储降息概率{pm['prob']}%" if pm else "无赔率数据"
+        px = fetch_fast_price(sym)
+        sys_p = ("你是只交易ETH的加密交易员(BTC为联动参照)。今天有宏观事件, 写事件预判, 3-4条, 每条≤40字: "
+                 "1)市场当前预期是什么 2)鸽派情景ETH怎么走(到哪个位) 3)鹰派情景ETH怎么走(到哪个位) "
+                 "4)现在该做什么准备(挂单价/不动/减仓)。大白话, 落到给定关键位上, 不喊口号。")
+        user = f"事件: {ev}\n盘面综述: {wv}\n现价: ${px}\n关键位: {lv_txt}\n{pm_txt}"
+        r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
+            {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
+            "max_tokens": 400, "temperature": 0.3},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
+        if r.status_code == 200:
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            if text:
+                mem["event_preview"] = {"date": today, "text": text}
+                save_news_memory(mem)
+                return text
+    except Exception as e:
+        print(f"WARN: 事件预判失败 {type(e).__name__}: {e}")
+    return None
 
 
 def update_world_view(sym, force=False):
@@ -259,12 +296,16 @@ def _recent_news_lines(hours=12, limit=5):
     """简报注入: 盘面综述(叙事) + 近12h即时新闻(中文)。综述优先, 没有才退化到事件线罗列"""
     lines = []
     try:
-        mem = load_news_memory()
-        wv = (mem.get("world_view") or {}).get("text")
+        mem0 = load_news_memory()
+        ep0 = (mem0.get("event_preview") or {})
+        today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+        if ep0.get("date") == today_et and ep0.get("text"):
+            lines.append(f"事件预判({MACRO_EVENTS.get(today_et)}): {ep0['text']}")
+        wv = (mem0.get("world_view") or {}).get("text")
         if wv:
             lines.append(f"盘面综述: {wv}")
         else:
-            tl = _threads_line(mem)
+            tl = _threads_line(mem0)
             if tl:
                 lines.append(tl)
     except Exception:
@@ -2174,9 +2215,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     news = []  # 散装📰行已停用, 叙事由交易笔记承担
     others = [e for e in (events or []) if not e.startswith("📰")]
     try:
-        wv = (load_news_memory().get("world_view") or {}).get("text")
+        wv_mem = load_news_memory()
+        wv = (wv_mem.get("world_view") or {}).get("text")
         if wv:
             L.append(f"📝 交易笔记: {wv}")
+        today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+        ep = (wv_mem.get("event_preview") or {})
+        if ep.get("date") == today_et and ep.get("text"):
+            L.append(f"🗓 事件预判({MACRO_EVENTS.get(today_et)}): {ep['text']}")
     except Exception:
         pass
     # 💡 结论行: 双模各一句带概率的判断(2026-08-10 用户要求: 明确方向+大概率)
@@ -3653,6 +3699,16 @@ def main():
                 except Exception as e:
                     print(f"  新闻拉取失败: {e}")
                 update_world_view(sym)  # 30分钟节流, 保证裁判读到的综述不过夜
+                # 宏观事件日: 首次生成预判时触发一条推送(2026-08-20)
+                try:
+                    mem_nv = load_news_memory()
+                    if event_preview(sym) and not (mem_nv.get("event_preview") or {}).get("pushed"):
+                        today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+                        events.append(f"🗓 今日{MACRO_EVENTS.get(today_et)}, 事件预判已出(见卡片)")
+                        mem_nv["event_preview"]["pushed"] = True
+                        save_news_memory(mem_nv)
+                except Exception:
+                    pass
 
                 # 预测市场重定价: 主题赔率变动≥6pp → 市场预期变了, 推送+喂裁判(2026-08-20)
                 try:
