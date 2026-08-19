@@ -170,10 +170,11 @@ def news_editor(items, mem):
     if not items:
         return []
     mem_txt = "; ".join(f"{k}: {v.get('summary','')}" for k, v in list(mem.get("threads", {}).items())[-8:]) or "无"
-    sys_p = ("你是交易信号新闻编辑。逐条判断新闻标题, 只输出JSON数组, 与输入顺序一致:\n"
+    sys_p = ("你是只交易ETH的加密交易员兼任新闻编辑。逐条判断新闻标题, 只输出JSON数组, 与输入顺序一致:\n"
              "[{\"i\": 0, \"relevant\": true, \"category\": \"...\", \"horizon\": \"即时\", \"dir\": \"利多\", "
              "\"thread\": \"...\", \"note\": \"...\"}]\n"
-             "规则: relevant=是否影响加密/美股/宏观/大宗商品市场(币圈喊单/价格预测/广告/水文=false; "
+             "规则: relevant=是否影响ETH/加密/整体风险偏好(币圈喊单/价格预测/广告/水文=false; "
+             "个股新闻除非能传导到流动性/风险偏好/产业链叙事(如英伟达之于AI资本开支), 否则=false(如Moderna疫苗); "
              "拿不准但有潜在影响的=true, 宁可宽进); "
              "category∈{货币政策,宏观数据,地缘,监管法案,能源大宗,债券利率,汇率美元,黄金避险,行业公司,AI科技,加密行业,其他}; "
              "horizon∈{即时(<24h),中期(数天),长期(数周+)}; "
@@ -233,8 +234,9 @@ def update_world_view(sym, force=False):
         chg24 = float((c4.iloc[-1] / c4.iloc[-7] - 1) * 100)
         chg7d = float((c4.iloc[-1] / c4.iloc[-43] - 1) * 100) if len(c4) >= 43 else 0.0
         macro = _macro_line() or "今日无宏观事件日"
-        sys_p = ("你是专业加密交易员。根据给定材料写当前盘面综述, 4-6句大白话: 市场在交易什么主线, "
-                 "风险偏好怎样, 哪些事件在发酵(走向如何), 对加密的传导路径, 未来24-48小时最该盯什么。"
+        sys_p = ("你是只交易ETH的加密交易员。根据给定材料写当前盘面综述(交易笔记), 4-6句大白话: 市场在交易什么主线, "
+                 "对ETH的传导路径是什么, 风险偏好怎样, 哪些事件在发酵(走向如何), 未来24-48小时最该盯什么。"
+                 "一切围绕ETH走势说话, 美股/大宗/地缘只提到它们影响ETH的那一环; "
                  "忌空话套话, 每句落到具体事件或数字; 像写给同行的晨会笔记, 不是新闻播报。")
         user = (f"价格: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
                 f"{threads}\n近期新闻: {recent}\n预测市场: {pm_txt}")
@@ -2168,11 +2170,15 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     now_cn = pd.Timestamp.now(tz="UTC").tz_convert("Asia/Shanghai")  # 卡片时间戳用北京时间(用户在国内), 倒计时仍按UTC收线算
     L.append(f"{head} {sym} {tag}信号 | {now_cn:%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
-    # 突发新闻中文行置顶(现价下/4h层上, 用户指定 2026-08-10); 其余异动留在中部⚡行
-    news = [e for e in (events or []) if e.startswith("📰")]
+    # 交易笔记置顶(2026-08-20 用户要求): 替代散装新闻行; 事件仍留在中部⚡行
+    news = []  # 散装📰行已停用, 叙事由交易笔记承担
     others = [e for e in (events or []) if not e.startswith("📰")]
-    for nw in news:
-        L.append(nw)
+    try:
+        wv = (load_news_memory().get("world_view") or {}).get("text")
+        if wv:
+            L.append(f"📝 交易笔记: {wv}")
+    except Exception:
+        pass
     # 💡 结论行: 双模各一句带概率的判断(2026-08-10 用户要求: 明确方向+大概率)
     if judge4.get("summary"):
         L.append(f"💡 4h: {judge4['summary']}")
