@@ -276,13 +276,18 @@ def update_world_view(sym, force=False):
         chg24 = float((c4.iloc[-1] / c4.iloc[-7] - 1) * 100)
         chg7d = float((c4.iloc[-1] / c4.iloc[-43] - 1) * 100) if len(c4) >= 43 else 0.0
         macro = _macro_line() or "今日无宏观事件日"
+        px = fetch_fast_price(sym)
+        lv = compute_levels(sym, "LONG")
+        lv_txt = f"摆动高${lv['swing_high']:.2f} 摆动低${lv['swing_low']:.2f} EMA20 ${lv['ema20']:.2f}" if lv else "无"
         sys_p = ("你是只交易ETH的加密交易员。根据给定材料写当前盘面综述(交易笔记), 4-6句大白话: 市场在交易什么主线, "
                  "对ETH的传导路径是什么, 风险偏好怎样, 哪些事件在发酵(走向如何), 未来24-48小时最该盯什么。"
                  "一切围绕ETH走势说话, 美股/大宗/地缘只提到它们影响ETH的那一环; "
                  "材料里有日期/时间线索的优先用最新的, 一周前的旧闻不要引用(时效性错误比没信息更糟); "
+                 "所有价格数字只能用材料里给的(现价/摆动位/EMA), 绝对不许自己编点位; "
                  "忌空话套话, 每句落到具体事件或数字; 像写给同行的晨会笔记, 不是新闻播报。")
         user = (f"今天是{pd.Timestamp.now(tz='Asia/Shanghai'):%Y-%m-%d}(北京) | "
-                f"价格: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
+                f"现价: ${px} | 关键位: {lv_txt}\n"
+                f"涨跌: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
                 f"{threads}\n近期新闻: {recent}\n预测市场: {pm_txt}")
         r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
             {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
