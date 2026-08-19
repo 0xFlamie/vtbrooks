@@ -134,16 +134,102 @@ def _macro_line():
     return None
 
 
+NEWS_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "news_memory.json")
+
+
+def load_news_memory():
+    """事件线记忆: {thread: {summary, dir, horizon, last, hits}}"""
+    try:
+        if os.path.exists(NEWS_MEMORY_FILE):
+            return json.load(open(NEWS_MEMORY_FILE))
+    except Exception:
+        pass
+    return {"threads": {}}
+
+
+def save_news_memory(mem):
+    try:
+        json.dump(mem, open(NEWS_MEMORY_FILE, "w"), ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _threads_line(mem, limit=6):
+    """进行中事件线 → 简报注入文本"""
+    th = mem.get("threads") or {}
+    if not th:
+        return None
+    items = sorted(th.items(), key=lambda kv: kv[1].get("last", ""), reverse=True)[:limit]
+    return "进行中事件: " + " | ".join(f"{k}({v.get('dir','?')}/{v.get('horizon','?')}): {v.get('summary','')}"
+                                     for k, v in items)
+
+
+def news_editor(items, mem):
+    """DS 编辑席(2026-08-20 用户要求): 批量读标题, 判价值/分类/时效/方向/事件线, 更新记忆。
+    items=[(来源,标题)]; 返回 [{relevant, category, horizon, dir, thread, note, title, src}]"""
+    if not items:
+        return []
+    mem_txt = "; ".join(f"{k}: {v.get('summary','')}" for k, v in list(mem.get("threads", {}).items())[-8:]) or "无"
+    sys_p = ("你是交易信号新闻编辑。逐条判断新闻标题, 只输出JSON数组, 与输入顺序一致:\n"
+             "[{\"i\": 0, \"relevant\": true, \"category\": \"...\", \"horizon\": \"即时\", \"dir\": \"利多\", "
+             "\"thread\": \"...\", \"note\": \"...\"}]\n"
+             "规则: relevant=是否影响加密/美股/宏观市场(币圈喊单/价格预测/广告/水文=false); "
+             "category∈{货币政策,宏观数据,地缘,监管法案,行业公司,其他}; horizon∈{即时(<24h),中期(数天),长期(数周+)}; "
+             "dir=对风险资产方向∈{利多,利空,中性}(产业链可推导, 如OpenAI千亿建数据中心→利多芯片股); "
+             "thread=事件主题2-6字(如伊朗局势/联储路径/AI资本开支), 属于已有主题线就用同名, 新事件起新名; "
+             "note=一句话≤25字说清市场影响。\n已有主题线: " + mem_txt)
+    user = "\n".join(f"{i}. [{src}] {t}" for i, (src, t) in enumerate(items))
+    try:
+        r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
+            {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
+            "max_tokens": 900, "temperature": 0.1},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
+        if r.status_code != 200:
+            return []
+        text = r.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\[.*\]", text, re.S)
+        arr = json.loads(m.group(0)) if m else []
+        out = []
+        for it in arr:
+            i = it.get("i")
+            if not isinstance(i, int) or i >= len(items):
+                continue
+            it["src"], it["title"] = items[i]
+            out.append(it)
+            th = it.get("thread")
+            if it.get("relevant") and th:
+                t = mem["threads"].setdefault(th, {"hits": 0})
+                t.update({"summary": it.get("note", ""), "dir": it.get("dir", "中性"),
+                          "horizon": it.get("horizon", "中期"), "last": pd.Timestamp.now().isoformat()})
+                t["hits"] = t.get("hits", 0) + 1
+        # 记忆上限30条主题线, 最旧的淘汰
+        if len(mem["threads"]) > 30:
+            for k in sorted(mem["threads"], key=lambda k: mem["threads"][k].get("last", ""))[:len(mem["threads"]) - 30]:
+                del mem["threads"][k]
+        save_news_memory(mem)
+        return out
+    except Exception as e:
+        print(f"WARN: 新闻编辑异常 {type(e).__name__}: {e}")
+        return []
+
+
 def _recent_news_lines(hours=12, limit=5):
-    """近12h新闻行(中文), 供两层简报注入"""
+    """简报注入: 事件线(记忆) + 近12h即时新闻(中文)"""
+    lines = []
+    try:
+        tl = _threads_line(load_news_memory())
+        if tl:
+            lines.append(tl)
+    except Exception:
+        pass
     try:
         now = time.time()
         items = [t for ts, t in RECENT_NEWS if now - ts < hours * 3600][-limit:]
         if items:
-            return ["近期新闻: " + " | ".join(items)]
+            lines.append("近期新闻: " + " | ".join(items))
     except Exception:
         pass
-    return []
+    return lines
 
 
 def _drop_unclosed(df, interval):
@@ -1513,11 +1599,11 @@ def _title_sim(a, b):
 
 
 def fetch_news(seen):
-    """RSS 突发新闻(2026-08-10 用户要求): 关键词过滤+link去重(seen集合, 命中与否都标记);
-    返回 [(来源, 标题)], 最多2条防刷屏"""
+    """RSS 拉新(不做关键词过滤, 2026-08-20起由DS编辑席判价值): link去重, 每源最多8条, 共≤15条"""
     import xml.etree.ElementTree as ET
     out = []
     for name, url in NEWS_FEEDS:
+        per = 0
         try:
             r = _http.get(url, timeout=8)
             if r.status_code != 200:
@@ -1529,11 +1615,13 @@ def fetch_news(seen):
                 if not title or not link or link in seen:
                     continue
                 seen.add(link)
-                if any(k in title.lower() for k in NEWS_KEYWORDS):
-                    out.append((name, title))
+                out.append((name, title))
+                per += 1
+                if per >= 8:
+                    break
         except Exception:
             continue
-    return out[:2]
+    return out[:15]
 
 
 def translate_title(title):
@@ -3484,15 +3572,23 @@ def main():
                     events.append(f"⚡快检: {pending_fast}")
                     pending_fast = None
 
-                # 突发新闻: RSS关键词命中 → 标题相似度去重(同一新闻跨媒体/后续解读不重复定价) → 翻中文置顶+进简报
+                # 突发新闻: RSS拉新 → 标题相似度去重 → DS编辑席判价值/时效/方向/事件线(2026-08-20)
                 try:
-                    for src_name, title in fetch_news(news_seen):
+                    raw = fetch_news(news_seen)
+                    fresh = []
+                    for src_name, title in raw:
                         norm = _norm_title(title)
                         if any(_title_sim(norm, _norm_title(t)) > 0.55 for _, t in RECENT_NEWS):
-                            continue  # 同新闻已定价, 跳过(2026-08-20 用户要求)
-                        cn = translate_title(title)
-                        events.append(f"📰 {src_name}: {cn}")
-                        RECENT_NEWS.append((time.time(), f"{src_name}: {cn}"))
+                            continue  # 同新闻已定价, 跳过
+                        fresh.append((src_name, title))
+                    if fresh:
+                        for it in news_editor(fresh, load_news_memory()):
+                            if not it.get("relevant"):
+                                continue
+                            cn = translate_title(it["title"])
+                            tag = f"{it.get('horizon','')}·{it.get('dir','')}"
+                            events.append(f"📰 [{tag}] {it['src']}: {cn} — {it.get('note','')}")
+                            RECENT_NEWS.append((time.time(), f"{it['src']}: {cn}"))
                     now_ts = time.time()
                     RECENT_NEWS[:] = [x for x in RECENT_NEWS if now_ts - x[0] < 12 * 3600][-10:]
                 except Exception as e:
