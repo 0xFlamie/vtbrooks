@@ -1827,21 +1827,22 @@ def _dir_emoji(d, conf):
 
 # Polymarket 热点观察: (主题, 搜索词); 预测市场赔率=市场预期的后续判断(2026-08-20 用户要求)
 PM_WATCH = [
-    ("联储降息", "Fed rate cut 2026"),
-    ("伊朗停火", "Iran Israel ceasefire"),
-    ("美国衰退", "US recession"),
-    ("BTC新高", "Bitcoin all time high"),
+    ("联储降息", "Fed rate cut September 2026", ("no fed", "no cut", "hike", "unchanged")),
+    ("伊朗停火", "Iran Israel ceasefire", ()),
+    ("美国衰退", "US recession", ()),
+    ("BTC新高", "Bitcoin all time high", ()),
 ]
 _pm_cache = {"ts": 0, "data": None}
 
 
 def polymarket_odds():
-    """Polymarket 热点赔率: [{topic, prob, q}], 只取未结束且概率在1-99之间的活跃市场; 15分钟缓存"""
+    """Polymarket 热点赔率: [{topic, prob, q}], 只取未结束且概率在1-99之间的活跃市场; 15分钟缓存
+    排除反向表述市场(no cut/hike等), 防止赔率方向显示反(2026-08-20)"""
     if time.time() - _pm_cache["ts"] < 900 and _pm_cache["data"] is not None:
         return _pm_cache["data"]
     out = []
     now_ms = time.time() * 1000
-    for topic, q in PM_WATCH:
+    for topic, q, excl in PM_WATCH:
         try:
             d = http_get_json("https://gamma-api.polymarket.com/public-search?q="
                               + requests.utils.quote(q) + "&limit_per_type=2", timeout=8)
@@ -1849,6 +1850,9 @@ def polymarket_odds():
             for ev in (d or {}).get("events") or []:
                 for m in ev.get("markets") or []:
                     if m.get("closed"):
+                        continue
+                    ques = (m.get("question") or "").lower()
+                    if any(bad in ques for bad in excl):
                         continue
                     end = m.get("endDate") or m.get("end_date_iso")
                     if end and pd.Timestamp(end).timestamp() * 1000 < now_ms:
