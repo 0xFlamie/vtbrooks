@@ -2143,6 +2143,34 @@ def market_mood(sym):
     return line, line
 
 
+def confluence(result, d4, lv, ctx4, board_rows):
+    """共振计分(0-6, 规则计算): 高确信信号=多条件同向的客观度量(2026-08-20 用户要求: 大把握要主动喊)
+    返回 (分数, [未满足项])"""
+    if not d4 or not lv:
+        return 0, []
+    px = result["price"]
+    long = d4 == "LONG"
+    sym = result["symbol"]
+    checks = []
+    checks.append(("价在EMA20" + ("上方" if long else "下方"), (px >= lv["ema20"]) == long))
+    checks.append(("放量(量比>1.2)", lv["vol_ratio"] > 1.2))
+    wy = (ctx4 or {}).get("wyckoff") if ctx4 else None
+    wy_align = bool(wy and wy.get("event") and
+                    ((long and wy["event"] in ("spring", "joc_up")) or
+                     (not long and wy["event"] in ("upthrust", "joc_down"))))
+    checks.append(("威科夫事件同向", wy_align))
+    checks.append(("挤压低位(<40%分位)", bool(ctx4 and ctx4["squeeze_pct"] < 40)))
+    checks.append(("统计底牌有优势", bool(board_rows)))
+    try:
+        fr = (fetch_sentiment(sym) or {}).get("funding_rate")
+        adverse = fr is not None and ((long and fr * 100 > 0.05) or (not long and fr * 100 < -0.05))
+        checks.append(("费率不逆风", not adverse))
+    except Exception:
+        checks.append(("费率不逆风", True))
+    score = sum(1 for _, ok in checks if ok)
+    return score, [name for name, ok in checks if not ok]
+
+
 def build_data_board(sym, result, lv, ctx4):
     """数据看板(2026-08-10 用户要求): 只列当前状态命中的、有统计优势(≥65%或≤35%)的历史概率;
     全是五五开就明说无优势。纯规则生成, 数字只来自统计库, 不经AI"""
@@ -2254,6 +2282,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     L.append(f"💰 现价 ${result['price']:.2f}")
     # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
+    hc = next((e for e in others if e.startswith("🔥")), None)
+    others = [e for e in others if not e.startswith("🔥")]
     try:
         wv_mem = load_news_memory()
         wvo = wv_mem.get("world_view") or {}
@@ -2266,6 +2296,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"🗓 {MACRO_EVENTS.get(today_et)}预判: {ep['text']}")
     except Exception:
         pass
+    if hc:
+        L.append(hc + " —— 系统主动喊你, 仔细看这单")
     L.append("")
 
     tier = judge4.get("mag_tier")
@@ -3533,7 +3565,7 @@ SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的
           "summary不超过35字: 方向+概率+走势形态(反弹/滞涨/趋势延续/反转), 必须带具体点位(从简报关键位里挑), 如\"大概率(65%)先回踩1903再反弹\"。理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
           "(如\"价格冲到区间上沿又被打回来还带放量，像有人在高位出货\")；没话说就别硬凑，2条够就不写第3条。"
           "简报里的历史统计只在有区分度时引用(概率≥60%或≤40%), 接近五五开的底噪别引。"
-          "magnitude 与方向无关也要给。用大白话，保留关键数字，不用术语缩写，每条不超过40字。"
+          "magnitude 与方向无关也要给。置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=趋势+量能+结构+统计全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。用大白话，保留关键数字，不用术语缩写，每条不超过40字。"
           "简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
           "要翻转方向，必须在理由里写清新出现的反转证据是什么。"
           "简报可能含近期新闻和宏观事件日提示：财政部/联储/地缘这类消息会主导未来4-12小时方向，"
@@ -3551,7 +3583,7 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "有异动时第一条必须先写异动解读；布林带只是位置参考之一，最多提一次；没话说别硬凑，2条够就不写第3条。"
            "简报里的历史统计只在有区分度时引用(≥60%或≤40%), 五五开底噪别引。"
            "证据没有明显变化就维持上次方向，别因噪音翻转。"
-           "用大白话写，保留关键数字但不用术语缩写，每条不超过40字。")
+           "置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=趋势+量能+结构+统计全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。用大白话写，保留关键数字但不用术语缩写，每条不超过40字。")
 
 
 def _judge(system, brief):
@@ -3782,6 +3814,16 @@ def main():
                 if ew_key and prev_metrics[sym].get("_ew") != ew_key:  # 修复: 之前读顶层dict永远None, 窗口开启事件每轮重复触发
                     events = events + [f"入场窗口开启({ew['type']})"]
                 prev_metrics[sym]["_ew"] = ew_key
+
+                # 高确信检测(2026-08-20): 共振≥4项 且 双层同向 → 🔥立即推送, 不看时间表
+                conf_score, conf_missing = confluence(result, judge4.get("direction"), lv_main, ctx4_main,
+                                                      build_data_board(sym, result, lv_main, ctx4_main))
+                prev_metrics[sym]["_conf"] = conf_score
+                if (conf_score >= 4 and judge4.get("direction")
+                        and judge4["direction"] == judge15.get("direction")
+                        and prev_metrics[sym].get("_hc") != (conf_score, judge4["direction"])):
+                    events = events + [f"🔥高确信: 共振{conf_score}/6项同向, 双层{('做多' if judge4['direction'] == 'LONG' else '做空')}"]
+                    prev_metrics[sym]["_hc"] = (conf_score, judge4["direction"])
 
                 if is_15m or reversal or events:
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
