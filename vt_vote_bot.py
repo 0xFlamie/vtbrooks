@@ -2192,9 +2192,11 @@ def self_review_block():
             lines.append(f"错例{e['time'][5:16]}: 判{d_cn}@${e['entry_px']:.0f}实走反向{e['dir_score_4h']}ATR, 当时理由「{rsn}」")
         try:
             lessons = load_lessons()
-            if lessons:
-                txt = lessons if isinstance(lessons, str) else json.dumps(lessons, ensure_ascii=False)
-                lines.append("错题本: " + txt[-200:])
+            if isinstance(lessons, dict):
+                lessons = lessons.get("lessons") or []
+            if isinstance(lessons, list) and lessons:
+                txt = "；".join(str(x)[:60] for x in lessons[-3:])
+                lines.append("错题本: " + txt)
         except Exception:
             pass
         return "你的近期判决复盘: " + " ; ".join(lines) if lines else None
