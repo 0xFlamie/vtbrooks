@@ -135,6 +135,21 @@ def _macro_line():
     return None
 
 
+def in_event_window():
+    """事件落地窗口(落地前1h~后2h, 美东): CPI=08:30, FOMC决议/纪要=14:00。
+    窗口内综述每轮强制重写, 把RSS空窗压到物理极限(2026-08-20 纪要空窗问题)"""
+    try:
+        now = pd.Timestamp.now(tz="America/New_York")
+        ev = MACRO_EVENTS.get(now.strftime("%Y-%m-%d"))
+        if not ev:
+            return False
+        hh, mm = (8, 30) if "CPI" in ev else (14, 0)
+        release = now.replace(hour=hh, minute=mm, second=0)
+        return pd.Timedelta(hours=-1) <= now - release <= pd.Timedelta(hours=2)
+    except Exception:
+        return False
+
+
 NEWS_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "news_memory.json")
 
 
@@ -3718,7 +3733,7 @@ def main():
                     RECENT_NEWS[:] = [x for x in RECENT_NEWS if now_ts - x[0] < 12 * 3600][-10:]
                 except Exception as e:
                     print(f"  新闻拉取失败: {e}")
-                update_world_view(sym)  # 30分钟节流, 保证裁判读到的综述不过夜
+                update_world_view(sym, force=in_event_window())  # 事件落地窗口每轮重写, 平时30分钟节流
                 # 宏观事件日: 首次生成预判时触发一条推送(2026-08-20)
                 try:
                     mem_nv = load_news_memory()
