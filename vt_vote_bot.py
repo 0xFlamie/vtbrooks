@@ -279,12 +279,12 @@ def update_world_view(sym, force=False):
         px = fetch_fast_price(sym)
         lv = compute_levels(sym, "LONG")
         lv_txt = f"摆动高${lv['swing_high']:.2f} 摆动低${lv['swing_low']:.2f} EMA20 ${lv['ema20']:.2f}" if lv else "无"
-        sys_p = ("你是只交易ETH的加密交易员。根据给定材料写当前盘面综述(交易笔记), 4-6句大白话: 市场在交易什么主线, "
-                 "对ETH的传导路径是什么, 风险偏好怎样, 哪些事件在发酵(走向如何), 未来24-48小时最该盯什么。"
-                 "一切围绕ETH走势说话, 美股/大宗/地缘只提到它们影响ETH的那一环; "
-                 "材料里有日期/时间线索的优先用最新的, 一周前的旧闻不要引用(时效性错误比没信息更糟); "
-                 "所有价格数字只能用材料里给的(现价/摆动位/EMA), 绝对不许自己编点位; "
-                 "忌空话套话, 每句落到具体事件或数字; 像写给同行的晨会笔记, 不是新闻播报。")
+        sys_p = ("你是只交易ETH的加密交易员。根据给定材料写当前盘面综述(交易笔记), 分两部分:\n"
+                 "【完整版】4-6句大白话: 市场在交易什么主线, 对ETH的传导路径, 风险偏好, 哪些事件在发酵(走向), "
+                 "未来24-48小时最该盯什么。一切围绕ETH走势说话, 美股/大宗/地缘只提到它们影响ETH的那一环; "
+                 "旧闻不引用; 价格数字只能用材料里给的(现价/摆动位/EMA), 不许编点位。\n"
+                 "【卡片版】最后一行以\"卡片版:\"开头, 2句以内≤60字, 只留主线+最关键的一个盯点。\n"
+                 "像写给同行的晨会笔记, 不是新闻播报。")
         user = (f"今天是{pd.Timestamp.now(tz='Asia/Shanghai'):%Y-%m-%d}(北京) | "
                 f"现价: ${px} | 关键位: {lv_txt}\n"
                 f"涨跌: {sym} 24h{chg24:+.1f}% 7日{chg7d:+.1f}%\n{macro}\n"
@@ -296,7 +296,13 @@ def update_world_view(sym, force=False):
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"].strip()
             if text:
-                mem["world_view"] = {"text": text, "ts": time.time()}
+                # 拆卡片版/完整版
+                card = None
+                m = re.search(r"卡片版[:：]\s*(.+)$", text, re.S)
+                if m:
+                    card = m.group(1).strip()
+                    text = text[:m.start()].replace("【完整版】", "").strip()
+                mem["world_view"] = {"text": text, "card": card or text[:80], "ts": time.time()}
                 save_news_memory(mem)
                 return text
     except Exception as e:
@@ -2206,8 +2212,8 @@ def build_data_board(sym, result, lv, ctx4):
     return rows
 
 
-def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None):
-    """双层信号卡: 4h层+15m层各自判决, 共振/背离醒目标注; events=异动列表, ew=入场窗口"""
+def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None, ptype="定时"):
+    """双层信号卡: 4h层+15m层各自判决; events=异动列表, ew=入场窗口, ptype=推送类型(标题显眼位)"""
     sym = result["symbol"]
     d4, d15 = judge4.get("direction"), judge15.get("direction")
     c4, c15 = judge4.get("confidence", -1), judge15.get("confidence", -1)
@@ -2221,7 +2227,6 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     else:
         head = "⚪"
 
-    tag = "🔄反转加推 " if is_reversal else ""
     # 距4h收线倒计时: 4h K线按 UTC 0/4/8/12/16/20 点收线, 与本地时区无关
     now_utc = pd.Timestamp.now(tz="UTC")
     remain = now_utc.floor("4h") + pd.Timedelta("4h") - now_utc
@@ -2230,32 +2235,29 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     cd = f"距4h收线{rh}h{rm:02d}m" if rh else f"距4h收线{rm}m{rs:02d}s"
     L = []
     now_cn = pd.Timestamp.now(tz="UTC").tz_convert("Asia/Shanghai")  # 卡片时间戳用北京时间(用户在国内), 倒计时仍按UTC收线算
-    L.append(f"{head} {sym} {tag}信号 | {now_cn:%m-%d %H:%M} | {cd}")
+    L.append(f"{head} 【{ptype}】{sym} | {now_cn:%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
-    # 交易笔记置顶(2026-08-20 用户要求): 替代散装新闻行; 事件仍留在中部⚡行
-    news = []  # 散装📰行已停用, 叙事由交易笔记承担
+    # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
     try:
         wv_mem = load_news_memory()
-        wv = (wv_mem.get("world_view") or {}).get("text")
-        if wv:
-            L.append(f"📝 交易笔记: {wv}")
+        wvo = wv_mem.get("world_view") or {}
+        wv_card = wvo.get("card") or wvo.get("text")
+        if wv_card:
+            L.append(f"📝 笔记: {wv_card}")
         today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
         ep = (wv_mem.get("event_preview") or {})
         if ep.get("date") == today_et and ep.get("text"):
-            L.append(f"🗓 事件预判({MACRO_EVENTS.get(today_et)}): {ep['text']}")
+            L.append(f"🗓 {MACRO_EVENTS.get(today_et)}预判: {ep['text']}")
     except Exception:
         pass
-    # 💡 结论行: 双模各一句带概率的判断(2026-08-10 用户要求: 明确方向+大概率)
-    if judge4.get("summary"):
-        L.append(f"💡 4h: {judge4['summary']}")
-    if judge15.get("summary"):
-        L.append(f"💡 15m: {judge15['summary']}")
     L.append("")
 
     tier = judge4.get("mag_tier")
     tier_label = ["⚪极小幅(<1%)", "🔵轻仓档(1-2%)", "🟣标准档(2-3%)", "🟠主攻档(3%+)"][tier] if tier is not None else None
     L.append(f"🌏 4h层: {_dir_emoji(d4, c4)}" + (f" 置信{c4}" if c4 >= 0 else "") + (f" | {tier_label}" if tier_label else ""))
+    if judge4.get("summary"):
+        L.append(f"💡 {judge4['summary']}")
     NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
 
     def _render_reasons(judge):
@@ -2283,6 +2285,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     else:
         fac = f"因子看涨{bull_pct}%/看跌{100 - bull_pct}%"
     L.append(f"🌏 15m层: {_dir_emoji(d15, c15)}" + (f" 置信{c15}" if c15 >= 0 else "") + f" | {fac}")
+    if judge15.get("summary"):
+        L.append(f"💡 {judge15['summary']}")
     _render_reasons(judge15)
     # KK反对的落实: 给反弹/回落的一二位目标(规则计算), 并提示到位后可顺主裁方向(2026-08-10 用户要求)
     kk_line = next((r for r in (judge15.get("reasons") or []) if r.startswith("⚠️ KK反对")), None)
@@ -2308,7 +2312,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 L.append(line)
     L.append("")
     if others:
-        L.append("⚡ 异动: " + "; ".join(others))
+        L.append("🌊 动量: " + "; ".join(others))
         L.append("")
 
     # 开单建议(2026-08-10 用户要求): 方向+入场/失效+50x双档止损+双档止盈+突破目标+依据, 合并原入场窗口
@@ -2347,23 +2351,20 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         L.append("")
         L.append("📋 数据看板")
         L.extend(board)
-    # 持仓导航: 15m有方向时给防守/进攻/目标位(纯规则结构位, 2026-08-09 用户要求: 开单后的延续性指引)
+    # 持仓导航: 压力/支撑+突破跌破后的去向(2026-08-20 用户指定精简版)
     if d15 and lv:
-        wy_nav = (ctx4 or {}).get("wyckoff")
         hi, lo = lv["swing_high"], lv["swing_low"]
         L.append("")
         if d15 == "SHORT":
             L.append("🧭 持仓导航 (若持空)")
-            L.append(f"　　防守: 站稳${hi:.2f}(摆动高)上方 → 空头逻辑失效, 该撤")
-            L.append(f"　　进攻: 跌破${lo:.2f}(摆动低) → 下跌加速段")
-            if wy_nav:
-                L.append(f"　　目标: TR区间底${wy_nav['support']} (宽{wy_nav['width_pct']}%区间下沿)")
+            L.append(f"　　压力: ${hi:.2f}(摆动高), 站稳上方 = 空头失效该撤")
+            nxt = f", 跌破加速 → 下看${wy_nav['support']}(TR底)" if (wy_nav := (ctx4 or {}).get("wyckoff")) else ", 跌破 = 加速段"
+            L.append(f"　　支撑: ${lo:.2f}(摆动低){nxt}")
         else:
             L.append("🧭 持仓导航 (若持多)")
-            L.append(f"　　防守: 跌破${lo:.2f}(摆动低)下方 → 多头逻辑失效, 该撤")
-            L.append(f"　　进攻: 突破${hi:.2f}(摆动高) → 上涨加速段")
-            if wy_nav:
-                L.append(f"　　目标: TR区间顶${wy_nav['resistance']} (宽{wy_nav['width_pct']}%区间上沿)")
+            L.append(f"　　支撑: ${lo:.2f}(摆动低), 跌破下方 = 多头失效该撤")
+            nxt = f", 突破加速 → 上看${wy_nav['resistance']}(TR顶)" if (wy_nav := (ctx4 or {}).get("wyckoff")) else ", 突破 = 加速段"
+            L.append(f"　　压力: ${hi:.2f}(摆动高){nxt}")
     # 💬 白话信号段已移除(用户决策 2026-08-10): 内容与维度行重复(同属结构维度), 规则文案不如双模解读
     L.append("")
 
@@ -2403,10 +2404,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"🚀 真跌破({when},{vw}): 4h实体收破区间底${sup}, 不是假跌破")
             L.append(f"   → 解读: 下降行情启动确认, 原区间底${sup}变成压力")
             L.append(f"   → 应对: 顺势做空, 反弹${sup}附近是入场区; 涨回区间内此信号作废")
-    if ctx4 and ctx4.get("wyckoff"):
-        L.append(f"Wyckoff: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%, 现{pos:.0f}%)")
-    else:
-        L.append("Wyckoff: 无有效区间(趋势市或区间超宽), 看趋势/摆动位")
+    # 静态Wyckoff区间行已撤(2026-08-20 用户决策: 变化慢不读; 事件三行保留, TR顶/底在导航目标里)
     # RSI 常驻: 15m + 4h 双周期都给, lv 缺失时用 ctx4 兜底仍显示4h RSI
     rsi_parts = []
     if lv:
@@ -3765,7 +3763,8 @@ def main():
 
                 if is_15m or reversal or events:
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
-                                        events=events or None, ew=ew)
+                                        events=events or None, ew=ew,
+                                        ptype="反转" if reversal and not is_15m else "定时" if is_15m else "异动")
                     ok = send_telegram(msg)
                     if is_15m:
                         last_timed_slot = slot
