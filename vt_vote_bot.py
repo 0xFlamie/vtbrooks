@@ -1499,6 +1499,19 @@ NEWS_KEYWORDS = ("iran", "israel", "fed ", "fomc", "rate cut", "rate hike", "cpi
                  "比特币", "以太坊", "美联储", "纪要", "国债", "收益率", "回购")
 
 
+def _norm_title(t):
+    return re.sub(r"[^a-z0-9一-鿿]", "", t.lower())
+
+
+def _title_sim(a, b):
+    """标题相似度(3-gram Jaccard): 跨媒体同新闻/后续解读稿去重用"""
+    if len(a) < 6 or len(b) < 6:
+        return 0.0
+    sa = {a[i:i + 3] for i in range(len(a) - 2)}
+    sb = {b[i:i + 3] for i in range(len(b) - 2)}
+    return len(sa & sb) / max(len(sa | sb), 1)
+
+
 def fetch_news(seen):
     """RSS 突发新闻(2026-08-10 用户要求): 关键词过滤+link去重(seen集合, 命中与否都标记);
     返回 [(来源, 标题)], 最多2条防刷屏"""
@@ -1812,6 +1825,53 @@ def _dir_emoji(d, conf):
     return {"LONG": "🟢多", "SHORT": "🔴空"}.get(d, "⚪观望")
 
 
+def market_mood(sym):
+    """整体市场情绪(2026-08-20 用户要求): 恐贪指数+24h涨跌+费率+多空比 → 一行综合判断。
+    返回 (卡片行, 简报行) 或 None"""
+    parts = []
+    fng = None
+    try:
+        d = http_get_json("https://api.alternative.me/fng/?limit=1", timeout=8)
+        fng = int(d["data"][0]["value"])
+        cn = {"Extreme Fear": "极度恐慌", "Fear": "恐慌", "Neutral": "中性",
+              "Greed": "贪婪", "Extreme Greed": "极度贪婪"}.get(d["data"][0]["value_classification"], "")
+        parts.append(f"恐贪{fng}({cn})")
+    except Exception:
+        pass
+    chg24 = None
+    try:
+        c4 = fetch_klines(sym, "4h", 10)["close"]
+        if len(c4) >= 7:
+            chg24 = float((c4.iloc[-1] / c4.iloc[-7] - 1) * 100)
+            parts.append(f"24h{chg24:+.1f}%")
+    except Exception:
+        pass
+    st = fetch_sentiment(sym) or {}
+    fr = st.get("funding_rate")
+    if fr is not None:
+        parts.append(f"费率{fr * 100:.3f}%")
+    lsr = st.get("long_short_ratio") or st.get("ls_ratio")
+    if lsr:
+        parts.append(f"多空比{lsr:.2f}")
+    if not parts:
+        return None
+    # 综合判断: 恐贪极端+费率过热=危险; 恐慌+费率负=机会区
+    if fng is not None and fng >= 75 and fr is not None and fr * 100 >= 0.03:
+        verdict = "贪婪过热, 追多危险"
+    elif fng is not None and fng >= 75:
+        verdict = "贪婪但费率未过热, 趋势可能延续"
+    elif fng is not None and fng <= 25:
+        verdict = "恐慌区, 留意超卖反弹"
+    elif chg24 is not None and chg24 >= 5:
+        verdict = "强势上涨日, 顺势不逆势"
+    elif chg24 is not None and chg24 <= -5:
+        verdict = "弱势下跌日, 别接飞刀"
+    else:
+        verdict = "情绪平稳"
+    line = "情绪: " + " | ".join(parts) + f" → {verdict}"
+    return line, line
+
+
 def build_data_board(sym, result, lv, ctx4):
     """数据看板(2026-08-10 用户要求): 只列当前状态命中的、有统计优势(≥65%或≤35%)的历史概率;
     全是五五开就明说无优势。纯规则生成, 数字只来自统计库, 不经AI"""
@@ -2103,6 +2163,9 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if "funding_rate" in st:
         fr = st["funding_rate"] * 100
         L.append(f"费率: {fr:.3f}%({'多付空' if fr >= 0 else '空付多'})")
+    mood = market_mood(sym)
+    if mood:
+        L.append(mood[0])
     return "\n".join(L)
 
 
@@ -3203,6 +3266,13 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
            "用大白话写，保留关键数字但不用术语缩写，每条不超过40字。")
 
 
+def _judge(system, brief):
+    """裁判调度: VT_JUDGE=kimi 用月之暗面(k2.5思考模型, 贵但推理强), 默认 DS(2026-08-20 用户试用Kimi单模)"""
+    if os.environ.get("VT_JUDGE", "ds").lower() == "kimi" and MS_API_KEY:
+        return _judge_call(system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL, 1.0, 4000, 60)
+    return _judge_call(system, brief)
+
+
 def ai_judge_4h(result, prev=None):
     """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)
     prev: 上一根4h收线的判决, 注入简报让 AI 自己扛迟滞(2026-08-08 临界区翻转抖动)"""
@@ -3212,12 +3282,12 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
-    return _judge_call(SYS_4H, brief)  # 单模(2026-08-12 用户决策: KK成本7-10倍且价值未证明, 回退DS单模)
+    return _judge(SYS_4H, brief)
 
 
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
-    return _judge_call(SYS_15M, build_market_brief(result, events=events, prev=prev))  # 单模(2026-08-12)
+    return _judge(SYS_15M, build_market_brief(result, events=events, prev=prev))
 
 
 def ai_judge(result, plan=None):
@@ -3355,9 +3425,12 @@ def main():
                     events.append(f"⚡快检: {pending_fast}")
                     pending_fast = None
 
-                # 突发新闻: RSS关键词命中 → 翻成中文, 卡片置顶+进近期新闻列表(两层简报都读)+喂给裁判(2026-08-10/20)
+                # 突发新闻: RSS关键词命中 → 标题相似度去重(同一新闻跨媒体/后续解读不重复定价) → 翻中文置顶+进简报
                 try:
                     for src_name, title in fetch_news(news_seen):
+                        norm = _norm_title(title)
+                        if any(_title_sim(norm, _norm_title(t)) > 0.55 for _, t in RECENT_NEWS):
+                            continue  # 同新闻已定价, 跳过(2026-08-20 用户要求)
                         cn = translate_title(title)
                         events.append(f"📰 {src_name}: {cn}")
                         RECENT_NEWS.append((time.time(), f"{src_name}: {cn}"))
