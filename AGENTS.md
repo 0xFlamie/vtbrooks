@@ -34,11 +34,12 @@
 
 判例本（`record_judge`，双层分开记 dir4h/conf4h/dir15m/conf15m，双层同向 1h 去重，上限 500）。
 
-结算（`verify_journal`）三指标分离：
+结算（`verify_journal`）三指标分离（2026-08-20 修：观望不再用投票方向顶替结算、幅度档带随机游走基准）：
 
-- **方向分**（评方向判断）：`(+2h/+4h收盘 - 入场) / ATR14 × 方向符号`；≥+0.5 ATR 判方向正确
-- **双向 MFE(+12h)**（评4h层幅度档）：AI 方向侧 MFE ≥ 档位下限 → `tier_correct`
+- **方向分**（评方向判断，仅执行判例）：`(+2h/+4h收盘 - 入场) / ATR14 × 方向符号`；≥+0.5 ATR 判方向正确
+- **幅度档**（评4h层）：AI 方向侧 12h MFE ≥ 档位下限 **且** > 反方向侧 MFE（`mfe_against_12h`）才 `tier_correct`——震荡市上下都扫不算兑现
 - **outcome**（评交易计划）：先碰 SL/TP2，不影响 AI 判对率
+- **观望判例**（2026-08-20 起）：不落方向/交易计划，不评判对率；只记 `watch_quality` = |4h收盘移动|/ATR（横盘=对，单边=错过）。观望判例的 direction=None，结算不再用投票信号 sig0 顶替
 
 错题本 `judge_lessons.json` 继续每 50 单生成，仅作复盘档案，不喂回 AI。
 
@@ -75,3 +76,10 @@ ssh ccvps 'journalctl -u vtbrooks --since today | grep WARN'  # 裁判失败记�
 ```
 
 复盘统计：`judge_journal.json` 的 verdict/outcome/judgment 字段；`vt_predictions.json` 的 win_rate。
+
+## 当前状态（2026-08-20）
+
+- 已修：`record_judge` 观望判例不再用投票方向 `sig0` 顶替 `direction`（改 None），不生成交易计划；`verify_journal` 观望判例只记 `watch_quality` 不评判对率，幅度档判定加反向 MFE 基准（`mfe_against_12h`）过滤震荡市假兑现
+- 新增：`tests/test_journal.py`（6 用例，unittest，mock 网络）
+- 判对率口径变化：观望不再计入判对率分母，只统计执行判例——新口径下判对率会下降，这是诚实的代价
+- 下一步候选：市场统计触发加置信区间/样本外验证；去掉 prompt 里“置信度用满量程”与自我复盘注入

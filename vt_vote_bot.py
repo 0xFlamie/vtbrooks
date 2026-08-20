@@ -1163,15 +1163,18 @@ def record_judge(result, judge4, judge15):
         if (last["symbol"] == result["symbol"] and last.get("dir4h") == d4 and last.get("dir15m") == d15
                 and (pd.Timestamp.now() - pd.Timestamp(last["time"])).total_seconds() < 3600):
             return
+    verdict = "执行" if (d4 or d15) else "观望"
     sig0 = result["signal"] if result["signal"] != "NEUTRAL" else (
         "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
-    plan = calc_trade_plan(result["symbol"], sig0, result["price"], ba)
+    # 交易计划只按 AI 实际主张的方向生成; 观望无计划, entry 仅作观望质量基准价
+    plan = calc_trade_plan(result["symbol"], d4 or d15 or sig0, result["price"], ba) if verdict == "执行" else None
     j["entries"].append({
         "time": pd.Timestamp.now().isoformat(),
-        "symbol": result["symbol"], "direction": d4 or d15 or sig0,
-        "entry_px": plan["entry"], "sl": plan["sl"], "tp2": plan["tp2"],
+        "symbol": result["symbol"], "direction": d4 or d15,  # 观望=None, 结算不再用投票方向顶替(2026-08-20 修)
+        "entry_px": plan["entry"] if plan else result["price"],
+        "sl": plan["sl"] if plan else None, "tp2": plan["tp2"] if plan else None,
         "atr": round(lv["atr14"], 2) if lv else None,  # 方向分归一化基准
-        "verdict": "执行" if (d4 or d15) else "观望",
+        "verdict": verdict,
         "confidence": max(judge4.get("confidence", -1), judge15.get("confidence", -1)),
         "dir4h": d4, "conf4h": judge4.get("confidence"),
         "dir15m": d15, "conf15m": judge15.get("confidence"),
@@ -1183,6 +1186,8 @@ def record_judge(result, judge4, judge15):
         "outcome": None, "judgment": None,
         "dir_score_2h": None, "dir_score_4h": None,  # 方向分: ±ATR 单位, 结算时填
         "mfe_long_12h": None, "mfe_short_12h": None,  # +12h 双向最大偏移%, 幅度档判定用
+        "mfe_against_12h": None,  # 反方向12h最大偏移%, 幅度档兑现的随机游走对照
+        "watch_quality": None,  # 观望判例质量: |4h收盘移动|/ATR, 横盘=对; 不混入判对率
         "tier_correct": None,
     })
     if len(j["entries"]) > 500:
@@ -1191,23 +1196,45 @@ def record_judge(result, judge4, judge15):
 
 
 def verify_journal():
-    """判例结算, 双指标分开评:
-    方向分 = (+2h/+4h收盘价 - 入场价) / ATR × 方向符号, 固定窗口不看路径, 评 AI 的方向判断(判对依据);
-    outcome = 先碰SL/TP2, 评交易计划本身(止损止盈摆放), 不再用于判 AI 对错; <24h 未触发不结算"""
+    """判例结算, 指标分开评:
+    执行判例: 方向分 = (+2h/+4h收盘价 - 入场价) / ATR × 方向符号, 固定窗口不看路径, 评 AI 的方向判断(判对依据);
+              幅度档 = 方向侧12h MFE ≥ 档位下限 且 超过反方向侧 MFE (单边才算兑现, 震荡市上下都扫不算);
+              outcome = 先碰SL/TP2, 评交易计划本身(止损止盈摆放), 不再用于判 AI 对错;
+    观望判例: 不评方向/计划/判对(无方向主张可验证), 只评 watch_quality = |4h收盘移动|/ATR, 横盘=对;
+    <24h 未触发不结算"""
     j = load_journal()
     now = pd.Timestamp.now(tz="UTC")
     changed = False
     for e in j["entries"]:
-        need_plan = e.get("outcome") is None
-        need_dir = e.get("dir_score_4h") is None
-        need_mfe = "mfe_long_12h" in e and e.get("mfe_long_12h") is None  # 老判例无此字段则跳过
-        if not (need_plan or need_dir or need_mfe):
-            continue
         et = pd.Timestamp(e["time"])
         if et.tz is None:
             et = et.tz_localize("UTC")
         age = (now - et).total_seconds()
         if age < 1800:
+            continue
+        # 老判例无 verdict 字段: 有 direction 视为执行
+        is_exec = e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction"))
+        if not is_exec:
+            # 观望判例: 无方向主张不可验证, 只评观望质量(横盘=对, 单边=错过), 不混入判对率
+            if e.get("watch_quality") is None and e.get("atr") and age >= 4 * 3600:
+                try:
+                    df = fetch_klines(e["symbol"], "15m", 1000,
+                                      start_ms=int(et.timestamp() * 1000), drop_incomplete=False)
+                    if not df.empty:
+                        if df.index.tz is None:
+                            df.index = df.index.tz_localize("UTC")
+                        later = df[df.index >= et + pd.Timedelta(hours=4)]
+                        if len(later):
+                            e["watch_quality"] = round(
+                                abs(float(later["close"].iloc[0]) - float(e["entry_px"])) / e["atr"], 2)
+                            changed = True
+                except Exception:
+                    pass
+            continue
+        need_plan = e.get("outcome") is None
+        need_dir = e.get("dir_score_4h") is None
+        need_mfe = "mfe_long_12h" in e and e.get("mfe_long_12h") is None  # 老判例无此字段则跳过
+        if not (need_plan or need_dir or need_mfe):
             continue
         try:
             df = fetch_klines(e["symbol"], "15m", 1000,
@@ -1243,7 +1270,10 @@ def verify_journal():
                 e["mfe_short_12h"] = round((entry - float(win12["low"].min())) / entry * 100, 2)
                 if e.get("mag_tier") is not None and e.get("ai_direction"):
                     mfe_dir = e["mfe_long_12h"] if e["ai_direction"] == "LONG" else e["mfe_short_12h"]
-                    e["tier_correct"] = mfe_dir >= MAG_TIER_FLOOR[e["mag_tier"]]
+                    against = e["mfe_short_12h"] if e["ai_direction"] == "LONG" else e["mfe_long_12h"]
+                    e["mfe_against_12h"] = against
+                    # 幅度档兑现: 方向侧≥档位下限 且 方向侧>反方向侧(单边才算, 震荡市假兑现被过滤)
+                    e["tier_correct"] = mfe_dir >= MAG_TIER_FLOOR[e["mag_tier"]] and mfe_dir > against
                 changed = True
 
         # plan 结算: 先碰 SL/TP2 走K线
