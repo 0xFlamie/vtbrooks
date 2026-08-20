@@ -2479,35 +2479,39 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             hi, lo, atr = lv["swing_high"], lv["swing_low"], lv["atr14"]
             if d_adv == "SHORT":
                 L.append(f"　　止损(50x): 一档${px + 0.5 * atr:.2f} 二档${hi:.2f}(摆动高)")
-                tp = f"一撑${lo:.2f}(摆动低)"
-                if wy:
-                    tp += f" 二撑${wy['support']}(TR底); 跌破看${2 * wy['support'] - wy['resistance']:.0f}"
-                L.append(f"　　止盈: {tp}")
+                tps = [f"一撑${lo:.2f}(摆动低)"]
+                if wy and wy["support"] < px:  # 已过位的目标不显示(2026-08-20 旧TR顶出现在现价下方事故)
+                    tps.append(f"二撑${wy['support']}(TR底); 跌破看${2 * wy['support'] - wy['resistance']:.0f}")
+                L.append(f"　　止盈: {' '.join(tps)}")
             else:
                 L.append(f"　　止损(50x): 一档${px - 0.5 * atr:.2f} 二档${lo:.2f}(摆动低)")
-                tp = f"一压${hi:.2f}(摆动高)"
-                if wy:
-                    tp += f" 二压${wy['resistance']}(TR顶); 突破看${2 * wy['resistance'] - wy['support']:.0f}"
-                L.append(f"　　止盈: {tp}")
+                tps = []
+                if hi > px:
+                    tps.append(f"一压${hi:.2f}(摆动高)")
+                if wy and wy["resistance"] > px:
+                    tps.append(f"二压${wy['resistance']}(TR顶); 突破看${2 * wy['resistance'] - wy['support']:.0f}")
+                if tps:
+                    L.append(f"　　止盈: {' '.join(tps)}")
     # 数据看板: 只列有统计优势的底牌(≥65%/≤35%), 无优势整块不显示(2026-08-12)
     board = build_data_board(sym, result, lv, ctx4)
     if board:
         L.append("")
         L.append("📋 数据看板")
         L.extend(board)
-    # 持仓导航: 压力/支撑+突破跌破后的去向(2026-08-20 用户指定精简版)
+    # 持仓导航: 压力/支撑+突破跌破后的去向(2026-08-20 用户指定精简版); TR目标只在现价未过位时给
     if d15 and lv:
         hi, lo = lv["swing_high"], lv["swing_low"]
+        wy_nav = (ctx4 or {}).get("wyckoff")
         L.append("")
         if d15 == "SHORT":
             L.append("🧭 持仓导航 (若持空)")
             L.append(f"　　压力: ${hi:.2f}(摆动高), 站稳上方 = 空头失效该撤")
-            nxt = f", 跌破加速 → 下看${wy_nav['support']}(TR底)" if (wy_nav := (ctx4 or {}).get("wyckoff")) else ", 跌破 = 加速段"
+            nxt = f", 跌破加速 → 下看${wy_nav['support']}(TR底)" if (wy_nav and wy_nav["support"] < px) else ", 跌破 = 加速段"
             L.append(f"　　支撑: ${lo:.2f}(摆动低){nxt}")
         else:
             L.append("🧭 持仓导航 (若持多)")
             L.append(f"　　支撑: ${lo:.2f}(摆动低), 跌破下方 = 多头失效该撤")
-            nxt = f", 突破加速 → 上看${wy_nav['resistance']}(TR顶)" if (wy_nav := (ctx4 or {}).get("wyckoff")) else ", 突破 = 加速段"
+            nxt = f", 突破加速 → 上看${wy_nav['resistance']}(TR顶)" if (wy_nav and wy_nav["resistance"] > px) else ", 突破 = 加速段"
             L.append(f"　　压力: ${hi:.2f}(摆动高){nxt}")
     # 💬 白话信号段已移除(用户决策 2026-08-10): 内容与维度行重复(同属结构维度), 规则文案不如双模解读
     L.append("")
@@ -2524,8 +2528,13 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         L.append(f"EMA20: ${lv['ema20']:.2f}")
         L.append(f"EMA50: ${lv['ema50']:.2f}")
     L.append("")
-    # 威科夫事件(假突破/假跌破/真突破): 有则显示; 超3根4h(12h)算旧闻不显示(2026-08-20 过时事件误导用户事故)
+    # 威科夫事件(假突破/假跌破/真突破): 有则显示; 超3根4h(12h)或价格已远离该位(行情走完)不显示(2026-08-20 过时事件事故)
     if ctx4 and ctx4.get("wyckoff") and wy.get("event") and (wy.get("event_age") or 0) <= 3:
+        sup, res = wy["support"], wy["resistance"]
+        if (wy["event"] in ("joc_up", "upthrust") and px > res * 1.02) or \
+           (wy["event"] in ("joc_down", "spring") and px < sup * 0.98):
+            wy = dict(wy, event=None)  # 价格已走出2%以上, 事件失效
+    if ctx4 and ctx4.get("wyckoff") and wy.get("event"):
         sup, res = wy["support"], wy["resistance"]
         age_h = wy["event_age"] * 4
         when = f"约{age_h}小时前" if age_h > 0 else "刚刚收线"
