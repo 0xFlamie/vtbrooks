@@ -135,6 +135,22 @@ def _macro_line():
     return None
 
 
+def _event_release_et(ev):
+    """事件落地时刻(美东): CPI=08:30, 其余(FOMC等)=14:00"""
+    hh, mm = (8, 30) if "CPI" in (ev or "") else (14, 0)
+    return pd.Timestamp.now(tz="America/New_York").replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
+def preview_visible(ep, today_et):
+    """事件预判只在落地前~落地后2h显示, 之后就是过时信息(2026-08-20 用户被旧预判误导)"""
+    if ep.get("date") != today_et:
+        return False
+    ev = MACRO_EVENTS.get(today_et)
+    if not ev:
+        return False
+    return pd.Timestamp.now(tz="America/New_York") < _event_release_et(ev) + pd.Timedelta(hours=2)
+
+
 def in_event_window():
     """事件落地窗口(落地前1h~后2h, 美东): CPI=08:30, FOMC决议/纪要=14:00。
     窗口内综述每轮强制重写, 把RSS空窗压到物理极限(2026-08-20 纪要空窗问题)"""
@@ -332,7 +348,7 @@ def _recent_news_lines(hours=12, limit=5):
         mem0 = load_news_memory()
         ep0 = (mem0.get("event_preview") or {})
         today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
-        if ep0.get("date") == today_et and ep0.get("text"):
+        if ep0.get("text") and preview_visible(ep0, today_et):
             lines.append(f"事件预判({MACRO_EVENTS.get(today_et)}): {ep0['text']}")
         wv = (mem0.get("world_view") or {}).get("text")
         if wv:
@@ -1696,6 +1712,7 @@ NEWS_FEEDS = [
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
     ("CoinTelegraph", "https://cointelegraph.com/rss"),
     ("GNews加密", "https://news.google.com/rss/search?q=bitcoin+OR+ethereum+OR+crypto&hl=zh-CN&gl=CN&ceid=CN:zh"),
+    ("GNews加密EN", "https://news.google.com/rss/search?q=crypto+OR+bitcoin+OR+ethereum+OR+%22white+house%22&hl=en-US&gl=US&ceid=US:en"),  # 英文加密: 白宫会议这类英文源首发(2026-08-20漏报事故)
     ("GNews宏观", "https://news.google.com/rss/search?q=federal+reserve+OR+treasury+OR+FOMC&hl=en-US&gl=US&ceid=US:en"),
     ("GNews大宗", "https://news.google.com/rss/search?q=oil+OR+gold+OR+dollar+OR+treasury+yield&hl=en-US&gl=US&ceid=US:en"),
     ("GNews美股", "https://news.google.com/rss/search?q=stock+market+OR+nasdaq+OR+nvidia+OR+AI&hl=en-US&gl=US&ceid=US:en"),
@@ -2325,7 +2342,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
             L.append(f"📝 笔记: {wv_card}")
         today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
         ep = (wv_mem.get("event_preview") or {})
-        if ep.get("date") == today_et and ep.get("text"):
+        if ep.get("text") and preview_visible(ep, today_et):
             L.append(f"🗓 {MACRO_EVENTS.get(today_et)}预判: {ep['text']}")
     except Exception:
         pass
@@ -2460,8 +2477,8 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         L.append(f"EMA20: ${lv['ema20']:.2f}")
         L.append(f"EMA50: ${lv['ema50']:.2f}")
     L.append("")
-    # 威科夫事件(假突破/假跌破/真突破): 有则显示在 Wyckoff 区间行正上方
-    if ctx4 and ctx4.get("wyckoff") and wy.get("event"):
+    # 威科夫事件(假突破/假跌破/真突破): 有则显示; 超3根4h(12h)算旧闻不显示(2026-08-20 过时事件误导用户事故)
+    if ctx4 and ctx4.get("wyckoff") and wy.get("event") and (wy.get("event_age") or 0) <= 3:
         sup, res = wy["support"], wy["resistance"]
         age_h = wy["event_age"] * 4
         when = f"约{age_h}小时前" if age_h > 0 else "刚刚收线"
