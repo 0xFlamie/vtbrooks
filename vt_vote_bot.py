@@ -1318,6 +1318,46 @@ def judge_stats():
     return sum(1 for e in judged if e["judgment"]), len(judged)
 
 
+def daily_review():
+    """每日复盘信(2026-08-20): 近24h推单战绩+判对率+幅度档兑现+观望质量+错题+累计判对率。
+    样本 <3 不打扰; 只读判例, 不调 AI, 纯数据事实"""
+    j = load_journal()["entries"]
+    now = pd.Timestamp.now(tz="UTC")
+    day_ago = now - pd.Timedelta(hours=24)
+    rec = []
+    for e in j:
+        et = pd.Timestamp(e["time"])
+        if et.tz is None:
+            et = et.tz_localize("UTC")
+        if et >= day_ago:
+            rec.append(e)
+    if len(rec) < 3:
+        return None
+    execs = [e for e in rec if e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction"))]
+    watch = [e for e in rec if not (e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction")))]
+    L = [f"📊 每日复盘 ({pd.Timestamp.now(tz='Asia/Shanghai'):%m-%d})", f"推单 {len(rec)} (执行{len(execs)}/观望{len(watch)})"]
+    if execs:
+        wins = sum(1 for e in execs if e.get("judgment"))
+        L.append(f"判对率: {wins}/{len(execs)} (方向分口径)")
+        tier_done = [e for e in execs if e.get("tier_correct") is not None]
+        if tier_done:
+            L.append(f"幅度档兑现: {sum(1 for e in tier_done if e['tier_correct'])}/{len(tier_done)}")
+        wrong = [e for e in execs if e.get("judgment") is False]
+        if wrong:
+            L.append("错题: " + "; ".join(
+                f"{'做多' if e.get('direction') == 'LONG' else '做空'}@{e.get('entry_px', 0):.1f}→{e.get('outcome')}"
+                for e in wrong[:3]))
+    if watch:
+        wq = [e.get("watch_quality") for e in watch if e.get("watch_quality") is not None]
+        if wq:
+            avg = sum(wq) / len(wq)
+            L.append(f"观望质量: 平均{avg:.1f} ATR" + (" (横盘为主, 观望合理)" if avg <= 0.5 else " (单边被错过, 该出手时没出手)"))
+    wins_all, total_all = judge_stats()
+    if total_all:
+        L.append(f"累计判对率: {wins_all}/{total_all} ({wins_all / total_all * 100:.0f}%)")
+    return "\n".join(L)
+
+
 def maybe_update_lessons():
     """AI 错题本: 每积累50条已判定判例, 让 DeepSeek 复盘归纳 3-5 条数据化教训"""
     try:
@@ -2382,7 +2422,69 @@ def build_data_board(sym, result, lv, ctx4):
     return rows
 
 
-def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None, ptype="定时"):
+def position_size(d4, d15, tier, conf):
+    """仓位建议%: 幅度档基础 + 双层共振/置信度修正, 封顶 50%。专业原则: 仓位与信号强度挂钩"""
+    if not (d4 or d15):
+        return 0
+    base = {0: 5, 1: 15, 2: 25, 3: 35}.get(tier, 10) if tier is not None else 10
+    if d4 and d4 == d15:
+        base += 5  # 双层共振加仓
+    if conf >= 80:
+        base += 5
+    elif conf < 60:
+        base -= 5
+    return max(5, min(50, base))
+
+
+def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None):
+    """交易员观点段(2026-08-20): 观点→计划→仓位→失效→上次观点, 全部用现成素材, 不引入AI编造"""
+    d4, d15 = judge4.get("direction"), judge15.get("direction")
+    c4 = judge4.get("confidence", -1)
+    d_adv = d4 if (d4 and d4 == d15) else (d15 or d4)
+    diverged = bool(d4 and d15 and d4 != d15)  # 双层背离: 无主张, 不给计划
+    tier = judge4.get("mag_tier")
+    px = result["price"]
+    L = []
+    # 观点行: 方向+置信+幅度档, 观望/背离单独表达
+    if diverged:
+        L.append(f"🎯 观点: 观望——4h{'多' if d4 == 'LONG' else '空'}/15m{'多' if d15 == 'LONG' else '空'}背离, 不动手")
+    elif not d_adv:
+        L.append("🎯 观点: 观望——双层无方向, 没有值得下注的行情")
+    else:
+        cn = "做多" if d_adv == "LONG" else "做空"
+        tier_txt = {0: "小幅<1%", 1: "轻仓1-2%", 2: "标准2-3%", 3: "主攻3%+"}.get(tier, "")
+        src = "双层共振" if (d4 and d4 == d15) else ("仅15m" if d15 else "仅4h")
+        L.append(f"🎯 观点: {cn}({c4 if c4 >= 0 else 60}%), {tier_txt}, {src}")
+    # 计划行: 仓位+入场+止损+目标+RR(有主张且不背离才给)
+    if d_adv and not diverged and plan:
+        pos = position_size(d4, d15, tier, max(c4, judge15.get("confidence", -1)))
+        if ew and ew.get("dir") == d_adv:
+            entry_txt = f"入场{ew['zone']}"
+        else:
+            entry_txt = "入场等回调贴结构位或放量突破"
+        sl_pct = abs(px - plan["sl"]) / px * 100
+        L.append(f"📌 计划: 仓位{pos}% · {entry_txt} · 止损${plan['sl']:.2f}(-{sl_pct:.1f}%) · 目标${plan['tp2']:.2f} · RR 1:{plan['rr']:.1f}")
+    # 失效行: 方向侧结构位/入场窗口失效位
+    if d_adv and not diverged:
+        if ew and ew.get("dir") == d_adv and ew.get("invalid"):
+            inv, dist = ew["invalid"], ew.get("dist")
+            L.append(f"🚫 失效: 收破${inv:.2f}(距{dist:.2f}%)判断作废, 认错翻边")
+        elif lv:
+            key = "swing_low" if d_adv == "LONG" else "swing_high"
+            if lv.get(key):
+                L.append(f"🚫 失效: 4h收破${lv[key]:.2f}判断作废, 认错翻边")
+    # 上次观点: 连续性(专业感来源), 翻转时写清新证据
+    if prev4 and prev4.get("direction") and d_adv and not diverged:
+        pd_cn = {"LONG": "多", "SHORT": "空"}.get(prev4["direction"], "观望")
+        if prev4["direction"] == d_adv:
+            L.append(f"🔁 上次: 维持{'' if d_adv == 'LONG' else ''}{pd_cn}头观点, 证据未变")
+        else:
+            ev = (judge4.get("reasons") or ["新证据"])[0][:24]
+            L.append(f"🔁 上次判{pd_cn} → 翻{('多' if d_adv == 'LONG' else '空')}, 新证据: {ev}…")
+    return L
+
+
+def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=None, ptype="定时", plan=None, prev4=None):
     """双层信号卡: 4h层+15m层各自判决; events=异动列表, ew=入场窗口, ptype=推送类型(标题显眼位)"""
     sym = result["symbol"]
     d4, d15 = judge4.get("direction"), judge15.get("direction")
@@ -2407,6 +2509,13 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     now_cn = pd.Timestamp.now(tz="UTC").tz_convert("Asia/Shanghai")  # 卡片时间戳用北京时间(用户在国内), 倒计时仍按UTC收线算
     L.append(f"{head} 【{ptype}】{sym} | {now_cn:%m-%d %H:%M} | {cd}")
     L.append(f"💰 现价 ${result['price']:.2f}")
+    ctx4 = compute_4h_context(sym)
+    lv = compute_levels(sym, d4 or d15 or result["signal"])
+    # 交易员观点段(2026-08-20): 结论优先放最顶部, 观点→计划→仓位→失效→上次观点
+    ab = build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4)
+    if ab:
+        L.extend(ab)
+        L.append("")
     # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
     hc = next((e for e in others if e.startswith("🔥")), None)
@@ -2444,11 +2553,9 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                 L.append(f"{NUM_EMOJI[n]} {rsn}")
                 n += 1
 
-    ctx4 = compute_4h_context(sym)
-    lv = compute_levels(sym, d4 or d15 or result["signal"])
+    _render_reasons(judge4)
     wy = (ctx4 or {}).get("wyckoff")
     px = result["price"]
-    _render_reasons(judge4)
     L.append("")  # 双层之间空行分隔(用户要求 2026-08-10)
     bull_pct = round(result["bullish"] / max(result["bullish"] + result["bearish"], 1) * 100)
     # 因子占比跟方向对齐: 判空显示看跌, 判多显示看涨, 观望显示双侧
@@ -3839,6 +3946,8 @@ def main():
     prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
     fast_ref = {}      # sym → 快检基准(价/阈值/摆动极值/VWAP), 3分钟休眠期10秒快检用
     news_seen = set()  # 已处理新闻link, RSS去重用
+    fast_seen = set()  # 快检新闻探针去重(独立于news_seen: fetch_news会写seen, 探针不能污染编辑席去重)
+    last_news_poll = 0.0  # 快检新闻轮询计时(60s), 任意新新闻触发立即全扫
     # 状态持久化(2026-08-09 用户要求): 重启不失忆, 上次判决/快照/快检基准全部恢复
     STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_state.json")
 
@@ -3846,7 +3955,8 @@ def main():
         try:
             json.dump({"judge4_cache": judge4_cache, "judge15_prev": judge15_prev,
                        "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref,
-                       "news_seen": list(news_seen)[-500:], "recent_news": RECENT_NEWS[-10:]},
+                       "news_seen": list(news_seen)[-500:], "recent_news": RECENT_NEWS[-10:],
+                       "last_review_day": last_review_day},
                       open(STATE_FILE, "w"))
         except Exception as e:
             print(f"WARN: 状态保存失败 {e}")
@@ -3860,12 +3970,15 @@ def main():
             prev_metrics.update(st.get("prev_metrics", {}))
             fast_ref.update(st.get("fast_ref", {}))
             news_seen.update(st.get("news_seen", []))
+            fast_seen = set(news_seen)
             RECENT_NEWS.extend([tuple(x) for x in st.get("recent_news", [])])
+            last_review_day = st.get("last_review_day")
             print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)} 新闻{len(news_seen)}")
         except Exception as e:
             print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
     last_timed_slot = None  # 最后推过的15分钟槽, 防止慢扫描吞掉定时推送(2026-08-10)
+    last_review_day = None  # 每日复盘信已推日期(UTC), 防重复
     pending_fast = None     # 快检触发的事件, 注入下轮扫描必推+AI解读
     last_fast = {}          # (sym,触发类型) → 上次触发时间, 快检同向冷却用
     while True:
@@ -3883,6 +3996,18 @@ def main():
             maybe_update_lessons()
         except Exception as e:
             print(f"  判例结算失败: {e}")
+
+        # 每日复盘信: 北京21:00(UTC 13:00)推一次, last_review_day 去重
+        utc_now = pd.Timestamp.now(tz="UTC")
+        if args.loop != 0 and utc_now.hour == 13 and utc_now.minute < 5 and last_review_day != utc_now.strftime("%Y-%m-%d"):
+            try:
+                txt = daily_review()
+                if txt:
+                    send_telegram(txt + "\n\n(信号非投资建议, 仓位和止损自管)")
+                    print("  每日复盘信已推送")
+                last_review_day = utc_now.strftime("%Y-%m-%d")
+            except Exception as e:
+                print(f"  每日复盘信失败: {e}")
 
         for sym, config in watch:
             try:
@@ -4000,9 +4125,12 @@ def main():
                     prev_metrics[sym]["_hc"] = (conf_score, judge4["direction"])
 
                 if is_15m or reversal or events:
+                    d_adv = judge4.get("direction") if (judge4.get("direction") and judge4.get("direction") == judge15.get("direction")) else (judge15.get("direction") or judge4.get("direction"))
+                    plan_adv = calc_trade_plan(sym, d_adv or result["signal"], result["price"], result.get("brooks") or {}) if d_adv else None
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
                                         events=events or None, ew=ew,
-                                        ptype="反转" if reversal and not is_15m else "定时" if is_15m else "异动")
+                                        ptype="反转" if reversal and not is_15m else "定时" if is_15m else "异动",
+                                        plan=plan_adv, prev4=ck[1] if ck else None)
                     ok = send_telegram(msg)
                     if is_15m:
                         last_timed_slot = slot
@@ -4034,7 +4162,9 @@ def main():
                 time.sleep(max(seconds_to_next, 0))
                 break
             time.sleep(10)
+            now_ts = time.time()
             trig = None
+            tkey = None
             for sym, _ in watch:
                 ref = fast_ref.get(sym)
                 if not ref:
@@ -4061,13 +4191,30 @@ def main():
                     lk = (sym, tkey)
                     if time.time() - last_fast.get(lk, 0) < 900:
                         trig = None
+                        tkey = None
                         continue
                     last_fast[lk] = time.time()
-                if trig:
-                    print(f"\n  ⚡ {sym} 快检{trig}, 立即全扫")
-                    pending_fast = f"{sym} {trig}"
-                    break
+            # 新闻硬信号(2026-08-20 因果回溯): 60s轮询 RSS, 发现新新闻立即全扫(编辑席判断/推送由全扫完成)
+            # 用 fast_seen 独立去重——fetch_news 会写 seen, 若直接用 news_seen 会把未解读新闻标已读, 架空编辑席
+            if trig is None and now_ts - last_news_poll >= 60:
+                last_news_poll = now_ts
+                try:
+                    raw = fetch_news(fast_seen)
+                    fresh = [t for _, t in raw
+                             if not any(_title_sim(_norm_title(t), _norm_title(ot)) > 0.55 for _, ot in RECENT_NEWS)]
+                    if fresh:
+                        lk = ("_news", "poll")
+                        if time.time() - last_fast.get(lk, 0) < 120:  # 新闻触发冷却2分钟
+                            trig = None
+                        else:
+                            last_fast[lk] = time.time()
+                            trig = f"新新闻{len(fresh)}条待解读"
+                            tkey = "news"
+                except Exception:
+                    pass
             if trig:
+                print(f"\n  ⚡ {'NEWS' if tkey == 'news' else sym} 快检{trig}, 立即全扫")
+                pending_fast = f"{'NEWS' if tkey == 'news' else sym} {trig}"
                 break
 
 
