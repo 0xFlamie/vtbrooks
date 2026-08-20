@@ -3708,9 +3708,13 @@ SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时
 
 
 def _judge(system, brief):
-    """裁判调度: VT_JUDGE=kimi 用月之暗面(k2.5思考模型, 贵但推理强), 默认 DS(2026-08-20 用户试用Kimi单模)"""
+    """裁判调度: VT_JUDGE=kimi 用月之暗面(k2.5思考模型, 贵但推理强), 默认 DS(2026-08-20 用户试用Kimi单模)。
+    Kimi 连续失败时自动回退 DS 兜底, 不再观望摆烂(2026-08-20 kimi超时夜)"""
     if os.environ.get("VT_JUDGE", "ds").lower() == "kimi" and MS_API_KEY:
-        return _judge_call(system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL, 1.0, 4000, 60)
+        j = _judge_call(system, brief, "Kimi", MS_API_URL, MS_API_KEY, MS_MODEL, 1.0, 4000, 60)
+        if j["confidence"] >= 0:
+            return j
+        print("WARN: Kimi连续失败, 本轮回退DS裁判")
     return _judge_call(system, brief)
 
 
