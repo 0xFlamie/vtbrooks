@@ -2113,6 +2113,53 @@ def polymarket_odds():
     return out
 
 
+_liq_cache = {"ts": 0, "data": None}
+
+
+def fetch_liquidations(coin="ETH"):
+    """OKX 爆仓统计(2026-08-20 交易员桌面补全): 近1h/4h 多空双边爆仓USD; 5分钟缓存
+    long=多头被爆(做空者视角的空头燃料耗尽), short=空头被爆(轧空燃料)"""
+    if time.time() - _liq_cache["ts"] < 300 and _liq_cache["data"] is not None:
+        return _liq_cache["data"]
+    try:
+        d = http_get_json("https://www.okx.com/api/v5/public/liquidation-orders"
+                          f"?instType=SWAP&uly={coin}-USDT&state=filled", timeout=8)
+        now = time.time() * 1000
+        out = {"1h": {"long": 0.0, "short": 0.0}, "4h": {"long": 0.0, "short": 0.0}}
+        for blk in (d or {}).get("data") or []:
+            for x in blk.get("details", []):
+                usd = float(x["sz"]) * float(x["bkPx"])
+                age = now - int(x["ts"])
+                side = "long" if x["posSide"] == "long" else "short"
+                if age <= 3600e3:
+                    out["1h"][side] += usd
+                if age <= 4 * 3600e3:
+                    out["4h"][side] += usd
+        _liq_cache.update(ts=time.time(), data=out)
+        return out
+    except Exception:
+        return None
+
+
+def _m_usd(v):
+    return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}K"
+
+
+def btc_link_line(sym):
+    """BTC联动行: BTC 24h涨跌 + ETH相对强弱(2026-08-20: BTC是ETH的beta锚, 用户要求关注)"""
+    try:
+        b = fetch_klines("BTCUSDT", "4h", 10)["close"]
+        e = fetch_klines(sym, "4h", 10)["close"]
+        if len(b) < 7 or len(e) < 7:
+            return None
+        b24 = float((b.iloc[-1] / b.iloc[-7] - 1) * 100)
+        e24 = float((e.iloc[-1] / e.iloc[-7] - 1) * 100)
+        diff = e24 - b24
+        return f"联动: BTC 24h {b24:+.1f}% | ETH{'强' if diff >= 0 else '弱'}于BTC {abs(diff):.1f}点"
+    except Exception:
+        return None
+
+
 def market_mood(sym):
     """整体市场情绪(2026-08-20 用户要求): 恐贪指数+24h涨跌+费率+多空比 → 一行综合判断。
     返回 (卡片行, 简报行) 或 None"""
@@ -2520,6 +2567,12 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     mood = market_mood(sym)
     if mood:
         L.append(mood[0])
+    liq = fetch_liquidations()
+    if liq:
+        L.append(f"爆仓: 1h 多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])} | 4h 多{_m_usd(liq['4h']['long'])}/空{_m_usd(liq['4h']['short'])}")
+    lk = btc_link_line(sym)
+    if lk:
+        L.append(lk)
     pm = polymarket_odds()
     if pm:
         L.append("🎲 预测市场: " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
@@ -3409,6 +3462,12 @@ def build_brief_4h(result):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    liq = fetch_liquidations()
+    if liq:
+        L.append(f"爆仓: 近1h多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])} | 近4h多{_m_usd(liq['4h']['long'])}/空{_m_usd(liq['4h']['short'])}")
+    lk = btc_link_line(sym)
+    if lk:
+        L.append(lk)
     pm = polymarket_odds()
     if pm:
         L.append("预测市场(Polymarket赔率=市场预期的后续走势): " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
@@ -3502,6 +3561,12 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    liq = fetch_liquidations()
+    if liq:
+        L.append(f"爆仓: 近1h多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])} | 近4h多{_m_usd(liq['4h']['long'])}/空{_m_usd(liq['4h']['short'])}")
+    lk = btc_link_line(sym)
+    if lk:
+        L.append(lk)
     pm = polymarket_odds()
     if pm:
         L.append("预测市场(Polymarket赔率=市场预期的后续走势): " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
@@ -3836,6 +3901,16 @@ def main():
                         events.append(f"🗓 今日{MACRO_EVENTS.get(today_et)}, 事件预判已出(见卡片)")
                         mem_nv["event_preview"]["pushed"] = True
                         save_news_memory(mem_nv)
+                except Exception:
+                    pass
+
+                # 大额爆仓: 近1h合计≥$3M(边沿触发, 2026-08-20)
+                try:
+                    liq = fetch_liquidations()
+                    tot1h = (liq["1h"]["long"] + liq["1h"]["short"]) if liq else 0
+                    if liq and tot1h >= 3e6 and not prev_metrics[sym].get("_liq_big"):
+                        events.append(f"💥 大额爆仓: 近1h多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])}")
+                    prev_metrics[sym]["_liq_big"] = tot1h >= 3e6
                 except Exception:
                     pass
 
