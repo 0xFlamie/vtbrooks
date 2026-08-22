@@ -1183,215 +1183,59 @@ def record_judge(result, judge4, judge15):
         "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
-        "outcome": None, "judgment": None,
-        "dir_score_2h": None, "dir_score_4h": None,  # 方向分: ±ATR 单位, 结算时填
-        "mfe_long_12h": None, "mfe_short_12h": None,  # +12h 双向最大偏移%, 幅度档判定用
-        "mfe_against_12h": None,  # 反方向12h最大偏移%, 幅度档兑现的随机游走对照
-        "watch_quality": None,  # 观望判例质量: |4h收盘移动|/ATR, 横盘=对; 不混入判对率
-        "tier_correct": None,
+        # 结算字段已删(2026-08-23 用户决策): 机械判对错对15m信号是假精确, 复盘走AI叙事(maybe_update_lessons)
     })
     if len(j["entries"]) > 500:
         j["entries"] = j["entries"][-500:]
     save_journal(j)
 
 
-def verify_journal():
-    """判例结算, 指标分开评:
-    执行判例: 方向分 = (+2h/+4h收盘价 - 入场价) / ATR × 方向符号, 固定窗口不看路径, 评 AI 的方向判断(判对依据);
-              幅度档 = 方向侧12h MFE ≥ 档位下限 且 超过反方向侧 MFE (单边才算兑现, 震荡市上下都扫不算);
-              outcome = 先碰SL/TP2, 评交易计划本身(止损止盈摆放), 不再用于判 AI 对错;
-    观望判例: 不评方向/计划/判对(无方向主张可验证), 只评 watch_quality = |4h收盘移动|/ATR, 横盘=对;
-    <24h 未触发不结算"""
-    j = load_journal()
-    now = pd.Timestamp.now(tz="UTC")
-    changed = False
-    for e in j["entries"]:
-        et = pd.Timestamp(e["time"])
-        if et.tz is None:
-            et = et.tz_localize("UTC")
-        age = (now - et).total_seconds()
-        if age < 1800:
-            continue
-        # 老判例无 verdict 字段: 有 direction 视为执行
-        is_exec = e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction"))
-        if not is_exec:
-            # 观望判例: 无方向主张不可验证, 只评观望质量(横盘=对, 单边=错过), 不混入判对率
-            if e.get("watch_quality") is None and e.get("atr") and age >= 4 * 3600:
-                try:
-                    df = fetch_klines(e["symbol"], "15m", 1000,
-                                      start_ms=int(et.timestamp() * 1000), drop_incomplete=False)
-                    if not df.empty:
-                        if df.index.tz is None:
-                            df.index = df.index.tz_localize("UTC")
-                        later = df[df.index >= et + pd.Timedelta(hours=4)]
-                        if len(later):
-                            e["watch_quality"] = round(
-                                abs(float(later["close"].iloc[0]) - float(e["entry_px"])) / e["atr"], 2)
-                            changed = True
-                except Exception:
-                    pass
-            continue
-        need_plan = e.get("outcome") is None
-        need_dir = e.get("dir_score_4h") is None
-        need_mfe = "mfe_long_12h" in e and e.get("mfe_long_12h") is None  # 老判例无此字段则跳过
-        if not (need_plan or need_dir or need_mfe):
-            continue
-        try:
-            df = fetch_klines(e["symbol"], "15m", 1000,
-                              start_ms=int(et.timestamp() * 1000), drop_incomplete=False)
-            if df.empty:
-                continue
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC")
-            bars = df[df.index >= et]
-            if len(bars) < 2:
-                continue
-        except Exception:
-            continue
-
-        sign = 1 if e["direction"] == "LONG" else -1
-        # 方向分: +2h/+4h 收盘价结算, 路径回踩不扣分
-        if e.get("atr"):
-            for hours in (2, 4):
-                key = f"dir_score_{hours}h"
-                if e.get(key) is not None:
-                    continue
-                later = bars[bars.index >= et + pd.Timedelta(hours=hours)]
-                if len(later):
-                    e[key] = round(sign * (float(later["close"].iloc[0]) - float(e["entry_px"])) / e["atr"], 2)
-                    changed = True
-
-        # 双向 MFE(+12h): 判 AI 预期幅度档是否兑现; 幅度档以下限为准, 超出不算错
-        if need_mfe:
-            win12 = bars[bars.index <= et + pd.Timedelta(hours=12)]
-            if age >= 12 * 3600 and len(win12) >= 2:
-                entry = float(e["entry_px"])
-                e["mfe_long_12h"] = round((float(win12["high"].max()) - entry) / entry * 100, 2)
-                e["mfe_short_12h"] = round((entry - float(win12["low"].min())) / entry * 100, 2)
-                if e.get("mag_tier") is not None and e.get("ai_direction"):
-                    mfe_dir = e["mfe_long_12h"] if e["ai_direction"] == "LONG" else e["mfe_short_12h"]
-                    against = e["mfe_short_12h"] if e["ai_direction"] == "LONG" else e["mfe_long_12h"]
-                    e["mfe_against_12h"] = against
-                    # 幅度档兑现: 方向侧≥档位下限 且 方向侧>反方向侧(单边才算, 震荡市假兑现被过滤)
-                    e["tier_correct"] = mfe_dir >= MAG_TIER_FLOOR[e["mag_tier"]] and mfe_dir > against
-                changed = True
-
-        # plan 结算: 先碰 SL/TP2 走K线
-        if need_plan:
-            sl, tp2 = float(e["sl"]), float(e["tp2"])
-            outcome = "timeout"
-            for _, bar in bars.iterrows():
-                try:
-                    hi, lo = float(bar["high"]), float(bar["low"])
-                except Exception:
-                    continue
-                if e["direction"] == "LONG":
-                    if lo <= sl:
-                        outcome = "loss"; break
-                    if hi >= tp2:
-                        outcome = "win"; break
-                else:
-                    if hi >= sl:
-                        outcome = "loss"; break
-                    if lo <= tp2:
-                        outcome = "win"; break
-            if outcome != "timeout" or age >= 86400:
-                e["outcome"] = outcome
-                changed = True
-
-        # 判对: 方向分 ≥+0.5 ATR 视为方向正确; 执行+方向对=判对, 观望+方向错=判对(躲过)
-        # 老判例无 atr/方向分, 沿用旧口径(outcome)
-        if e.get("judgment") is None:
-            if e.get("dir_score_4h") is not None:
-                e["judgment"] = (e["verdict"] == "执行") == (e["dir_score_4h"] >= 0.5)
-                changed = True
-            elif e.get("outcome") not in (None, "timeout"):
-                e["judgment"] = (e["verdict"] == "执行") == (e["outcome"] == "win")
-                changed = True
-    if changed:
-        save_journal(j)
-
-
-def judge_stats():
-    """判对率 (wins, total): 忽略 timeout(judgment 为 null)"""
-    judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None]
-    return sum(1 for e in judged if e["judgment"]), len(judged)
-
-
-def daily_review():
-    """每日复盘信(2026-08-22 改): 近24h推单数+观望质量+方向分统计。
-    判对错已移除——无真实成交+插针下判定失真(用户决策 2026-08-22);
-    方向分是连续统计(非对错判定), 保留作 AI 判断质量参考"""
-    j = load_journal()["entries"]
-    now = pd.Timestamp.now(tz="UTC")
-    day_ago = now - pd.Timedelta(hours=24)
-    rec = []
-    for e in j:
-        et = pd.Timestamp(e["time"])
-        if et.tz is None:
-            et = et.tz_localize("UTC")
-        if et >= day_ago:
-            rec.append(e)
-    if len(rec) < 3:
-        return None
-    execs = [e for e in rec if e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction"))]
-    watch = [e for e in rec if not (e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction")))]
-    L = [f"📊 每日复盘 ({pd.Timestamp.now(tz='Asia/Shanghai'):%m-%d})", f"推单 {len(rec)} (执行{len(execs)}/观望{len(watch)})"]
-    if execs:
-        scores = [e["dir_score_4h"] for e in execs if e.get("dir_score_4h") is not None]
-        if scores:
-            avg = sum(scores) / len(scores)
-            med = sorted(scores)[len(scores) // 2]
-            L.append(f"方向分: 平均{avg:+.2f} ATR (中位{med:+.2f})")
-    if watch:
-        wq = [e.get("watch_quality") for e in watch if e.get("watch_quality") is not None]
-        if wq:
-            avg = sum(wq) / len(wq)
-            L.append(f"观望质量: 平均{avg:.1f} ATR" + (" (横盘为主, 观望合理)" if avg <= 0.5 else " (单边被错过, 该出手时没出手)"))
-    return "\n".join(L)
-
-
 def maybe_update_lessons():
-    """AI 错题本: 每积累50条已判定判例, 让 DeepSeek 复盘归纳 3-5 条数据化教训"""
+    """AI 叙事复盘(2026-08-23 取代机械结算, 用户决策: 15m平仓时间随机+扛单, 机械判对错是假精确):
+    每积累20条新判决, AI 读自己最近的判决+4h后实际走势(原始涨跌, 不打分), 写3-5条人话教训"""
     try:
-        judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None]
-        n = len(judged)
+        entries = load_journal()["entries"]
         old = load_lessons()
-        if n - (old or {}).get("based_on_count", 0) < 50:
+        n = len(entries)
+        if n < 20 or n - (old or {}).get("based_on_count", 0) < 20:
             return
-
-        state_map = {"trend_up": "趋势上升", "trend_down": "趋势下降", "range": "震荡"}
+        c15 = fetch_klines("ETHUSDC", "15m", 96 * 7)["close"]
         lines = []
-        for e in judged[-100:]:
-            et = pd.Timestamp(e["time"]).strftime("%m-%d %H:%M")
-            ai_dir = {"LONG": "做多", "SHORT": "做空"}.get(e.get("ai_direction"), e["verdict"])
-            oc = "止盈" if e["outcome"] == "win" else "止损"
-            rsi = e.get("rsi") if e.get("rsi") is not None else "-"
-            lines.append(f"{et} {'做多' if e['direction'] == 'LONG' else '做空'}@{e['entry_px']:.1f} "
-                         f"RSI={rsi} {state_map.get(e.get('state'), '未知')} {e.get('votes', '-')}票 "
-                         f"判{ai_dir} 实际{oc} {'对' if e['judgment'] else '错'}")
-        prompt = ("你是交易复盘分析师。以下是某 AI 交易裁判的历史判例及对错结果。"
-                  "归纳 3-5 条可操作的血泪教训，每条必须引用数据规律(如'RSI<25时做空5次错4次')，"
-                  "禁止空话。只输出 JSON: {\"lessons\": [...]}\n\n" + "\n".join(lines))
+        for e in entries[-20:]:
+            et = pd.Timestamp(e["time"])
+            if et.tz:
+                et = et.tz_localize(None)
+            later = c15[c15.index >= et + pd.Timedelta(hours=4)]
+            if not len(later):
+                continue
+            chg = (float(later.iloc[0]) - float(e["entry_px"])) / float(e["entry_px"]) * 100
+            d = {"LONG": "多", "SHORT": "空", None: "观望"}.get(e.get("direction"))
+            rsn = (e.get("reasons") or [""])[0][:40]
+            lines.append(f"{e['time'][5:16]} 判{d}@${float(e['entry_px']):.0f} → 4h后{chg:+.1f}% | 当时理由: {rsn}")
+        if len(lines) < 10:
+            return
+        prompt = ("你是只交易ETH的专业交易员, 正在复盘自己最近的判决。逐条看: 判的方向、4小时后实际走了多少、当时的理由。"
+                  "写3-5条人话教训: 什么局面下我的判断有效/失效、哪种理由其实是借口、下次怎么改。"
+                  "不许用假精确的胜率词, 只说模式和局面。只输出JSON: {\"lessons\": [...]}\n\n" + "\n".join(lines))
         r = _http.post(DS_API_URL, json={
             "model": DS_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 900, "temperature": 0.2},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
         if r.status_code != 200:
-            print(f"WARN: 错题本复盘失败(HTTP {r.status_code}), 保留旧版")
+            print(f"WARN: 叙事复盘失败(HTTP {r.status_code}), 保留旧版")
             return
         text = r.json()["choices"][0]["message"]["content"]
-        m = re.search(r"\{.*\}", text, re.S)  # 贪婪取最外层 JSON 块, 容忍围栏和前后杂字
+        m = re.search(r"\{.*\}", text, re.S)
         lessons = json.loads(m.group(0)).get("lessons") if m else None
         if not isinstance(lessons, list) or not lessons:
-            print("WARN: 错题本复盘解析失败, 保留旧版")
+            print("WARN: 叙事复盘解析失败, 保留旧版")
             return
         save_lessons({"lessons": [str(x).strip() for x in lessons[:5]],
                       "updated_at": pd.Timestamp.now().isoformat(), "based_on_count": n})
-        print(f"  错题本已更新: {len(lessons)}条教训 (基于{n}条判例)")
+        print(f"  叙事复盘已更新: {len(lessons)}条教训 (基于{n}条判决)")
     except Exception as e:
-        print(f"WARN: 错题本更新异常({e}), 保留旧版")
+        print(f"WARN: 叙事复盘异常({e}), 保留旧版")
 
 
 def get_signal_number():
@@ -2299,31 +2143,30 @@ def confluence(result, d4, lv, ctx4, board_rows):
 
 
 def self_review_block():
-    """AI自我复盘材料(2026-08-20 用户决策, 推翻08-05"历史不注入"): 近30次判决成绩+错例+错题本,
-    注入两层简报, 让裁判知道自己哪边老错并据此校准置信度"""
+    """AI自我复盘材料(2026-08-23 取代机械打分, 用户决策): 近5条判决+4h后实际涨跌(原始%)+错题本,
+    注入两层简报让裁判校准。走势对照只报事实不给分, 判读权在AI"""
     try:
-        done = [e for e in load_journal()["entries"] if e.get("dir_score_4h") is not None and e.get("direction")]
-        if len(done) < 10:
+        entries = [e for e in load_journal()["entries"] if e.get("direction")]
+        if len(entries) < 10:
             return None
-        recent = done[-30:]
+        c15 = fetch_klines("ETHUSDC", "15m", 96 * 3)["close"]
         lines = []
-        for d, name in (("LONG", "判多"), ("SHORT", "判空")):
-            xs = [e["dir_score_4h"] for e in recent if e["direction"] == d]
-            if xs:
-                win = sum(1 for s in xs if s >= 0.5) / len(xs) * 100
-                lines.append(f"{name}{len(xs)}次判对率{win:.0f}%")
-        wrong = [e for e in recent if e["dir_score_4h"] <= -0.5][-3:]
-        for e in wrong:
-            rsn = (e.get("reasons") or ["?"])[0][:30]
-            d_cn = "多" if e["direction"] == "LONG" else "空"
-            lines.append(f"错例{e['time'][5:16]}: 判{d_cn}@${e['entry_px']:.0f}实走反向{e['dir_score_4h']}ATR, 当时理由「{rsn}」")
+        for e in entries[-5:]:
+            et = pd.Timestamp(e["time"])
+            if et.tz:
+                et = et.tz_localize(None)
+            later = c15[c15.index >= et + pd.Timedelta(hours=4)]
+            if not len(later):
+                continue
+            chg = (float(later.iloc[0]) - float(e["entry_px"])) / float(e["entry_px"]) * 100
+            d = {"LONG": "多", "SHORT": "空"}.get(e["direction"], "观望")
+            lines.append(f"{e['time'][5:16]}判{d}@${float(e['entry_px']):.0f}→4h后{chg:+.1f}%")
         try:
             lessons = load_lessons()
             if isinstance(lessons, dict):
                 lessons = lessons.get("lessons") or []
             if isinstance(lessons, list) and lessons:
-                txt = "；".join(str(x)[:60] for x in lessons[-3:])
-                lines.append("错题本: " + txt)
+                lines.append("错题本: " + "；".join(str(x)[:60] for x in lessons[-3:]))
         except Exception:
             pass
         return "你的近期判决复盘: " + " ; ".join(lines) if lines else None
@@ -3910,34 +3753,36 @@ def _dual_judge(system, brief):
     return ds
 
 
-SYS_4H = ("你是大周期交易员，只根据4h简报判断未来4-12小时的方向和最大涨跌幅。"
-          "可以做多、做空或观望。大行情(3%+)通常只出现在波动率挤压低分位(<40%)或一方仓位拥挤时。"
-          "威科夫Spring/JOC向上偏多, Upthrust/JOC向下偏空。"
+SYS_4H = ("你是只做ETH的专业加密交易员(BTC为联动参照), 看大周期: 根据4h简报判断未来4-12小时的方向和最大涨跌幅。"
+          "你的交易风格: 方向不明就观望, 这是专业不是怂; 进场只在有结构/统计/宏观至少两边同向时; "
+          "每笔判断都要能回答\"我这单错了会怎样\"——所以每次必须给失效条件。"
+          "你的信息优势: 简报里有盘面临场综述(叙事)、你自己的判决复盘(错例)、历史统计(只引有区分度的, 概率≥60%或≤40%, 五五开底噪别引)、宏观事件日提示。"
+          "财政部/联储/地缘这类宏观消息出现时, 必须编进推理链(如\"财政部压收益率=流动性宽松=偏多\"), 不许只看技术面。"
+          "大行情(3%+)通常只出现在波动率挤压低分位(<40%)或一方仓位拥挤时; 威科夫Spring/JOC向上偏多, Upthrust/JOC向下偏空。"
+          "简报末尾可能附带上一次判决: 趋势有惯性, 证据没有明显变化就维持, 要翻转必须写清新证据是什么。"
+          "置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。"
           "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
           "\"magnitude\": \"<1%\" 或 \"1-2%\" 或 \"2-3%\" 或 \"3%+\", "
           "\"confidence\": 0-100 整数, \"summary\": \"一句话结论\", \"reasons\": [2-4条理由]}。"
-          "summary不超过35字: 方向+概率+走势形态(反弹/滞涨/趋势延续/反转), 必须带具体点位(从简报关键位里挑), 如\"大概率(65%)先回踩1903再反弹\"。理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
-          "(如\"价格冲到区间上沿又被打回来还带放量，像有人在高位出货\")；没话说就别硬凑，2条够就不写第3条。"
-          "简报里的历史统计只在有区分度时引用(概率≥60%或≤40%), 接近五五开的底噪别引。"
-          "magnitude 与方向无关也要给。置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=趋势+量能+结构+统计全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。用大白话，保留关键数字，不用术语缩写，每条不超过40字。"
-          "你是会复盘的裁判: 简报含你自己最近的判决成绩和错例, 据此校准——哪个方向老错就压那个方向的置信, 重复犯错的模式要避开。简报末尾可能附带上一次判决。趋势有惯性：除非新证据明显指向反方向，否则维持原方向；"
-          "要翻转方向，必须在理由里写清新出现的反转证据是什么。"
-          "简报可能含近期新闻和宏观事件日提示：财政部/联储/地缘这类消息会主导未来4-12小时方向，"
-          "出现时必须编进推理链(如\"财政部压收益率=流动性宽松=偏多\"), 不能只看技术面。")
+          "summary不超过35字: 方向+概率+走势形态(反弹/滞涨/趋势延续/反转), 必须带具体点位(从简报关键位里挑), 如\"大概率(65%)先回踩1903再反弹\"。"
+          "理由用交易员推演链写: 每条=盘面现象→这暴露了谁在被套/谁在出货/谁在接盘→所以最可能往哪走→如果…就…的预案。"
+          "例: \"1918两次冲不上去还带放量, 说明有人在这位置持续出货, 多单别在1916上方追, 等回踩1905再看\"。"
+          "只挑最有信息量的2-4条把话说透, 没话说别硬凑。用大白话, 保留关键数字, 不用术语缩写, 每条不超过40字。"
+          "magnitude 与方向无关也要给。")
 
-SYS_15M = ("你是短线交易员，只根据15分钟简报判断未来1-2小时的方向(入场时机)。"
-           "可以做多、做空或观望，不要被投票分布锚定，投票只是参考数据之一。"
-           "简报末尾会给出本轮扫描触发的异动事件和上一次判决。异动要结合走势解读，不要复述事件本身："
-           "同样的RSI超买，在强势上升趋势里是动能、在区间顶部缩量时是回落前兆；放量+逼近压力，"
-           "突破失败和真突破的含义完全相反。不同组合给不同解读。"
+SYS_15M = ("你是只做ETH的专业加密交易员(BTC为联动参照), 看短线: 根据15分钟简报判断未来1-2小时的方向(入场时机)。"
+           "你的交易风格: 方向不明就观望; 不被投票分布锚定(投票只是参考); 每次判断都带失效条件。"
+           "你的信息优势: 简报里有盘面临场综述(叙事)、本轮异动(规则检测)、你自己的判决复盘、历史统计(只引有区分度的≥60%/≤40%)。"
+           "异动要结合走势解读, 不复述事件本身: 同样的RSI超买, 强势趋势里是动能、区间顶部缩量时是回落前兆; "
+           "放量+逼近压力, 突破失败和真突破含义完全相反。有异动时第一条必须先写异动解读。"
+           "布林带只是位置参考之一, 最多提一次。证据没有明显变化就维持上次方向, 别因噪音翻转。"
+           "置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=全共振的罕见机会, 该给就给。"
            "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
            "\"confidence\": 0-100 整数, \"summary\": \"一句话结论\", \"reasons\": [2-4条理由]}。"
-           "summary不超过35字: 方向+概率+走势形态(反弹/滞涨/趋势延续/反转), 必须带具体点位(从简报关键位里挑), 如\"短线偏空(60%), 反弹到1918附近滞涨再跌\"。理由自由发挥: 只挑最有信息量的证据，每条先说现象再说含义，把话说透"
-           "(如\"15分钟图是双腿回调形态，市场又是空头，反弹是暂时的，顺势做空更稳\")；"
-           "有异动时第一条必须先写异动解读；布林带只是位置参考之一，最多提一次；没话说别硬凑，2条够就不写第3条。"
-           "简报里的历史统计只在有区分度时引用(≥60%或≤40%), 五五开底噪别引。"
-           "证据没有明显变化就维持上次方向，别因噪音翻转。简报含你自己的近期判决复盘: 哪边老错就压哪边置信, 别重复犯同一个错。"
-           "置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=趋势+量能+结构+统计全共振的罕见机会, 该给就给, 别永远停在60-72舒适区。用大白话写，保留关键数字但不用术语缩写，每条不超过40字。")
+           "summary不超过35字: 方向+概率+走势形态, 必须带具体点位, 如\"短线偏空(60%), 反弹到1918附近滞涨再跌\"。"
+           "理由用交易员推演链写: 现象→谁被套/谁在出货→往哪走→如果…就…预案。"
+           "例: \"缩量反弹到布林上轨, 没人愿意在高位接, 这种反弹是用来出的不是追的, 站稳上轨再反手\"。"
+           "只挑最有信息量的2-4条把话说透, 没话说别硬凑。用大白话, 保留关键数字但不用术语缩写, 每条不超过40字。")
 
 
 def _judge(system, brief):
@@ -4042,8 +3887,7 @@ def main():
         try:
             json.dump({"judge4_cache": judge4_cache, "judge15_prev": judge15_prev,
                        "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref,
-                       "news_seen": list(news_seen)[-500:], "recent_news": RECENT_NEWS[-10:],
-                       "last_review_day": last_review_day},
+                       "news_seen": list(news_seen)[-500:], "recent_news": RECENT_NEWS[-10:]},
                       open(STATE_FILE, "w"))
         except Exception as e:
             print(f"WARN: 状态保存失败 {e}")
@@ -4059,13 +3903,11 @@ def main():
             news_seen.update(st.get("news_seen", []))
             fast_seen = set(news_seen)
             RECENT_NEWS.extend([tuple(x) for x in st.get("recent_news", [])])
-            last_review_day = st.get("last_review_day")
             print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)} 新闻{len(news_seen)}")
         except Exception as e:
             print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
     last_timed_slot = None  # 最后推过的15分钟槽, 防止慢扫描吞掉定时推送(2026-08-10)
-    last_review_day = None  # 每日复盘信已推日期(UTC), 防重复
     pending_fast = None     # 快检触发的事件, 注入下轮扫描必推+AI解读
     last_fast = {}          # (sym,触发类型) → 上次触发时间, 快检同向冷却用
     while True:
@@ -4077,24 +3919,12 @@ def main():
 
         print(f"\n[{now.strftime('%H:%M:%S')}] {'15分钟定时' if is_15m else '3分钟'}扫描...")
 
-        # ── 判例结算 (+错题本复盘) ──
+        # ── AI 叙事复盘(取代机械结算 2026-08-23) ──
         try:
-            verify_journal()
             maybe_update_lessons()
         except Exception as e:
-            print(f"  判例结算失败: {e}")
+            print(f"  叙事复盘失败: {e}")
 
-        # 每日复盘信: 北京21:00(UTC 13:00)推一次, last_review_day 去重
-        utc_now = pd.Timestamp.now(tz="UTC")
-        if args.loop != 0 and utc_now.hour == 13 and utc_now.minute < 5 and last_review_day != utc_now.strftime("%Y-%m-%d"):
-            try:
-                txt = daily_review()
-                if txt:
-                    send_telegram(txt + "\n\n(信号非投资建议, 仓位和止损自管)")
-                    print("  每日复盘信已推送")
-                last_review_day = utc_now.strftime("%Y-%m-%d")
-            except Exception as e:
-                print(f"  每日复盘信失败: {e}")
 
         for sym, config in watch:
             try:

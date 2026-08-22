@@ -100,38 +100,5 @@ class TestAnalystBlock(unittest.TestCase):
         self.assertTrue(any("🔁 上次: 维持" in x for x in L2))
 
 
-class TestDailyReview(unittest.TestCase):
-    def _entry(self, verdict, direction, judgment=None, tier_correct=None, watch=None, ts_days_ago=0.5, score=None):
-        et = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=ts_days_ago * 24)
-        return {"time": et.isoformat(), "symbol": "ETHUSDC", "direction": direction, "verdict": verdict,
-                "entry_px": 1900.0, "sl": 1888.0, "tp2": 1945.0, "atr": 30.0, "outcome": "loss" if judgment is False else "win",
-                "judgment": judgment, "dir4h": direction, "dir15m": direction, "tier_correct": tier_correct,
-                "mag_tier": 2, "ai_direction": direction, "watch_quality": watch,
-                "dir_score_4h": score, "dir_score_2h": None, "mfe_long_12h": None,
-                "mfe_short_12h": None, "mfe_against_12h": None}
-
-    def test_review_lines(self):
-        entries = [self._entry("执行", "LONG", score=0.8),
-                   self._entry("执行", "SHORT", score=0.4),
-                   self._entry("观望", None, watch=0.2)]
-        with mock.patch.object(V, "load_journal", return_value={"entries": entries}):
-            txt = V.daily_review()
-        self.assertIn("推单 3 (执行2/观望1)", txt)
-        self.assertIn("方向分: 平均+0.60 ATR", txt)
-        self.assertIn("观望质量: 平均0.2 ATR", txt)
-        self.assertNotIn("判对率", txt)
-        self.assertNotIn("错题", txt)
-
-    def test_too_few_samples(self):
-        entries = [self._entry("执行", "LONG", judgment=True)]
-        with mock.patch.object(V, "load_journal", return_value={"entries": entries}):
-            self.assertIsNone(V.daily_review())
-
-    def test_old_entries_excluded(self):
-        entries = [self._entry("执行", "LONG", judgment=True, ts_days_ago=3)]
-        with mock.patch.object(V, "load_journal", return_value={"entries": entries}):
-            self.assertIsNone(V.daily_review())
-
-
 if __name__ == "__main__":
     unittest.main()
