@@ -1787,6 +1787,25 @@ def detect_events(sym, result, prev):
     cur["sig_relief"] = bool(fr8pct is not None and fr8pct >= 0.03 and ret7d is not None and ret7d < -5)
     cur["sig_top"] = bool(fr8pct is not None and fr8pct >= 0.05 and ret7d is not None and ret7d > 5)
     cur["sig_sqtrend"] = bool(cur.get("sq") is not None and cur["sq"] < 20 and ret7d is not None and ret7d > 5)
+    # 高胜率组合形态(2026-08-23 全排列挖掘): 4h恐慌延续88% / 4h高潮回落78% / 1h恐慌延续71%
+    try:
+        d4 = fetch_klines(sym, "4h", 50)
+        c4c = d4["close"]
+        v4c = d4["volume"]
+        r4h = float((c4c.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean() /
+                     (c4c.diff().abs().ewm(alpha=1/14, adjust=False).mean() + 1e-10) * 100).iloc[-1])
+        vr4h = float(v4c.iloc[-1] / v4c.iloc[-20:].mean())
+        ret1_4h = float((c4c.iloc[-1] / c4c.iloc[-2] - 1) * 100)
+        cur["sig_panic4h"] = bool(r4h <= 30 and vr4h > 2 and ret1_4h < -1.5)
+        cur["sig_blowoff"] = bool(r4h >= 70 and (cur.get("sq") or 0) > 70 and fr8pct is not None and fr8pct > 0.03)
+    except Exception:
+        pass
+    try:
+        c1 = compute_1h_context(sym)
+        if c1:
+            cur["sig_panic1h"] = bool(c1["rsi1h"] <= 30 and c1["vr1h"] > 2 and c1["ret24_1h"] < -3)
+    except Exception:
+        pass
     ev = []
     if prev:
         p0 = prev.get("px")
@@ -1853,6 +1872,12 @@ def detect_events(sym, result, prev):
             ev.append(f"统计形态: 费率{cur['fr_val'] * 100:.3f}%+7日涨{cur['ret7d']:.0f}% → 后24h回落≥0.5%历史占87%(亢奋见顶, 偏空)")
         if cur.get("sig_sqtrend") and not prev.get("sig_sqtrend"):
             ev.append(f"统计形态: 7日涨{cur['ret7d']:.0f}%+挤压{cur['sq']:.0f}%分位 → 后24h涨≥0.5%历史占87%(趋势压缩突破, 偏多)")
+        if cur.get("sig_panic4h") and not prev.get("sig_panic4h"):
+            ev.append("统计形态: 4h超卖+爆量+大阴线 → 后12h续跌≥1%历史占88%(恐慌踩踏延续, 别抄底)")
+        if cur.get("sig_blowoff") and not prev.get("sig_blowoff"):
+            ev.append("统计形态: 4h超买+挤压释放+费率>0.03% → 后12h回落≥1%历史占78%(高潮见顶, 偏空)")
+        if cur.get("sig_panic1h") and not prev.get("sig_panic1h"):
+            ev.append("统计形态: 1h超卖+爆量+24h跌>3% → 后8h续跌≥1%历史占71%(恐慌延续, 别抄底)")
         for key, label in (("near_hi", f"逼近压力位${lv['swing_high']:.2f}"), ("near_lo", f"逼近支撑位${lv['swing_low']:.2f}")):
             if not prev.get(key) and cur[key]:
                 ev.append(label)
@@ -2048,6 +2073,24 @@ def fetch_liquidations(coin="ETH"):
         return None
 
 
+def compute_1h_context(sym):
+    """1h 中间层(2026-08-23 用户要求): RSI/量比/24h涨跌/均线排列; 15m太噪声 4h太慢, 1h是甜点位"""
+    try:
+        df = fetch_klines(sym, "1h", 60)
+        if df.empty or len(df) < 30:
+            return None
+        c = df["close"]
+        r = float((c.diff().clip(lower=0).ewm(alpha=1/14, adjust=False).mean() /
+                   (c.diff().abs().ewm(alpha=1/14, adjust=False).mean() + 1e-10) * 100).iloc[-1])
+        e7, e25 = c.ewm(span=7, adjust=False).mean(), c.ewm(span=25, adjust=False).mean()
+        vr = float(df["volume"].iloc[-1] / df["volume"].iloc[-20:].mean())
+        ret24 = float((c.iloc[-1] / c.iloc[-25] - 1) * 100) if len(c) >= 25 else 0.0
+        return {"rsi1h": r, "vr1h": vr, "ret24_1h": ret24,
+                "trend1h": "多排" if e7.iloc[-1] > e25.iloc[-1] else "空排"}
+    except Exception:
+        return None
+
+
 def _m_usd(v):
     return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}K"
 
@@ -2203,7 +2246,8 @@ def trader_handbook(sym):
         elif k == "贴近20根高点":
             rows.append(f"15m贴20根高点→4h上破{t['brk']}%/回落{t['fail']}%")
     # 训练形态(五年): 固定三条, 独立于当前状态
-    rows.append("形态: 费率≥0.03+7日跌>5%→24h跌90% | 费率≥0.05+7日涨>5%→24h回落87% | 7日涨>5%+挤压<20%→24h涨87%")
+    rows.append("形态: 费率≥0.03+7日跌>5%→24h跌90% | 费率≥0.05+7日涨>5%→24h回落87% | 7日涨>5%+挤压<20%→24h涨87% | "
+               "4h超卖+爆量+大阴线→12h续跌88%(恐慌别抄底) | 4h超买+挤压释放+费率>0.03→12h回落78% | 1h超卖+爆量+24h跌>3%→8h续跌71%")
     return "训练手册(近5年回测): " + " | ".join(rows) if rows else None
 
 
@@ -3616,6 +3660,9 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     hb = trader_handbook(sym)
     if hb:
         L.append(hb)
+    c1 = compute_1h_context(sym)
+    if c1:
+        L.append(f"1h层: RSI{c1['rsi1h']:.0f} 量比{c1['vr1h']:.2f} 24h{c1['ret24_1h']:+.1f}% 均线{c1['trend1h']}")
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
