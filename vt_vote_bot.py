@@ -1319,8 +1319,9 @@ def judge_stats():
 
 
 def daily_review():
-    """每日复盘信(2026-08-20): 近24h推单战绩+判对率+幅度档兑现+观望质量+错题+累计判对率。
-    样本 <3 不打扰; 只读判例, 不调 AI, 纯数据事实"""
+    """每日复盘信(2026-08-22 改): 近24h推单数+观望质量+方向分统计。
+    判对错已移除——无真实成交+插针下判定失真(用户决策 2026-08-22);
+    方向分是连续统计(非对错判定), 保留作 AI 判断质量参考"""
     j = load_journal()["entries"]
     now = pd.Timestamp.now(tz="UTC")
     day_ago = now - pd.Timedelta(hours=24)
@@ -1337,24 +1338,16 @@ def daily_review():
     watch = [e for e in rec if not (e.get("verdict") == "执行" or (e.get("verdict") is None and e.get("direction")))]
     L = [f"📊 每日复盘 ({pd.Timestamp.now(tz='Asia/Shanghai'):%m-%d})", f"推单 {len(rec)} (执行{len(execs)}/观望{len(watch)})"]
     if execs:
-        wins = sum(1 for e in execs if e.get("judgment"))
-        L.append(f"判对率: {wins}/{len(execs)} (方向分口径)")
-        tier_done = [e for e in execs if e.get("tier_correct") is not None]
-        if tier_done:
-            L.append(f"幅度档兑现: {sum(1 for e in tier_done if e['tier_correct'])}/{len(tier_done)}")
-        wrong = [e for e in execs if e.get("judgment") is False]
-        if wrong:
-            L.append("错题: " + "; ".join(
-                f"{'做多' if e.get('direction') == 'LONG' else '做空'}@{e.get('entry_px', 0):.1f}→{e.get('outcome')}"
-                for e in wrong[:3]))
+        scores = [e["dir_score_4h"] for e in execs if e.get("dir_score_4h") is not None]
+        if scores:
+            avg = sum(scores) / len(scores)
+            med = sorted(scores)[len(scores) // 2]
+            L.append(f"方向分: 平均{avg:+.2f} ATR (中位{med:+.2f})")
     if watch:
         wq = [e.get("watch_quality") for e in watch if e.get("watch_quality") is not None]
         if wq:
             avg = sum(wq) / len(wq)
             L.append(f"观望质量: 平均{avg:.1f} ATR" + (" (横盘为主, 观望合理)" if avg <= 0.5 else " (单边被错过, 该出手时没出手)"))
-    wins_all, total_all = judge_stats()
-    if total_all:
-        L.append(f"累计判对率: {wins_all}/{total_all} ({wins_all / total_all * 100:.0f}%)")
     return "\n".join(L)
 
 
@@ -2023,7 +2016,7 @@ def detect_events(sym, result, prev):
         if s0 is not None and s1 is not None:
             if s0 >= 20 > s1:
                 # 规则解读直接贴事件里(2026-08-10 用户要求): 不等AI, 挤压含义确定
-                ev.append(f"挤压进入极值区({s1:.0f}%分位): 波动率比近800小时80%的时间都安静, 大行情酝酿中, 方向看趋势/结构维度")
+                ev.append(f"挤压进入极值区({s1:.0f}%分位): 波动率异常安静, 回测显示未来12h振幅反而偏低(-15%), 别指望立即爆发, 方向看趋势/结构维度")
             elif s0 < 20 <= s1:
                 ev.append(f"挤压离开极值区({s1:.0f}%分位): 波动开始释放, 行情已在路上")
     return ev, cur
@@ -2447,19 +2440,7 @@ def position_size(d4, d15, tier, conf, atr_pct=None, squeeze_pct=None, event_day
     return max(5, min(50, round(base)))
 
 
-def loss_streak():
-    """判例本最近连续判错数(执行判例), ≥3 时卡片提示降仓——方向不可预测时, 连亏=该歇了"""
-    judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None][-20:]
-    n = 0
-    for e in reversed(judged):
-        if e["judgment"] is False:
-            n += 1
-        else:
-            break
-    return n
-
-
-def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None, squeeze_pct=None, event_day=False, streak=0):
+def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None, squeeze_pct=None, event_day=False):
     """交易员观点段(2026-08-20): 观点→计划→仓位→失效→上次观点, 全部用现成素材, 不引入AI编造"""
     d4, d15 = judge4.get("direction"), judge15.get("direction")
     c4 = judge4.get("confidence", -1)
@@ -2509,9 +2490,6 @@ def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None, squee
         else:
             ev = (judge4.get("reasons") or ["新证据"])[0][:24]
             L.append(f"🔁 上次判{pd_cn} → 翻{('多' if d_adv == 'LONG' else '空')}, 新证据: {ev}…")
-    # 连亏纪律: 最近连续判错≥3 → 降级提示(方向不可预测时, 连亏=该歇)
-    if streak >= 3:
-        L.append(f"⚠️ 纪律: 系统已连亏{streak}单, 本信号降级仅参考, 建议空仓或减半仓")
     return L
 
 
@@ -2550,10 +2528,15 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         ev_day = False
     ab = build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4,
                              squeeze_pct=(ctx4 or {}).get("squeeze_pct"),
-                             event_day=ev_day, streak=loss_streak())
+                             event_day=ev_day)
     if ab:
         L.extend(ab)
-        L.append("")
+    # 波动预测行(2026-08-22 回测5年: 挤压分位→未来12h振幅, ≥70→4.4%/<20→3.1%, 零额外请求)
+    sq = (ctx4 or {}).get("squeeze_pct")
+    if sq is not None:
+        amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
+        L.append(f"🌊 波动: 挤压{sq:.0f}%分位, 未来12h预计振幅{amp_est:.1f}%")
+    L.append("")
     # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
     hc = next((e for e in others if e.startswith("🔥")), None)
@@ -3584,7 +3567,7 @@ def build_brief_4h(result):
         b4 = ctx4["brooks"]
         state4_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(b4.get("state"), "未知")
         sq = ctx4["squeeze_pct"]
-        sq_word = "极度压缩,大行情酝酿中" if sq < 20 else "压缩中" if sq < 40 else "正常波动" if sq < 70 else "高波动(行情已释放)"
+        sq_word = "极度压缩(未来12h振幅偏低,回测-15%)" if sq < 20 else "压缩中" if sq < 40 else "正常波动" if sq < 70 else "高波动(已释放,未来12h振幅偏大+23%)"
         ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")

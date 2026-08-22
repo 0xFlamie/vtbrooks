@@ -11,12 +11,60 @@ import time
 
 import numpy as np
 import pandas as pd
+import requests
 
 sys.path.insert(0, ".")
 import vt_vote_bot as V
 
 COIN = "ETH"
 INTERVAL_MS = {"15m": 900000, "4h": 14400000}
+
+
+def _cb_get(url, retries=2):
+    """Coinbase 请求: 独立连接/读超时 + 429退避(生产 http_get_json 在限流时 ssl read 可挂起)"""
+    for i in range(retries + 1):
+        try:
+            r = requests.get(url, timeout=(5, 10))
+            if r.status_code == 429:
+                time.sleep(5 * (i + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if i == retries:
+                return None
+            time.sleep(2)
+    return None
+
+
+def fetch_okx_4h(symbol="ETH-USDT", days=1825):
+    """OKX 4h 现货历史分页(after 往回翻), 美区可用, 单请求300根 — Coinbase 1h 重采样会挂起/慢(146请求)"""
+    rows = []
+    start = int(time.time() * 1000) - days * 86400 * 1000
+    cur = int(time.time() * 1000)
+    while True:
+        try:
+            r = requests.get("https://www.okx.com/api/v5/market/history-candles"
+                             f"?instId={symbol}&bar=4H&after={cur}&limit=300", timeout=(5, 15))
+            js = r.json()
+        except Exception:
+            break
+        if js.get("code") != "0" or not js.get("data"):
+            break
+        d = js["data"]
+        rows.extend(d)
+        oldest = int(d[-1][0])
+        if oldest <= start or oldest >= cur:
+            break
+        cur = oldest - 1
+        time.sleep(0.1)
+    df = pd.DataFrame(rows, columns=["ts", "o", "h", "l", "c", "vol", "_v2", "_v3", "_v4"])
+    df = df[["ts", "o", "h", "l", "c", "vol"]]
+    df["date"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
+    for c in ["o", "h", "l", "c", "vol"]:
+        df[c] = df[c].astype(float)
+    return (df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "vol": "volume"})
+            .drop_duplicates("date").set_index("date").sort_index())
 
 
 def fetch_cb_interval(gran, days, symbol="ETH-USD"):
@@ -29,13 +77,13 @@ def fetch_cb_interval(gran, days, symbol="ETH-USD"):
         start = max(cur - pd.Timedelta("3 days"), start_all)
         url = (f"https://api.exchange.coinbase.com/products/{symbol}/candles"
                f"?granularity={gran}&start={start.isoformat()}&end={cur.isoformat()}")
-        d = V.http_get_json(url)
+        d = _cb_get(url)
         if not d:
             break
         rows.extend(d)
         oldest = min(int(r[0]) for r in d)  # 返回降序, 取最旧时间戳往前推
         cur = pd.Timestamp(oldest, unit="s", tz="UTC")
-        time.sleep(0.15)
+        time.sleep(0.05)
     df = pd.DataFrame(rows, columns=["ts", "low", "high", "open", "close", "volume"])
     df["date"] = pd.to_datetime(df["ts"], unit="s")
     for c in ["open", "high", "low", "close", "volume"]:
