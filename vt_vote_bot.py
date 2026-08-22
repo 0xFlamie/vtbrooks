@@ -2422,8 +2422,10 @@ def build_data_board(sym, result, lv, ctx4):
     return rows
 
 
-def position_size(d4, d15, tier, conf):
-    """仓位建议%: 幅度档基础 + 双层共振/置信度修正, 封顶 50%。专业原则: 仓位与信号强度挂钩"""
+def position_size(d4, d15, tier, conf, atr_pct=None, squeeze_pct=None, event_day=False):
+    """仓位建议%: 幅度档基础 + 共振/置信修正, 再叠加波动率/事件风险修正, 封顶 50%。
+    波动率修正(2026-08-22 回测): 仓位∝1/ATR(恒定风险); 挤压分位≥70(波动已释放)减仓、<20可加仓;
+    事件日(CPI/FOMC)波动放大 → 七折"""
     if not (d4 or d15):
         return 0
     base = {0: 5, 1: 15, 2: 25, 3: 35}.get(tier, 10) if tier is not None else 10
@@ -2433,10 +2435,31 @@ def position_size(d4, d15, tier, conf):
         base += 5
     elif conf < 60:
         base -= 5
-    return max(5, min(50, base))
+    if atr_pct and atr_pct > 0:
+        base *= 3.0 / atr_pct  # 基准ATR 3%, 高波动减仓低波动加仓
+    if squeeze_pct is not None:
+        if squeeze_pct >= 70:
+            base *= 0.7   # 波动已释放, 未来12h振幅大(回测+23%)
+        elif squeeze_pct < 20:
+            base *= 1.1   # 压缩中, 未来12h反而平静(回测-15%)
+    if event_day:
+        base *= 0.7  # 事件日波动放大(CPI日+24%), 降杠杆
+    return max(5, min(50, round(base)))
 
 
-def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None):
+def loss_streak():
+    """判例本最近连续判错数(执行判例), ≥3 时卡片提示降仓——方向不可预测时, 连亏=该歇了"""
+    judged = [e for e in load_journal()["entries"] if e.get("judgment") is not None][-20:]
+    n = 0
+    for e in reversed(judged):
+        if e["judgment"] is False:
+            n += 1
+        else:
+            break
+    return n
+
+
+def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None, squeeze_pct=None, event_day=False, streak=0):
     """交易员观点段(2026-08-20): 观点→计划→仓位→失效→上次观点, 全部用现成素材, 不引入AI编造"""
     d4, d15 = judge4.get("direction"), judge15.get("direction")
     c4 = judge4.get("confidence", -1)
@@ -2455,15 +2478,20 @@ def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None):
         tier_txt = {0: "小幅<1%", 1: "轻仓1-2%", 2: "标准2-3%", 3: "主攻3%+"}.get(tier, "")
         src = "双层共振" if (d4 and d4 == d15) else ("仅15m" if d15 else "仅4h")
         L.append(f"🎯 观点: {cn}({c4 if c4 >= 0 else 60}%), {tier_txt}, {src}")
-    # 计划行: 仓位+入场+止损+目标+RR(有主张且不背离才给)
+    # 计划行: 仓位+入场+止损+目标+RR+单笔风险(有主张且不背离才给)
     if d_adv and not diverged and plan:
-        pos = position_size(d4, d15, tier, max(c4, judge15.get("confidence", -1)))
+        pos = position_size(d4, d15, tier, max(c4, judge15.get("confidence", -1)),
+                            atr_pct=(lv.get("atr14") / px * 100) if lv and lv.get("atr14") else None,
+                            squeeze_pct=squeeze_pct, event_day=event_day)
         if ew and ew.get("dir") == d_adv:
             entry_txt = f"入场{ew['zone']}"
         else:
             entry_txt = "入场等回调贴结构位或放量突破"
         sl_pct = abs(px - plan["sl"]) / px * 100
-        L.append(f"📌 计划: 仓位{pos}% · {entry_txt} · 止损${plan['sl']:.2f}(-{sl_pct:.1f}%) · 目标${plan['tp2']:.2f} · RR 1:{plan['rr']:.1f}")
+        risk_pct = pos * sl_pct / 100  # 单笔风险(1倍杠杆全仓口径), 用户按自己杠杆映射
+        L.append(f"📌 计划: 仓位{pos}% · {entry_txt} · 止损${plan['sl']:.2f}(-{sl_pct:.1f}%) · 目标${plan['tp2']:.2f} · RR 1:{plan['rr']:.1f} · 风险{risk_pct:.1f}%")
+        if event_day:
+            L.append("⚠️ 今日宏观事件日, 波动放大已计入仓位, 别加杠杆")
     # 失效行: 方向侧结构位/入场窗口失效位
     if d_adv and not diverged:
         if ew and ew.get("dir") == d_adv and ew.get("invalid"):
@@ -2481,6 +2509,9 @@ def build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4=None):
         else:
             ev = (judge4.get("reasons") or ["新证据"])[0][:24]
             L.append(f"🔁 上次判{pd_cn} → 翻{('多' if d_adv == 'LONG' else '空')}, 新证据: {ev}…")
+    # 连亏纪律: 最近连续判错≥3 → 降级提示(方向不可预测时, 连亏=该歇)
+    if streak >= 3:
+        L.append(f"⚠️ 纪律: 系统已连亏{streak}单, 本信号降级仅参考, 建议空仓或减半仓")
     return L
 
 
@@ -2512,7 +2543,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     ctx4 = compute_4h_context(sym)
     lv = compute_levels(sym, d4 or d15 or result["signal"])
     # 交易员观点段(2026-08-20): 结论优先放最顶部, 观点→计划→仓位→失效→上次观点
-    ab = build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4)
+    try:
+        today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+        ev_day = bool(MACRO_EVENTS.get(today_et))
+    except Exception:
+        ev_day = False
+    ab = build_analyst_block(result, judge4, judge15, ew, lv, plan, prev4,
+                             squeeze_pct=(ctx4 or {}).get("squeeze_pct"),
+                             event_day=ev_day, streak=loss_streak())
     if ab:
         L.extend(ab)
         L.append("")

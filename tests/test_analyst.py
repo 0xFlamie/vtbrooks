@@ -36,6 +36,19 @@ class TestPositionSize(unittest.TestCase):
         self.assertEqual(V.position_size("LONG", "LONG", 3, 90), 45)   # 35+5+5=45
         self.assertLessEqual(V.position_size("LONG", "LONG", 3, 100), 50)
 
+    def test_atr_correction(self):
+        # 基准ATR 3%: 高波动减仓, 低波动加仓
+        self.assertEqual(V.position_size("LONG", "LONG", 3, 75, atr_pct=6.0), 20)   # 40×3/6
+        self.assertEqual(V.position_size("LONG", "LONG", 3, 75, atr_pct=3.0), 40)   # 40×1
+        self.assertEqual(V.position_size("LONG", "LONG", 3, 75, atr_pct=1.5), 50)   # 40×2→cap
+
+    def test_squeeze_and_event(self):
+        # 挤压≥70(波动已释放)减仓; <20可加仓(2026-08-22 回测)
+        self.assertEqual(V.position_size("LONG", "LONG", 3, 75, atr_pct=3.0, squeeze_pct=85), 28)
+        self.assertEqual(V.position_size("LONG", "LONG", 3, 75, atr_pct=3.0, squeeze_pct=10), 44)
+        # 事件日七折
+        self.assertEqual(V.position_size("LONG", "LONG", 3, 75, atr_pct=3.0, event_day=True), 28)
+
 
 class TestAnalystBlock(unittest.TestCase):
     def test_full_view(self):
@@ -43,10 +56,21 @@ class TestAnalystBlock(unittest.TestCase):
         j15 = {"direction": "LONG", "confidence": 75}
         L = V.build_analyst_block(RESULT, j4, j15, EW, LV, PLAN)
         self.assertTrue(any(x.startswith("🎯 观点: 做多(80%)") for x in L))
-        self.assertTrue(any(x.startswith("📌 计划: 仓位45%") for x in L))     # 35+5共振+5高置信
+        # ATR修正: atr14=30/px1900=1.58% → 45×3/1.58 → cap 50
+        self.assertTrue(any(x.startswith("📌 计划: 仓位50%") for x in L))
         self.assertTrue(any("止损$1888.00(-0.6%)" in x for x in L))
         self.assertTrue(any("RR 1:2.6" in x for x in L))
+        self.assertTrue(any("风险0.3%" in x for x in L))
         self.assertTrue(any("🚫 失效: 收破$1885.00" in x for x in L))
+
+    def test_event_day_and_streak(self):
+        j4 = {"direction": "LONG", "confidence": 80, "mag_tier": 3, "reasons": ["x"]}
+        j15 = {"direction": "LONG", "confidence": 75}
+        L = V.build_analyst_block(RESULT, j4, j15, EW, LV, PLAN, event_day=True, streak=4)
+        self.assertTrue(any("今日宏观事件日" in x for x in L))
+        self.assertTrue(any("连亏4单" in x for x in L))
+        L2 = V.build_analyst_block(RESULT, j4, j15, EW, LV, PLAN, streak=2)
+        self.assertFalse(any("连亏" in x for x in L2))
 
     def test_watch_no_plan(self):
         j4 = {"direction": None, "confidence": 40, "mag_tier": None, "reasons": []}
