@@ -2406,13 +2406,56 @@ def build_data_board(sym, result, lv, ctx4):
         same = [j for j, (l2, _, p2, _) in enumerate(cand) if j > i and l2 == label and j not in used]
         if same and p >= 65 and all(cand[j][2] >= 65 for j in same):
             parts = "、".join([f"{_plain_suffix(suffix)}占{p}%"] + [f"{_plain_suffix(cand[j][1])}占{cand[j][2]}%" for j in same])
-            rows.append(f"　{_plain_label(label)}: 近5年{n}次里, {parts}——大涨大跌都常见, 方向没准, 别追单")
+            rows.append(f"　{_plain_label(label)}: 近2年{n}次里, {parts}——大涨大跌都常见, 方向没准, 别追单")
             used.update(same)
         else:
-            rows.append(f"　{_plain_label(label)}: 近5年{n}次里, {_plain_suffix(suffix)}占{p}%")
+            rows.append(f"　{_plain_label(label)}: 近2年{n}次里, {_plain_suffix(suffix)}占{p}%")
     if not rows:
         return []  # 无优势底牌时整块不显示(2026-08-12 用户决策: 没信息量的行不占版面)
     return rows
+
+
+def strength_score(sym, df4=None):
+    """方向强度分(2026-08-22 5年回测, 弱信号合成): 收盘位置/距20期极值/BTC联动/突破, 合成 -4..+4。
+    回测: 强度分+2 → 未来4h涨54.7%, -2 → 41.2% (含成本EV仍负, 只作参考不作交易规则)"""
+    if df4 is None:
+        try:
+            df4 = fetch_klines(sym, "4h", 60)
+        except Exception:
+            return None
+    if df4 is None or df4.empty or len(df4) < 30:
+        return None
+    last = df4.iloc[-1]
+    hi, lo = df4["high"], df4["low"]
+    score = 0
+    pos = (last["close"] - last["low"]) / max(last["high"] - last["low"], 1e-9)
+    if pos > 0.6:
+        score += 1
+    elif pos < 0.4:
+        score -= 1
+    hi20 = hi.iloc[-21:-1].max()
+    lo20 = lo.iloc[-21:-1].min()
+    dist_hi = (hi20 / last["close"] - 1) * 100
+    dist_lo = (last["close"] / lo20 - 1) * 100
+    if dist_hi < 2:
+        score += 1
+    if dist_lo < 2:
+        score -= 1
+    if last["close"] > hi20:
+        score += 1
+    if last["close"] < lo20:
+        score -= 1
+    try:
+        btc4 = fetch_klines("BTCUSDT", "4h", 3)
+        if not btc4.empty and len(btc4) >= 2:
+            bret = (btc4["close"].iloc[-1] / btc4["close"].iloc[-2] - 1) * 100
+            if bret > 0.5:
+                score += 1
+            elif bret < -0.5:
+                score -= 1
+    except Exception:
+        pass
+    return score
 
 
 def position_size(d4, d15, tier, conf, atr_pct=None, squeeze_pct=None, event_day=False):
@@ -2536,6 +2579,14 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     if sq is not None:
         amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
         L.append(f"🌊 波动: 挤压{sq:.0f}%分位, 未来12h预计振幅{amp_est:.1f}%")
+    # 方向强度分(5年回测弱信号合成, 仅参考; 只在定时卡算, 省请求)
+    if ptype == "定时":
+        try:
+            sc = strength_score(sym)
+            if sc is not None:
+                L.append(f"🧭 强度分: {sc:+d} ({'偏强' if sc > 0 else '偏弱' if sc < 0 else '中性'}, 回测胜率±5pp)")
+        except Exception:
+            pass
     L.append("")
     # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
@@ -3555,6 +3606,13 @@ def build_brief_4h(result):
     """4h 层简报: 只含大周期数据(趋势/Brooks4h/挤压/威科夫/合约情绪), 判方向和幅度档"""
     sym = result["symbol"]; px = result["price"]
     L = [f"币种: {sym} | 现价: ${px:.2f}"]
+    # 方向强度分(2026-08-22 5年回测弱信号合成, 仅参考不作规则)
+    try:
+        sc = strength_score(sym)
+        if sc is not None:
+            L.append(f"方向强度分: {sc:+d} (5年回测: +2时未来4h涨54.7%, -2时41.2%)")
+    except Exception:
+        pass
     ml = _macro_line()
     if ml:
         L.append(ml)
@@ -3578,7 +3636,7 @@ def build_brief_4h(result):
         L.append(f"4h量比: {vr4:.2f} ({vr_word}, 相对近20根均量, {'阳线' if ctx4.get('up4') else '阴线'})")
         mst = market_stats(sym)
         if mst:
-            yrs = "近4年"
+            yrs = "近2年"
             ta = mst.get("trend_align", {})
             cur_aln = "多头排列" if ctx4.get("trend_up") else "空头排列" if ctx4.get("trend_dn") else None
             if cur_aln and cur_aln in ta:
@@ -3688,7 +3746,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
                   "30-45" if r15 <= 45 else "45-55" if r15 <= 55 else "55-70")
             t = m15.get(f"rsi{rb}")
             if t:
-                L.append(f"统计(近5年15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
+                L.append(f"统计(近2年15m): RSI{rb}共{t['n']}次, 后4h反弹≥0.5%占{t['bounce']}%, 回落≥0.5%占{t['drop']}%")
             vr_ = lv["vol_ratio"]
             vb = "<0.6" if vr_ < 0.6 else "0.6-1.2" if vr_ < 1.2 else "1.2-2" if vr_ < 2 else ">2"
             t = m15.get(f"量比{vb}{'阳' if lv.get('up15') else '阴'}")
