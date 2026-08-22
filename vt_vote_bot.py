@@ -2174,6 +2174,39 @@ def self_review_block():
         return None
 
 
+def trader_handbook(sym):
+    """训练手册(2026-08-23 用户要求: 各维度训练结果常驻简报): 统计库里有区分度(≥60%/≤40%)的边缘,
+    压成一页纸给裁判当背景知识。纯规则, 数字只来自统计库"""
+    mst = market_stats(sym) or {}
+    rows = []
+    for b, t in mst.get("squeeze", {}).items():
+        if t["p2"] >= 60 or t["p2"] <= 40:
+            rows.append(f"4h挤压{b}%分位→12h振幅≥2%占{t['p2']}%")
+    for k, t in mst.get("rsi", {}).items():
+        if t["bounce"] >= 60 or t["bounce"] <= 40:
+            rows.append(f"4hRSI{k}→12h反弹{t['bounce']}%")
+        if t["drop"] >= 60 or t["drop"] <= 40:
+            rows.append(f"4hRSI{k}→12h回落{t['drop']}%")
+    for k, t in mst.get("volume", {}).items():
+        if t["cont"] >= 60 or t["cont"] <= 40:
+            rows.append(f"4h{k}→12h同向延续{t['cont']}%")
+    for k, t in mst.get("trend_align", {}).items():
+        rows.append(f"4h{k}→12h涨{t['up']}%/跌{t['dn']}%")
+    for k, t in (mst.get("m15") or {}).items():
+        if k.startswith("rsi"):
+            if t["bounce"] >= 60:
+                rows.append(f"15m {k[3:]}→4h反弹{t['bounce']}%")
+            if t["drop"] >= 60:
+                rows.append(f"15m {k[3:]}→4h回落{t['drop']}%")
+        elif k.startswith("量比") and (t["cont"] >= 60 or t["cont"] <= 40):
+            rows.append(f"15m{k}→4h延续{t['cont']}%")
+        elif k == "贴近20根高点":
+            rows.append(f"15m贴20根高点→4h上破{t['brk']}%/回落{t['fail']}%")
+    # 训练形态(五年): 固定三条, 独立于当前状态
+    rows.append("形态: 费率≥0.03+7日跌>5%→24h跌90% | 费率≥0.05+7日涨>5%→24h回落87% | 7日涨>5%+挤压<20%→24h涨87%")
+    return "训练手册(近5年回测): " + " | ".join(rows) if rows else None
+
+
 def build_data_board(sym, result, lv, ctx4):
     """数据看板(2026-08-10 用户要求): 只列当前状态命中的、有统计优势(≥65%或≤35%)的历史概率;
     全是五五开就明说无优势。纯规则生成, 数字只来自统计库, 不经AI"""
@@ -3471,6 +3504,9 @@ def build_brief_4h(result):
     sr = self_review_block()
     if sr:
         L.append(sr)
+    hb = trader_handbook(sym)
+    if hb:
+        L.append(hb)
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4 = ctx4["brooks"]
@@ -3577,6 +3613,9 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     sr = self_review_block()
     if sr:
         L.append(sr)
+    hb = trader_handbook(sym)
+    if hb:
+        L.append(hb)
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
