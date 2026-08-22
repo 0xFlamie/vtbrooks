@@ -2574,11 +2574,19 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                              event_day=ev_day)
     if ab:
         L.extend(ab)
-    # 波动预测行(2026-08-22 回测5年: 挤压分位→未来12h振幅, ≥70→4.4%/<20→3.1%, 零额外请求)
-    sq = (ctx4 or {}).get("squeeze_pct")
-    if sq is not None:
-        amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
-        L.append(f"🌊 波动: 挤压{sq:.0f}%分位, 未来12h预计振幅{amp_est:.1f}%")
+    # 波动预测行(2026-08-22 回测5年): 振幅自相关优先(前4h振幅→未来12h, +53%/-34%最强单特征),
+    # 失败 fallback 挤压映射。LightGBM 组合仅再降 8% RMSE, 不值得引入模型依赖
+    try:
+        df4r = fetch_klines(sym, "4h", 1)
+        last4 = df4r.iloc[-1]
+        rng = (last4["high"] - last4["low"]) / last4["open"] * 100
+        amp_est = 2.4 if rng < 1 else 3.5 if rng < 2 else 4.2 if rng < 3.5 else 5.6
+        L.append(f"🌊 波动: 前4h振幅{rng:.1f}%, 未来12h预计振幅{amp_est:.1f}%")
+    except Exception:
+        sq = (ctx4 or {}).get("squeeze_pct")
+        if sq is not None:
+            amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
+            L.append(f"🌊 波动: 挤压{sq:.0f}%分位, 未来12h预计振幅{amp_est:.1f}%")
     # 方向强度分(5年回测弱信号合成, 仅参考; 只在定时卡算, 省请求)
     if ptype == "定时":
         try:
