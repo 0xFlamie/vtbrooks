@@ -1800,6 +1800,13 @@ def detect_events(sym, result, prev):
         cur["sig_blowoff"] = bool(r4h >= 70 and (cur.get("sq") or 0) > 70 and fr8pct is not None and fr8pct > 0.03)
     except Exception:
         pass
+    # 4h超跌反弹: 空排+挤压释放(>70)+贴近20周期低点<0.5% → 12h反弹85%(2026-08-23挖掘, n=41)
+    try:
+        if ctx4 and lv:
+            dist_lo = (px - lv["swing_low"]) / px * 100
+            cur["sig_capit"] = bool(ctx4.get("trend_dn") and (cur.get("sq") or 0) > 70 and dist_lo < 0.5)
+    except Exception:
+        pass
     try:
         c1 = compute_1h_context(sym)
         if c1:
@@ -1876,6 +1883,8 @@ def detect_events(sym, result, prev):
             ev.append("统计形态: 4h超卖+爆量+大阴线 → 后12h续跌≥1%历史占88%(恐慌踩踏延续, 别抄底)")
         if cur.get("sig_blowoff") and not prev.get("sig_blowoff"):
             ev.append("统计形态: 4h超买+挤压释放+费率>0.03% → 后12h回落≥1%历史占78%(高潮见顶, 偏空)")
+        if cur.get("sig_capit") and not prev.get("sig_capit"):
+            ev.append("统计形态: 4h空头排列+挤压已释放+贴近20周期低点 → 后12h反弹≥1%历史占85%(超跌反弹结构, 偏多)")
         if cur.get("sig_panic1h") and not prev.get("sig_panic1h"):
             ev.append("统计形态: 1h超卖+爆量+24h跌>3% → 后8h续跌≥1%历史占71%(恐慌延续, 别抄底)")
         for key, label in (("near_hi", f"逼近压力位${lv['swing_high']:.2f}"), ("near_lo", f"逼近支撑位${lv['swing_low']:.2f}")):
@@ -2247,7 +2256,7 @@ def trader_handbook(sym):
             rows.append(f"15m贴20根高点→4h上破{t['brk']}%/回落{t['fail']}%")
     # 训练形态(五年): 固定三条, 独立于当前状态
     rows.append("形态: 费率≥0.03+7日跌>5%→24h跌90% | 费率≥0.05+7日涨>5%→24h回落87% | 7日涨>5%+挤压<20%→24h涨87% | "
-               "4h超卖+爆量+大阴线→12h续跌88%(恐慌别抄底) | 4h超买+挤压释放+费率>0.03→12h回落78% | 1h超卖+爆量+24h跌>3%→8h续跌71%")
+               "4h恐慌(超卖+爆量+大阴线)→12h续跌88% | 4h空排+挤压释放+贴20低点→12h反弹85% | 4h超买+挤压释放+费率>0.03→12h回落78% | 1h超卖+爆量+24h跌>3%→8h续跌71%")
     return "训练手册(近5年回测): " + " | ".join(rows) if rows else None
 
 
