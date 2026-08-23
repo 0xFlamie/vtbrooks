@@ -1821,6 +1821,12 @@ def detect_events(sym, result, prev):
         if ctx4 and lv and btc7d is not None:
             cur["sig_quietbottom"] = bool(ctx4["rsi4h"] <= 30 and lv["vol_ratio"] < 0.6 and btc7d < -5)
             cur["sig_cycle_top"] = bool(ctx4["rsi4h"] > 60 and (cur.get("sq") or 100) < 20 and btc7d > 5)
+            # 2026-08-23 收盘口径挖掘: 强弩之末(涨后连阳+压缩→收涨仅27%) / 掉队补跌(高费率+BTC涨+ETH弱→收涨29%)
+            d4c = fetch_klines(sym, "4h", 50)["close"]
+            sgn = (d4c.diff() > 0).astype(int)
+            streak4 = int(sgn.groupby((sgn != sgn.shift()).cumsum()).cumsum().iloc[-1])
+            cur["sig_exhaust"] = bool(ret7d and ret7d > 5 and (cur.get("sq") or 100) < 20 and streak4 >= 3)
+            cur["sig_lagtop"] = bool(fr8pct and fr8pct > 0.03 and btc7d > 5 and ret7d is not None and (ret7d - btc7d) < -2)
     except Exception:
         pass
     ev = []
@@ -1899,6 +1905,10 @@ def detect_events(sym, result, prev):
             ev.append("统计形态: 4h超卖+缩量+BTC7日跌>5% → 后24h收涨历史占74%(超卖出清反弹, 偏多)")
         if cur.get("sig_cycle_top") and not prev.get("sig_cycle_top"):
             ev.append("统计形态: 4h强势+挤压低位+BTC7日涨>5% → 后24h收涨仅34%(周期顶部, 偏空)")
+        if cur.get("sig_exhaust") and not prev.get("sig_exhaust"):
+            ev.append("统计形态: 7日涨>5%+挤压低位+4h连阳≥3 → 后24h收涨仅27%(强弩之末, 偏空)")
+        if cur.get("sig_lagtop") and not prev.get("sig_lagtop"):
+            ev.append("统计形态: 费率>0.03%+BTC7日涨>5%+ETH跑输BTC → 后24h收涨仅29%(掉队补跌, 偏空)")
         if cur.get("sig_panic1h") and not prev.get("sig_panic1h"):
             ev.append("统计形态: 1h超卖+爆量+24h跌>3% → 后8h续跌≥1%历史占71%(恐慌延续, 别抄底)")
         for key, label in (("near_hi", f"逼近压力位${lv['swing_high']:.2f}"), ("near_lo", f"逼近支撑位${lv['swing_low']:.2f}")):
@@ -2270,7 +2280,7 @@ def trader_handbook(sym):
             rows.append(f"15m贴20根高点→4h上破{t['brk']}%/回落{t['fail']}%")
     # 训练形态(五年): 固定三条, 独立于当前状态
     rows.append("形态: 费率≥0.03+7日跌>5%→24h跌90% | 费率≥0.05+7日涨>5%→24h回落87% | 7日涨>5%+挤压<20%→24h涨87% | "
-               "4h恐慌(超卖+爆量+大阴线)→12h续跌88% | 4h空排+挤压释放+贴20低点→12h反弹85% | 4h超卖+缩量+BTC7日跌>5%→24h收涨74% | 4h强势+挤压<20+BTC7日涨>5%→24h收跌66% | 4h超买+挤压释放+费率>0.03→12h回落78% | 1h超卖+爆量+24h跌>3%→8h续跌71%")
+               "4h恐慌(超卖+爆量+大阴线)→12h续跌88% | 4h空排+挤压释放+贴20低点→12h反弹85% | 4h超卖+缩量+BTC7日跌>5%→24h收涨74% | 4h强势+挤压<20+BTC7日涨>5%→24h收跌66% | 涨后连阳+挤压<20→收涨仅27% | 费率高+BTC涨+ETH弱→收涨仅29% | 4h超买+挤压释放+费率>0.03→12h回落78% | 1h超卖+爆量+24h跌>3%→8h续跌71%")
     return "训练手册(近5年回测): " + " | ".join(rows) if rows else None
 
 
