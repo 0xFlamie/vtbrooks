@@ -73,7 +73,7 @@
 ## 运行环境
 
 - 环境变量：`.env`（systemd EnvironmentFile），含 `VT_DS_API_KEY`、Telegram token/chat —— 永不入库
-- 运行时文件（未跟踪）：`judge_journal.json` / `judge_lessons.json` / `vt_predictions.json` / `oi_snapshots.json`（HL 持仓快照兜底用）
+- 运行时文件（未跟踪）：`judge_journal.json` / `judge_lessons.json` / `vt_predictions.json` / `oi_snapshots.json`（HL 持仓快照兜底用）、`oi_history.json`（OI/费率/多空比/爆仓快照，3分钟一条，攒一月挖 OI 维度）、`news_memory.json`（事件线+盘面综述+事件预判）
 
 ## 部署链（强制）
 
