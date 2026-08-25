@@ -2132,6 +2132,33 @@ def _m_usd(v):
     return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}K"
 
 
+OI_HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oi_history.json")
+
+
+def collect_oi_snapshot(sym, px):
+    """OI/费率/多空比/爆仓 历史快照采集(2026-08-25 用户批准): 每轮扫描追加一条, 攒够一月可挖OI维度"""
+    try:
+        st = fetch_sentiment(sym) or {}
+        liq = fetch_liquidations(sym.replace("USDC", "").replace("USDT", ""))
+        snap = {"t": pd.Timestamp.now(tz="UTC").isoformat(), "px": px,
+                "oi": st.get("open_interest"), "fr": st.get("funding_rate"),
+                "lsr": st.get("long_short_ratio"),
+                "liq1h_long": liq["1h"]["long"] if liq else None,
+                "liq1h_short": liq["1h"]["short"] if liq else None}
+        hist = []
+        if os.path.exists(OI_HISTORY_FILE):
+            try:
+                hist = json.load(open(OI_HISTORY_FILE))
+            except Exception:
+                hist = []
+        hist.append(snap)
+        if len(hist) > 30000:  # ~2个月 @3min
+            hist = hist[-30000:]
+        json.dump(hist, open(OI_HISTORY_FILE, "w"))
+    except Exception:
+        pass
+
+
 def btc_link_line(sym):
     """BTC联动行: BTC 24h涨跌 + ETH相对强弱(2026-08-20: BTC是ETH的beta锚, 用户要求关注)"""
     try:
@@ -4190,6 +4217,8 @@ def main():
                     fast_ref.pop(sym, None)
             except Exception as e:
                 print(f"错误: {e}")
+            else:
+                collect_oi_snapshot(sym, result["price"])
 
         save_state()  # 每轮全扫后落盘, 重启/部署不丢判决连续性
         if args.loop == 0:
