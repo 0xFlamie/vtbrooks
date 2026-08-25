@@ -2174,6 +2174,35 @@ def btc_link_line(sym):
         return None
 
 
+_fred_cache = {"ts": 0, "line": None}
+
+
+def fred_macro():
+    """FRED 宏观数字行(2026-08-25 用户批准): 美债10Y收益率+美元指数, CSV公开端点免key, 4h缓存"""
+    if time.time() - _fred_cache["ts"] < 14400 and _fred_cache["line"]:
+        return _fred_cache["line"]
+    try:
+        parts = []
+        for label, sid, scale in (("美债10Y", "DGS10", 1), ("美元指数", "DTWEXBGS", 1)):
+            r = _http.get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}", timeout=8)
+            if r.status_code != 200:
+                continue
+            rows = [l.split(",") for l in r.text.strip().splitlines()[1:] if "," in l]
+            vals = [(d, float(v)) for d, v in rows if v not in (".", "")]
+            if len(vals) < 6:
+                continue
+            last, week = vals[-1][1], vals[-6][1]
+            chg = last - week
+            parts.append(f"{label} {last:.2f}(周{'+' if chg >= 0 else ''}{chg:.2f})")
+        if parts:
+            line = "宏观: " + " | ".join(parts)
+            _fred_cache.update(ts=time.time(), line=line)
+            return line
+    except Exception:
+        pass
+    return _fred_cache["line"]
+
+
 def market_mood(sym):
     """整体市场情绪(2026-08-20 用户要求): 恐贪指数+24h涨跌+费率+多空比 → 一行综合判断。
     返回 (卡片行, 简报行) 或 None"""
@@ -2777,6 +2806,9 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     mood = market_mood(sym)
     if mood:
         L.append(mood[0])
+    fm = fred_macro()
+    if fm:
+        L.append(fm)
     liq = fetch_liquidations()
     if liq:
         L.append(f"爆仓: 1h 多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])} | 4h 多{_m_usd(liq['4h']['long'])}/空{_m_usd(liq['4h']['short'])}")
@@ -3682,6 +3714,9 @@ def build_brief_4h(result):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    fm = fred_macro()
+    if fm:
+        L.append(fm)
     liq = fetch_liquidations()
     if liq:
         L.append(f"爆仓: 近1h多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])} | 近4h多{_m_usd(liq['4h']['long'])}/空{_m_usd(liq['4h']['short'])}")
@@ -3787,6 +3822,9 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
+    fm = fred_macro()
+    if fm:
+        L.append(fm)
     liq = fetch_liquidations()
     if liq:
         L.append(f"爆仓: 近1h多{_m_usd(liq['1h']['long'])}/空{_m_usd(liq['1h']['short'])} | 近4h多{_m_usd(liq['4h']['long'])}/空{_m_usd(liq['4h']['short'])}")
