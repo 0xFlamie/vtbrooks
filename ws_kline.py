@@ -185,26 +185,28 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                 print(f"[ws] {sym} {iv} history fetch fail ({attempt+1}): {e}")
                 await asyncio.sleep(2 * (attempt + 1))
 
-    # Coinbase/OKX/HL 单连接订阅多周期；binance 一连接一周期
+    # 订阅构造：binance/HL 每周期一连接；coinbase/okx 单连接多周期
     ws_sym = SYMBOL_MAP[exchange].get(sym, sym)  # ws 用交易所格式（binance 小写、HL 用币名）
-    if exchange in ("coinbase", "okx", "hyperliquid"):
+    if exchange in ("coinbase", "okx"):
         uris = [cfg["ws"]]
         if exchange == "coinbase":
-            sub = {"type": "subscribe", "channels": [
-                {"name": "candles", "product_ids": [ws_sym]}]}
-        elif exchange == "okx":
-            sub = {"op": "subscribe", "args": [
-                {"channel": f"candle{iv}", "instId": ws_sym} for iv in intervals]}
+            subs = [{"type": "subscribe", "channels": [
+                {"name": "candles", "product_ids": [ws_sym]}]}]
         else:
-            sub = {"method": "subscribe", "subscription": [
-                {"type": "candle", "coin": ws_sym, "interval": iv} for iv in intervals]}
+            subs = [{"op": "subscribe", "args": [
+                {"channel": f"candle{iv}", "instId": ws_sym} for iv in intervals]}]
+    elif exchange == "hyperliquid":
+        # HL subscription 必须是单个 dict，每周期一连接
+        uris = [cfg["ws"]] * len(intervals)
+        subs = [{"method": "subscribe", "subscription": {
+            "type": "candle", "coin": ws_sym, "interval": iv}} for iv in intervals]
     else:
         uris = [cfg["ws"].format(sym=ws_sym, iv=iv) for iv in intervals]
-        sub = None
+        subs = [None] * len(uris)
 
     backoff = 2
     while not stop.is_set():
-        for uri in uris:
+        for uri, sub in zip(uris, subs):
             try:
                 async with websockets.connect(uri, open_timeout=15, ping_interval=20) as ws:
                     backoff = 2
