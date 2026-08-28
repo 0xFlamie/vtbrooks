@@ -39,6 +39,12 @@ CONFIGS = {
         "ws": "wss://stream.binance.us:9443/ws/{sym}@kline_{iv}",
         "parse": "binance",
     },
+    # 美国服务器：Hyperliquid ws（实测可用；binance.us wss 不通、coinbase candles channel 无效）
+    "hyperliquid": {
+        "rest": "https://api.hyperliquid.xyz/info",
+        "ws": "wss://api.hyperliquid.xyz/ws",
+        "parse": "hl",
+    },
     # 备选（channel 格式待适配，当前未启用）
     "coinbase": {
         "rest": "https://api.exchange.coinbase.com/products/{sym}/candles?granularity={sec}&limit=300",
@@ -58,6 +64,7 @@ SYMBOL_MAP = {
     "binanceus": {"ETHUSDT": "ethusdt", "BTCUSDT": "btcusdt"},
     "coinbase": {"ETHUSDT": "ETH-USD", "BTCUSDT": "BTC-USD"},
     "okx": {"ETHUSDT": "ETH-USDT", "BTCUSDT": "BTC-USDT"},
+    "hyperliquid": {"ETHUSDT": "ETH", "BTCUSDT": "BTC"},
 }
 
 
@@ -101,6 +108,22 @@ def _http_json(url: str) -> dict | list:
 def _fetch_history(cfg: dict, sym: str, iv: str) -> list:
     """REST 拉历史 K 线 → 标准 [open_ms,o,h,l,c,v,taker_buy] 列表。"""
     ms = INTERVAL_MS[iv]
+    if cfg["parse"] == "hl":
+        # HL candleSnapshot 为 POST JSON
+        req = urllib.request.Request(
+            cfg["rest"],
+            data=json.dumps({"type": "candleSnapshot", "req": {
+                "coin": SYMBOL_MAP["hyperliquid"].get(sym, sym),
+                "interval": iv, "startTime": int(time.time() * 1000) - ms * 300,
+            }}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        out = [[int(row["t"]), float(row["o"]), float(row["h"]), float(row["l"]),
+                float(row["c"]), float(row["v"]), 0.0] for row in data]
+        out.sort(key=lambda r: r[0])
+        return out
     url = cfg["rest"].format(sym=sym, iv=iv, sec=ms // 1000)
     data = _http_json(url)
     out = []
@@ -138,6 +161,12 @@ def _parse_ws(exchange: str, msg: dict) -> list | None:
                 return [int(row[0]), float(row[1]), float(row[2]), float(row[3]),
                         float(row[4]), float(row[5]), 0.0, bool(row[8])]
             return None
+        if exchange == "hyperliquid":
+            d = msg.get("data", {})
+            if isinstance(d, dict) and "c" in d:
+                return [int(d["t"]), float(d["o"]), float(d["h"]), float(d["l"]),
+                        float(d["c"]), float(d["v"]), 0.0, bool(d.get("closed", True))]
+            return None
     except (KeyError, TypeError, ValueError):
         return None
     return None
@@ -156,16 +185,19 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                 print(f"[ws] {sym} {iv} history fetch fail ({attempt+1}): {e}")
                 await asyncio.sleep(2 * (attempt + 1))
 
-    # Coinbase/OKX 单连接订阅多周期；binance 一连接一周期
-    ws_sym = SYMBOL_MAP[exchange].get(sym, sym)  # ws 用交易所格式（binance 小写）
-    if exchange in ("coinbase", "okx"):
+    # Coinbase/OKX/HL 单连接订阅多周期；binance 一连接一周期
+    ws_sym = SYMBOL_MAP[exchange].get(sym, sym)  # ws 用交易所格式（binance 小写、HL 用币名）
+    if exchange in ("coinbase", "okx", "hyperliquid"):
         uris = [cfg["ws"]]
         if exchange == "coinbase":
             sub = {"type": "subscribe", "channels": [
                 {"name": "candles", "product_ids": [ws_sym]}]}
-        else:
+        elif exchange == "okx":
             sub = {"op": "subscribe", "args": [
                 {"channel": f"candle{iv}", "instId": ws_sym} for iv in intervals]}
+        else:
+            sub = {"method": "subscribe", "subscription": [
+                {"type": "candle", "coin": ws_sym, "interval": iv} for iv in intervals]}
     else:
         uris = [cfg["ws"].format(sym=ws_sym, iv=iv) for iv in intervals]
         sub = None
@@ -190,10 +222,16 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                             if row:
                                 buf.upsert(f"{sym}:{iv}", row[0], *row[1:])
                         else:
+                            # HL/OKX/Coinbase 消息自带周期，按实际周期 upsert
+                            if exchange == "hyperliquid":
+                                iv = (msg.get("data") or {}).get("i", "")
+                            elif exchange == "okx":
+                                iv = (msg.get("arg") or {}).get("channel", "").replace("candle", "")
+                            else:
+                                iv = intervals[0]
                             row = _parse_ws(exchange, msg)
-                            if row:
-                                for iv in intervals:
-                                    buf.upsert(f"{sym}:{iv}", row[0], *row[1:])
+                            if row and iv in intervals:
+                                buf.upsert(f"{sym}:{iv}", row[0], *row[1:])
             except asyncio.CancelledError:
                 return
             except Exception as e:
