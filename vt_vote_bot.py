@@ -31,6 +31,28 @@ MS_API_KEY = os.environ.get("VT_MS_API_KEY", "")
 MS_API_URL = "https://api.moonshot.cn/v1/chat/completions"
 MS_MODEL = "kimi-k2.5"  # 2026-08-10实测: k2.5/k2.6/k3全是思考模型(温度锁1+reasoning占额度), k2.5最快(18s/4000tok)
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predictions.json")
+# ws_kline 实时快照路径（环境变量可覆盖；vtbrooks 部署时指向各自服务器的快照）
+KLINE_SNAPSHOT = os.environ.get(
+    "KK_KLINE_SNAPSHOT",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "kline_snapshot.json"),
+)
+
+
+def _read_kline_snapshot(symbol, interval):
+    """读 ws_kline 实时快照（秒级更新），无/不足/异常时返回 None 走原 HTTP 源。"""
+    try:
+        with open(KLINE_SNAPSHOT) as f:
+            snap = json.load(f)
+        bars = snap.get(f"{symbol}:{interval}")
+        if not bars or len(bars) < 50:
+            return None
+        df = pd.DataFrame(bars, columns=["open_time", "open", "high", "low", "close", "volume", "taker_base"])
+        df["date"] = pd.to_datetime(df["open_time"], unit="ms")
+        df["amount"] = df["volume"] * df["close"]
+        df = df[["date", "open", "high", "low", "close", "volume", "amount", "taker_base"]].set_index("date")
+        return df.tail(300).sort_index()
+    except Exception:
+        return None
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
 LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
 OI_SNAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oi_snapshots.json")
@@ -454,7 +476,13 @@ def _fetch_hyperliquid_klines(symbol, interval, limit, start_ms=None, drop_incom
 
 def fetch_klines(symbol, interval="15m", limit=200, start_ms=None, drop_incomplete=True):
     """USDC对: Coinbase → Hyperliquid → fapi; USDT对: binance.us → Coinbase → fapi; 最终兜底 yfinance (fapi 在美国被 geo-block);
+    优先读 ws_kline 实时快照（秒级），缺失/异常时回退 HTTP 源。
     drop_incomplete=False 保留未收盘K线(历史结算用); 数据停滞的源自动跳过"""
+    # 实时快照优先：秒级数据，避免 HTTP 轮询；历史拉取(start_ms)不用快照
+    if drop_incomplete and start_ms is None:
+        snap_df = _read_kline_snapshot(symbol, interval)
+        if snap_df is not None and not snap_df.empty:
+            return _drop_unclosed(snap_df, interval)
     if drop_incomplete:
         hit = _kline_cache.get((symbol, interval, limit))
         if hit and time.time() - hit[0] < 60:
