@@ -114,7 +114,8 @@ class KlineBuffer:
 
 
 def _http_json(url: str) -> dict | list:
-    with urllib.request.urlopen(url, timeout=10) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": "vtbrooks/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
 
 
@@ -139,6 +140,8 @@ def _fetch_history(cfg: dict, sym: str, iv: str) -> list:
         return out
     url = cfg["rest"].format(sym=sym, iv=iv, sec=ms // 1000)
     data = _http_json(url)
+    if cfg["parse"] == "okx":
+        data = data.get("data", [])
     out = []
     for row in data:
         if cfg["parse"] == "binance":
