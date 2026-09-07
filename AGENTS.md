@@ -122,3 +122,4 @@ ssh ccvps 'journalctl -u vtbrooks --since today | grep WARN'  # 裁判失败记�
 - 已部署到 ccvps：`vtbrooks.service` 与 `vtbrooks-web.service` active，站内 API `127.0.0.1:8423/api/snapshot` 已验证 200；Caddy 已加入 `brooks.polymeow.com` 入口并 reload。
 - 部署提交：`cbc6f8b`。公网 DNS 尚未解析 `brooks.polymeow.com`，补 A 记录指向 ccvps 后才可访问域名。
 - Brooks 仍遵循回测边界：假突破/15m H2-L2 作为结构过滤；4h 挤压释放+动量方向才是当前确认的生产 edge；SMC/订单块/FVG/SuperTrend 不作为独立开单依据。
+- 网站已按周期拆分：首屏并列显示4h/15m最近判决及原因；指标与RSI历史统计严格按对应K线周期归属；10项TradingView指标均列出生产/观察/证伪状态。最新网站提交：`bc2dc73`，服务器页面/API均验证200。
