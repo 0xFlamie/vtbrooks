@@ -1286,6 +1286,7 @@ def record_judge(result, judge4, judge15):
         "confidence": max(judge4.get("confidence", -1), judge15.get("confidence", -1)),
         "dir4h": d4, "conf4h": judge4.get("confidence"),
         "dir15m": d15, "conf15m": judge15.get("confidence"),
+        "summary4h": judge4.get("summary", ""), "summary15m": judge15.get("summary", ""),
         "mag_tier": judge4.get("mag_tier"),  # 幅度档只有4h层给
         "ai_direction": d4,  # 幅度档结算以4h层方向为准
         "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],

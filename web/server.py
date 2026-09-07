@@ -43,15 +43,53 @@ def adx_value(df):
         return None
 
 
+def websocket_price(symbol):
+    snap = read_json("kline_snapshot.json", {})
+    bars = snap.get(f"{symbol}:15m") or snap.get(f"{symbol}:4h")
+    try:
+        return float(bars[-1][4]) if bars else None
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def price_action_plan(df, direction):
+    if df is None or df.empty or direction not in ("LONG", "SHORT"):
+        return None
+    try:
+        px = float(df["close"].iloc[-1])
+        atr = float((df["high"] - df["low"]).tail(14).mean())
+        hi, lo = float(df["high"].tail(20).max()), float(df["low"].tail(20).min())
+        if not px or not atr:
+            return None
+        risk = max(atr * 0.8, px * 0.002)
+        if direction == "LONG":
+            sl = min(lo - atr * 0.15, px - risk)
+            tp1 = hi if hi > px else px + risk
+            tp2 = px + max(hi - lo, risk * 2)
+            rule = "回调守住结构低点，或放量突破后回踩不破再做多"
+        else:
+            sl = max(hi + atr * 0.15, px + risk)
+            tp1 = lo if lo < px else px - risk
+            tp2 = px - max(hi - lo, risk * 2)
+            rule = "反抽压住结构高点，或跌破后反抽不收回再做空"
+        return {"entry": round(px, 2), "sl": round(sl, 2), "tp1": round(tp1, 2),
+                "tp2": round(tp2, 2), "rule": rule}
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
 def snapshot():
     symbol = "ETHUSDC"
     ctx4 = bot.compute_4h_context(symbol) or {}
     df15 = bot.fetch_klines(symbol, "15m", 120)
     ba15 = bot.brooks_analyze(df15) if not df15.empty else {}
+    df4 = bot.fetch_klines(symbol, "4h", 100)
     adx4 = adx_value(bot.fetch_klines(symbol, "4h", 100)) if ctx4 else None
     adx15 = adx_value(df15)
     levels = bot.compute_levels(symbol, "LONG") or {}
-    price = bot.fetch_fast_price(symbol)
+    price = websocket_price(symbol)
+    if price is None:
+        price = bot.fetch_fast_price(symbol)
     if price is None and not df15.empty:
         price = float(df15["close"].iloc[-1])
     journal = read_json("judge_journal.json", {}).get("entries", [])
@@ -74,14 +112,17 @@ def snapshot():
     levels15 = bot.compute_levels(symbol, "LONG") or {}
     direction4 = latest.get("dir4h")
     direction15 = latest.get("dir15m")
+    plan4 = price_action_plan(df4, direction4)
+    plan15 = price_action_plan(df15, direction15)
     news = read_json("news_memory.json", {})
     return clean({
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "symbol": symbol,
         "price": price,
         "4h": {"direction": direction4, "confidence": latest.get("conf4h"),
-               "latest_reasons": latest.get("reasons", [])[:2],
+               "latest_reasons": latest.get("reasons", [])[:2], "summary": latest.get("summary4h", ""),
                "context": ctx4, "brooks": ctx4.get("brooks", {}),
+               "plan": plan4,
                "levels": (ctx4.get("wyckoff") or {}),
                "indicators": {"RSI": rsi4, "RSI历史": rsi_history(rsi4, stats.get("rsi")),
                               "EMA排列": "多头" if ctx4.get("trend_up") else "空头" if ctx4.get("trend_dn") else "纠缠",
@@ -89,8 +130,9 @@ def snapshot():
                               "挤压分位": ctx4.get("squeeze_pct"), "ATR": ctx4.get("atr4h_pct"),
                               "量比": ctx4.get("vol_ratio4h"), "Brooks": ctx4.get("brooks", {}).get("deep", {})}},
         "15m": {"direction": direction15, "confidence": latest.get("conf15m"),
-                "latest_reasons": latest.get("reasons", [])[-2:],
+                "latest_reasons": latest.get("reasons", [])[-2:], "summary": latest.get("summary15m", ""),
                 "brooks": ba15, "levels": levels15,
+                "plan": plan15,
                 "indicators": {"RSI": rsi15, "RSI历史": rsi_history(rsi15, stats.get("m15", {}).get("rsi")),
                                "EMA20": levels15.get("ema20"), "EMA50": levels15.get("ema50"),
                                "ADX": adx15,
