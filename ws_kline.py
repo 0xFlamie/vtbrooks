@@ -71,6 +71,10 @@ SYMBOL_MAP = {
 }
 
 
+def _okx_interval(interval: str) -> str:
+    return {"4h": "4H", "1d": "1D"}.get(interval, interval)
+
+
 class KlineBuffer:
     """每 symbol×interval 一个 K 线缓冲：{key: [ [open_ms,o,h,l,c,v,taker_buy], ... ]}"""
 
@@ -200,6 +204,7 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
             except Exception as e:
                 print(f"[ws] {sym} {iv} history fetch fail ({attempt+1}): {e}")
                 await asyncio.sleep(2 * (attempt + 1))
+    buf.save()
 
     # 订阅构造：binance/HL 每周期一连接；coinbase/okx 单连接多周期
     ws_sym = SYMBOL_MAP[exchange].get(sym, sym)  # ws 用交易所格式（binance 小写、HL 用币名）
@@ -210,7 +215,7 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                 {"name": "candles", "product_ids": [ws_sym]}]}]
         else:
             subs = [{"op": "subscribe", "args": [
-                {"channel": f"candle{iv}", "instId": ws_sym} for iv in intervals]}]
+                {"channel": f"candle{_okx_interval(iv)}", "instId": ws_sym} for iv in intervals]}]
     elif exchange == "hyperliquid":
         # HL subscription 必须是单个 dict，每周期一连接
         uris = [cfg["ws"]] * len(intervals)
@@ -244,7 +249,7 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                             if exchange == "hyperliquid":
                                 iv = (msg.get("data") or {}).get("i", "")
                             elif exchange == "okx":
-                                iv = (msg.get("arg") or {}).get("channel", "").replace("candle", "")
+                                iv = (msg.get("arg") or {}).get("channel", "").replace("candle", "").lower()
                             else:
                                 iv = intervals[0]
                             row = _parse_ws(exchange, msg)

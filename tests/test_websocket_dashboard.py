@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from web import server
-from ws_kline import CONFIGS, KlineBuffer, SYMBOL_MAP, _fetch_history
+from ws_kline import CONFIGS, KlineBuffer, SYMBOL_MAP, _fetch_history, _okx_interval
 
 
 class TestWebsocketFrame(unittest.TestCase):
@@ -25,6 +25,9 @@ class TestWebsocketFrame(unittest.TestCase):
 class TestSnapshotThrottle(unittest.TestCase):
     def test_okx_uses_real_eth_usdc_spot_symbol(self):
         self.assertEqual(SYMBOL_MAP["okx"]["ETHUSDC"], "ETH-USDC")
+        self.assertEqual(_okx_interval("4h"), "4H")
+        self.assertEqual(_okx_interval("1d"), "1D")
+        self.assertEqual(_okx_interval("15m"), "15m")
 
     @mock.patch("ws_kline._http_json")
     def test_okx_history_unwraps_api_data(self, get_json):
