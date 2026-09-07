@@ -122,4 +122,7 @@ ssh ccvps 'journalctl -u vtbrooks --since today | grep WARN'  # 裁判失败记�
 - 已部署到 ccvps：`vtbrooks.service` 与 `vtbrooks-web.service` active，站内 API `127.0.0.1:8423/api/snapshot` 已验证 200；Caddy 已加入 `brooks.polymeow.com` 入口并 reload。
 - 部署提交：`cbc6f8b`。公网 DNS 尚未解析 `brooks.polymeow.com`，补 A 记录指向 ccvps 后才可访问域名。
 - Brooks 仍遵循回测边界：假突破/15m H2-L2 作为结构过滤；4h 挤压释放+动量方向才是当前确认的生产 edge；SMC/订单块/FVG/SuperTrend 不作为独立开单依据。
-- 网站已按周期拆分：首屏并列显示4h/15m最近判决及原因；指标与RSI历史统计严格按对应K线周期归属；10项TradingView指标均列出生产/观察/证伪状态。最新网站提交：`bc2dc73`，服务器页面/API均验证200。
+- 网站已按周期拆分：首屏并列显示4h/15m最近判决及原因；指标与RSI历史统计严格按对应K线周期归属。TradingView 十项仅保留在 `analysis/tv_indicators/` 作为历史研究审计，不再出现在生产网站或开单逻辑。
+- 2026-09-07：网站系统构成已回归原始实验框架；Brooks 为主导结构层，NOFX/VT 为确认层，RSI/OI/费率/量能/挤压/ATR 为辅助与风控，宏观/新闻为事件层。VT 是项目早期的 Vibe-Trading 因子组（8 个 ETH 因子），不是外部指标或 AI 模型。
+- 2026-09-07：增加决策分层权重说明（Brooks 45、NOFX 20、VT 20、波动率 10、情绪 5）及宏观硬闸门。只有新闻编辑明确识别出 PCE/非农/CPI/FOMC 等高影响数据的实际值相对预期出现意外，且写入 6 小时有效期，才会自动否决相反方向；黑客等局部事件不触发同级否决。
+- 2026-09-07：暂不重新训练 LightGBM。当前数据缺口先补齐、统一 OKX/Hyperliquid 数据口径并重跑时间切分回测；现有模型 AUC 约 0.497，接入生产没有依据。新闻记忆目前是事件线程+最近判决复盘，宏观硬闸门已具备落盘接口，但没有实际/预期值的消息不得触发。

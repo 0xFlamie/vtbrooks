@@ -190,6 +190,9 @@ def in_event_window():
 
 NEWS_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "news_memory.json")
 
+# 决策分层：Brooks 决定结构，原有因子提供确认，波动率管风险，情绪只作辅助。
+SIGNAL_BLOCK_WEIGHTS = {"Brooks": 45, "NOFX": 20, "VT因子": 20, "波动率": 10, "情绪": 5}
+
 
 def load_news_memory():
     """事件线记忆: {thread: {summary, dir, horizon, last, hits}}"""
@@ -222,6 +225,22 @@ def _threads_line(mem, limit=6):
                                      for k, v in items)
 
 
+def active_macro_veto(mem=None):
+    """读取短时宏观硬闸门；仅高影响数据出现明确实际/预期差时生效。"""
+    try:
+        veto = (mem or load_news_memory()).get("macro_veto") or {}
+        expires = pd.Timestamp(veto.get("expires_at"))
+        if expires.tzinfo is None:
+            expires = expires.tz_localize("UTC")
+        if pd.Timestamp.now(tz="UTC") >= expires:
+            return None
+        if veto.get("direction") not in ("LONG", "SHORT") or veto.get("impact") != "高":
+            return None
+        return veto
+    except Exception:
+        return None
+
+
 def news_editor(items, mem):
     """DS 编辑席(2026-08-20 用户要求): 批量读标题, 判价值/分类/时效/方向/事件线, 更新记忆。
     items=[(来源,标题)]; 返回 [{relevant, category, horizon, dir, thread, note, title, src}]"""
@@ -230,7 +249,7 @@ def news_editor(items, mem):
     mem_txt = "; ".join(f"{k}: {v.get('summary','')}" for k, v in list(mem.get("threads", {}).items())[-8:]) or "无"
     sys_p = ("你是只交易ETH的加密交易员兼任新闻编辑。逐条判断新闻标题, 只输出JSON数组, 与输入顺序一致:\n"
              "[{\"i\": 0, \"relevant\": true, \"category\": \"...\", \"horizon\": \"即时\", \"dir\": \"利多\", "
-             "\"thread\": \"...\", \"note\": \"...\"}]\n"
+             "\"thread\": \"...\", \"note\": \"...\", \"impact\": \"高\", \"hard_veto\": false}]\n"
              "规则: relevant=是否影响ETH/BTC/加密/整体风险偏好(币圈喊单/价格预测/广告/水文=false; "
              "美股个股/行业新闻一律=false——英伟达这种也不留(2026-08-20 用户决策), 除非直接关乎流动性/系统性风险; "
              "拿不准但有潜在影响的=true, 宁可宽进); "
@@ -239,7 +258,7 @@ def news_editor(items, mem):
              "dir=对风险资产方向∈{利多,利空,中性}(允许产业链推导: 如OpenAI千亿建数据中心→利多芯片股, "
              "油价飙→通胀预期→利空风险资产, 美元走强→利空加密); "
              "thread=事件主题2-6字(如伊朗局势/联储路径/AI资本开支/油价冲击), 属于已有主题线就用同名, 新事件起新名; "
-             "note=一句话≤25字说清市场影响。\n已有主题线: " + mem_txt)
+             "note=一句话≤25字说清市场影响; impact∈{高,中,低}; hard_veto只有PCE/非农/CPI/FOMC等高影响宏观数据，且标题明确给出实际值相对预期的意外时才为true，普通黑客/公司新闻永远false。\n已有主题线: " + mem_txt)
     user = "\n".join(f"{i}. [{src}] {t}" for i, (src, t) in enumerate(items))
     try:
         r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
@@ -264,6 +283,15 @@ def news_editor(items, mem):
                 t.update({"summary": it.get("note", ""), "dir": it.get("dir", "中性"),
                           "horizon": it.get("horizon", "中期"), "last": pd.Timestamp.now().isoformat()})
                 t["hits"] = t.get("hits", 0) + 1
+            if it.get("hard_veto") and it.get("impact") == "高" and it.get("dir") in ("利多", "利空"):
+                mem["macro_veto"] = {
+                    "event": it.get("thread") or it.get("category") or "宏观数据",
+                    "direction": "LONG" if it["dir"] == "利多" else "SHORT",
+                    "impact": "高", "reason": it.get("note", "宏观数据出现重大意外"),
+                    "source": it.get("title", ""),
+                    "created_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                    "expires_at": (pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=6)).isoformat(),
+                }
         # 记忆上限30条主题线, 最旧的淘汰
         if len(mem["threads"]) > 30:
             for k in sorted(mem["threads"], key=lambda k: mem["threads"][k].get("last", ""))[:len(mem["threads"]) - 30]:
@@ -3750,6 +3778,9 @@ def build_brief_4h(result):
     if ml:
         L.append(ml)
     L.extend(_recent_news_lines())
+    veto = active_macro_veto()
+    if veto:
+        L.append(f"🚨 宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
     sr = self_review_block()
     if sr:
         L.append(sr)
@@ -3869,6 +3900,9 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     if ml:
         L.append(ml)
     L.extend(_recent_news_lines())
+    veto = active_macro_veto()
+    if veto:
+        L.append(f"🚨 宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
     sr = self_review_block()
     if sr:
         L.append(sr)
@@ -4121,6 +4155,24 @@ def ai_judge_15m(result, prev=None, events=None):
     return _judge(SYS_15M, build_market_brief(result, events=events, prev=prev))
 
 
+def apply_macro_veto(judge4, judge15):
+    """高影响宏观意外推翻相反方向；无结构化闸门时不改变任何判决。"""
+    veto = active_macro_veto()
+    if not veto:
+        return judge4, judge15
+    direction = veto["direction"]
+    label = "做多" if direction == "LONG" else "做空"
+    reason = f"🚨 宏观硬闸门: {veto.get('event', '宏观数据')}高影响意外，否决反向判断；{veto.get('reason', '')}"
+    for judge in (judge4, judge15):
+        if judge.get("direction") != direction:
+            judge["direction"] = direction
+            judge["verdict"] = "执行"
+            judge["confidence"] = max(70, min(int(judge.get("confidence", 0)), 82))
+            judge["reasons"] = [reason] + [r for r in judge.get("reasons", []) if not r.startswith("🚨")][:3]
+            judge["summary"] = f"宏观意外后只看{label}，反向信号暂时作废"
+    return judge4, judge15
+
+
 def ai_judge(result, plan=None):
     """兼容入口(旧调用/judge-test): 15m 层裁判"""
     return ai_judge_15m(result)
@@ -4320,6 +4372,7 @@ def main():
 
                 # ── 15m 层: 每次扫描都判, 携带上次判决(迟滞)+本轮异动(AI解读) ──
                 judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
+                judge4, judge15 = apply_macro_veto(judge4, judge15)
                 judge15_prev[sym] = judge15
                 record_judge(result, judge4, judge15)
 
