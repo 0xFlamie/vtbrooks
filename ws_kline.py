@@ -195,11 +195,12 @@ def _parse_ws(exchange: str, msg: dict) -> list | None:
 async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                       buf: KlineBuffer, stop: asyncio.Event) -> None:
     """单个 symbol：拉历史 → 订阅 ws → 增量更新。断线重连（指数退避）。"""
+    exchange_sym = SYMBOL_MAP[exchange].get(sym, sym)
     for iv in intervals:
         key = f"{sym}:{iv}"  # 快照 key：{symbol}:{interval}，供 fetch_klines 直接读
         for attempt in range(3):
             try:
-                buf.set_initial(key, _fetch_history(cfg, sym, iv))
+                buf.set_initial(key, _fetch_history(cfg, exchange_sym, iv))
                 break
             except Exception as e:
                 print(f"[ws] {sym} {iv} history fetch fail ({attempt+1}): {e}")
@@ -207,7 +208,7 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
     buf.save()
 
     # 订阅构造：binance/HL 每周期一连接；coinbase/okx 单连接多周期
-    ws_sym = SYMBOL_MAP[exchange].get(sym, sym)  # ws 用交易所格式（binance 小写、HL 用币名）
+    ws_sym = exchange_sym  # ws 用交易所格式（binance 小写、HL 用币名）
     if exchange in ("coinbase", "okx"):
         uris = [cfg["ws"]]
         if exchange == "coinbase":
@@ -236,6 +237,9 @@ async def _run_symbol(sym: str, intervals: list[str], cfg: dict, exchange: str,
                         await ws.send(json.dumps(sub))
                     async for raw in ws:
                         msg = json.loads(raw)
+                        if msg.get("event") == "error":
+                            print(f"[ws] {exchange} subscription error: {msg}")
+                            continue
                         if exchange in ("binance", "binanceus"):
                             k = msg.get("k")
                             if not k:
