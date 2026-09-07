@@ -91,6 +91,12 @@ ssh ccvps 'journalctl -u vtbrooks --since today | grep WARN'  # 裁判失败记�
 
 ## 当前状态（2026-08-22）
 
+- **Brooks 模式验证（2026-08-26，`backtest_brooks.py`，fapi 90天 5m/15m，±0.5ATR 决胜）**：
+  - 假突破唯一全组合稳定（5m 54-55%，15m 56-58% 决胜胜率，4σ）
+  - H2 双腿回调 5m 上无效（50-51%），15m 才有效（54%）——生产 15m 可用，5m 勿信
+  - 反转形态/信号K线 稳定但收益薄（+1~10bp，扣 taker 5bp 后 EV≈0）
+  - 方向命中普遍 46-48%，平均收益个位 bp——裸触发不可直接交易，需手续费+滑点模型
+  - 数据拉取坑：USDT 对 fetch_klines 会先撞被墙 binance.us 超时，回测直连 fapi（1s/批）
 - 分析完成（analysis/）：`feature_explore.py`（Coinbase 5年 10946 窗口, 单因子IC+条件概率+时间切分回测, features.csv 缓存）、`train_model.py`（LightGBM, AUC=0.497）、`squeeze_test.py`（挤压→振幅, 5年三段稳定）、`event_test.py`（事件日 +27% 波动）
 - 生产新增：仓位波动率/事件修正（ATR∝1/ATR、挤压≥70×0.7/<20×1.1、事件日×0.7，5 年数据确认参数有效）、卡片风险%行
 - 2026-08-22 晚：判对错展示已移除（用户决策：无真实成交+插针下判定失真）——daily_review 去判对率/错题/幅度档/累计判对率，改方向分连续统计；loss_streak 连亏提示删除；方向分仍落盘供分析
@@ -99,3 +105,12 @@ ssh ccvps 'journalctl -u vtbrooks --since today | grep WARN'  # 裁判失败记�
 - 已知待改：生产 `sq_word` “挤压<20=大行情酝酿”叙事与回测相皮（实际未来12h更平静）；AGENTS.md/文案里“近5年”统计应改为 2.3 年；`market_stats` 样本实际 2.3 年
 - 已有（2026-08-20）：结算诚实化（观望不评判对率/幅度档反向基准）、交易员观点段、每日复盘信、新闻快检因果回溯
 - 下一步候选：事件日方向数据积累（2b 延伸）；波动率预测进简报（若挤压 edge 落地）；移除 prompt “置信度用满量程”
+
+## TradingView 热门前10指标回测（2026-09-03，analysis/tv_indicators/，OKX 5年 4h 11100根 + 1h 44100根，收线确认下一根 open 入场，前2/3-后1/3 切分，扣双边 10bp）
+
+**值得进生产（2 项）**：
+- ① 4h 挤压释放+动量柱色（LazyBear Squeeze Momentum 完整版的释放第一根）：亮绿做多 12h 胜率 53.3%(+2.7pp) EV+0.29%、亮红做空 53.7%(+4.3pp) EV+0.33%，两段一致、不靠右尾；仅 12h 窗有效（4h 太短、24h 衰减）；可作 4h 层事件触发升级（现有"挤压进出<20%区"异动的方向版）
+- ② ADX 分位→未来12h振幅（Q1 -14%→Q5 +22% 单调，双周期一致）：波动率因子，与振幅自相关/挤压分位同族但较弱，定位冗余确认，方向预测力为 0
+**观察名单（攒样本，不可开单）**：4h 放量突破 pivot 阻力（n=57, +10.9pp, EV+0.89% 全场最强但不达标）；Vix Fix 去簇绿柱（底部恐慌标记 +3~5pp 稳定但 EV≈0，适合喂 15m 层 AI 解读）；WaveTrend 4h 超卖金叉→12h（n=67, +9.2pp 右尾依赖 40%）；swing50 大结构 BOS/CHoCH（样本不足）
+**证伪勿再投入**：SuperTrend 翻转（三种测法全负，ETH 上=震荡磨损）；ADX/DI 方向跟随（DI 滞后，空头侧反指）；1h 挤压释放（稳定反向 -5~-6pp）；ChartArt BB+RSI（触发太少/胜率虚高均值负）；swing5 BOS/CHoCH 在 1h（稳定负 edge，印证"15m形态IC≈0"）；订单块回踩（反应率全面低于基线，"OB支撑"在 ETH 不存在）；FVG 方向延续（填充率 63-80% 真实但无方向 edge）
+数据缓存：analysis/tv_indicators/data/okx_4h.csv / okx_1h.csv（OKX 现货，分析用）

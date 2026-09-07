@@ -1,0 +1,14 @@
+[Unit]
+Description=vtbrooks read-only web dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vtbrooks
+ExecStart=/usr/bin/python3 /opt/vtbrooks/web/server.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

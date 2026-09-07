@@ -6,6 +6,7 @@ APP_DIR="/opt/vtbrooks"
 REPO="https://github.com/flamie/vtbrooks.git"
 VENV="$APP_DIR/venv"
 SERVICE="vtbrooks.service"
+WEB_SERVICE="vtbrooks-web.service"
 
 echo "=== vtbrooks 部署 ==="
 
@@ -63,9 +64,16 @@ systemctl daemon-reload
 systemctl enable "$SERVICE"
 systemctl restart "$SERVICE"
 
+# 只读网站：不暴露密钥，不提供下单接口
+install -m 644 deploy/vtbrooks-web.service "/etc/systemd/system/$WEB_SERVICE"
+systemctl daemon-reload
+systemctl enable "$WEB_SERVICE"
+systemctl restart "$WEB_SERVICE"
+
 echo ""
 echo "=== 部署完成 ==="
 systemctl status "$SERVICE" --no-pager -l | head -15
+systemctl status "$WEB_SERVICE" --no-pager -l | head -15
 echo ""
 echo "查看日志: journalctl -u $SERVICE -f"
 echo "重启服务: systemctl restart $SERVICE"

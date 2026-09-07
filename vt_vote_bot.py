@@ -638,6 +638,85 @@ def _swing_points(arr, n=2):
     return hi, lo
 
 
+def brooks_deep_analyze(df):
+    """把最近K线翻译成可解释的 Brooks 价格行为，不直接产生交易票。"""
+    out = {"trend_leg": "range", "bar_read": [], "structure": [], "setups": [],
+           "quality": 0, "overlap": 0.0, "location": "中位", "risk": "结构未确认"}
+    if df is None or len(df) < 30:
+        return out
+    o, h, l, c = [df[k].astype(float).to_numpy() for k in ("open", "high", "low", "close")]
+    rng = np.maximum(h - l, 1e-9)
+    body = c - o
+    atr = float(np.median(rng[-14:]))
+    direction = np.sign(body[-8:])
+    directional = int(direction[direction != 0].sum())
+    if directional >= 4:
+        out["trend_leg"] = "bull_leg"
+    elif directional <= -4:
+        out["trend_leg"] = "bear_leg"
+
+    # K线重叠：重叠高说明多空都能在同一价格成交，趋势交易要降级。
+    overlap = np.minimum(h[-8:], np.roll(h[-8:], 1)) - np.maximum(l[-8:], np.roll(l[-8:], 1))
+    out["overlap"] = round(float(np.mean(np.clip(overlap[1:] / rng[-8:][1:], 0, 1))), 2)
+    last = -1
+    body_ratio = abs(body[last]) / rng[last]
+    upper_tail = (h[last] - max(o[last], c[last])) / rng[last]
+    lower_tail = (min(o[last], c[last]) - l[last]) / rng[last]
+    if body_ratio >= 0.6 and c[last] > l[last] + 0.75 * rng[last]:
+        out["bar_read"].append("强多头信号K，收盘靠近高点")
+        out["quality"] = 1
+    elif body_ratio >= 0.6 and c[last] < l[last] + 0.25 * rng[last]:
+        out["bar_read"].append("强空头信号K，收盘靠近低点")
+        out["quality"] = -1
+    elif upper_tail > 0.45 and upper_tail > lower_tail * 1.4:
+        out["bar_read"].append("上影线明显，冲高后卖方接管")
+    elif lower_tail > 0.45 and lower_tail > upper_tail * 1.4:
+        out["bar_read"].append("下影线明显，下探后买方接管")
+    else:
+        out["bar_read"].append("信号K实体一般，收盘没有明显控制权")
+
+    hi20, lo20 = h[-21:-1].max(), l[-21:-1].min()
+    if c[-1] > hi20:
+        out["setups"].append("收盘突破20根高点")
+        out["structure"].append("多头突破后，下一步看回踩高点是否守住")
+    elif c[-1] < lo20:
+        out["setups"].append("收盘跌破20根低点")
+        out["structure"].append("空头突破后，下一步看反抽低点是否受压")
+    elif h[-1] > hi20 and c[-1] <= hi20:
+        out["setups"].append("向上假突破")
+        out["structure"].append("追多者被套，反弹不过突破位才有空头优势")
+    elif l[-1] < lo20 and c[-1] >= lo20:
+        out["setups"].append("向下假突破")
+        out["structure"].append("追空者被套，回踩不破突破位才有多头优势")
+
+    sw_hi = np.where(_swing_points(h, 2)[0])[0]
+    sw_lo = np.where(_swing_points(l, 2)[1])[0]
+    if len(sw_hi) >= 2 and len(sw_lo) >= 2:
+        hh = h[sw_hi[-1]] > h[sw_hi[-2]]
+        hl = l[sw_lo[-1]] > l[sw_lo[-2]]
+        lh = h[sw_hi[-1]] < h[sw_hi[-2]]
+        ll = l[sw_lo[-1]] < l[sw_lo[-2]]
+        if hh and hl:
+            out["structure"].append("高点抬高、低点抬高，回调优先按多头二次入场观察")
+        elif lh and ll:
+            out["structure"].append("高点降低、低点降低，反弹优先按空头二次入场观察")
+        else:
+            out["structure"].append("摆动高低点未形成同向序列，区间交易优先")
+
+    loc_hi, loc_lo = h[-20:].max(), l[-20:].min()
+    loc = (c[-1] - loc_lo) / max(loc_hi - loc_lo, 1e-9)
+    out["location"] = "区间上沿" if loc >= 0.8 else "区间下沿" if loc <= 0.2 else "中位"
+    if out["overlap"] >= 0.55:
+        out["risk"] = "K线重叠偏高，趋势信号容易变成震荡磨损"
+    elif out["trend_leg"] == "bull_leg":
+        out["risk"] = "多头腿末端勿追高，等二次入场或回踩确认"
+    elif out["trend_leg"] == "bear_leg":
+        out["risk"] = "空头腿末端勿追空，等二次入场或反抽确认"
+    else:
+        out["risk"] = "方向腿不连续，先等突破收线确认"
+    return out
+
+
 def brooks_analyze(df):
     """返回 {state, spike, always_in, votes=[(name,±1)], setups=[str], sl={long,short}}"""
     res = {"state": "range", "spike": 0, "always_in": 0, "votes": [],
@@ -814,6 +893,7 @@ def brooks_analyze(df):
 
     if qbar and qbar == ai:
         v.append(("BROOKS_信号K线", qbar))
+    res["deep"] = brooks_deep_analyze(df)
     return res
 
 
@@ -3682,8 +3762,14 @@ def build_brief_4h(result):
         sq = ctx4["squeeze_pct"]
         sq_word = "极度压缩(未来12h振幅偏低,回测-15%)" if sq < 20 else "压缩中" if sq < 40 else "正常波动" if sq < 70 else "高波动(已释放,未来12h振幅偏大+23%)"
         ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
+        bd4 = b4.get("deep") or {}
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
+        L.append(f"Brooks价格行为: {bd4.get('trend_leg','未知')} | {', '.join(bd4.get('bar_read', []))} | "
+                 f"位置{bd4.get('location','未知')} | K线重叠{bd4.get('overlap', 0):.0%}")
+        if bd4.get("structure"):
+            L.append("Brooks结构链: " + "；".join(bd4["structure"][:2]))
+        L.append("Brooks风险: " + bd4.get("risk", "结构未确认"))
         L.append(f"波动率挤压: 近200根4h的{sq:.0f}%分位 ({sq_word}) | 4h ATR: {ctx4['atr4h_pct']:.2f}%(约${ctx4['atr4h_pct'] / 100 * px:.1f}) | 4hRSI: {rsi_tag(ctx4['rsi4h'])}")
         vr4 = ctx4.get("vol_ratio4h", 0)
         # 量比常驻简报(2026-08-09 用户要求: 量能是4h方向关键证据, 不再只在>2倍时才提)
@@ -3766,6 +3852,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     state_cn = {"trend_up": "上升趋势", "trend_down": "下降趋势", "range": "震荡区间"}.get(ba.get("state"), "未知")
     ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
     spike_cn = {1: "强势向上突破", -1: "强势向下跌破"}.get(ba.get("spike", 0), "无")
+    bd15 = ba.get("deep") or {}
 
     # 投票分布: 三组各几票看涨(🟢)
     groups = {"VT因子": [0, 8], "NOFX": [0, 4], "Brooks": [0, 6]}
@@ -3792,6 +3879,10 @@ def build_market_brief(result, plan=None, events=None, prev=None):
         L.append(f"1h层: RSI{c1['rsi1h']:.0f} 量比{c1['vr1h']:.2f} 24h{c1['ret24_1h']:+.1f}% 均线{c1['trend1h']}")
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
+    L.append(f"Brooks读K: {', '.join(bd15.get('bar_read', []))} | 位置{bd15.get('location','未知')} | "
+             f"重叠{bd15.get('overlap', 0):.0%} | {bd15.get('risk','结构未确认')}")
+    if bd15.get("structure"):
+        L.append("Brooks结构链: " + "；".join(bd15["structure"][:2]))
     L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
              " | ".join(f"{k} 看涨{v[0]}/{v[1]}" for k, v in groups.items()) + ")")
 

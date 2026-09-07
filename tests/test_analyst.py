@@ -100,5 +100,27 @@ class TestAnalystBlock(unittest.TestCase):
         self.assertTrue(any("🔁 上次: 维持" in x for x in L2))
 
 
+class TestBrooksDeepAnalysis(unittest.TestCase):
+    def test_bull_signal_bar_and_structure_are_explained(self):
+        rows = []
+        price = 100.0
+        for i in range(36):
+            close = price + (0.8 if i >= 28 else 0.1)
+            rows.append({"open": price, "high": close + 0.1, "low": price - 0.1, "close": close, "volume": 1})
+            price = close
+        rows[-1].update({"high": price + 0.05, "low": price - 0.05, "close": price + 0.04})
+        result = V.brooks_deep_analyze(pd.DataFrame(rows))
+        self.assertEqual(result["trend_leg"], "bull_leg")
+        self.assertEqual(result["quality"], 1)
+        self.assertTrue(result["bar_read"])
+        self.assertTrue(result["structure"])
+
+    def test_overlapping_market_is_flagged_as_risk(self):
+        rows = [{"open": 100, "high": 101, "low": 99, "close": 100.1, "volume": 1}] * 36
+        result = V.brooks_deep_analyze(pd.DataFrame(rows))
+        self.assertGreaterEqual(result["overlap"], 0.55)
+        self.assertIn("重叠", result["risk"])
+
+
 if __name__ == "__main__":
     unittest.main()
