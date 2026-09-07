@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 User=root
 WorkingDirectory=/opt/vtbrooks
-ExecStart=/opt/vtbrooks/venv/bin/python -u ws_kline.py --exchange okx --symbols ETHUSDC --intervals 5m,15m,4h,1d --snapshot /opt/vtbrooks/kline_snapshot.json
+ExecStart=/opt/vtbrooks/venv/bin/python -u ws_kline.py --exchange okx --symbols ETHUSDC --intervals 5m,15m,4h,1d --snapshot /opt/vtbrooks/ethusdc_spot_snapshot.json
 Restart=always
 RestartSec=5
 

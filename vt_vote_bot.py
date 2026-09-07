@@ -34,7 +34,7 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_predic
 # ws_kline 实时快照路径（环境变量可覆盖；vtbrooks 部署时指向各自服务器的快照）
 KLINE_SNAPSHOT = os.environ.get(
     "KK_KLINE_SNAPSHOT",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "kline_snapshot.json"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "ethusdc_spot_snapshot.json"),
 )
 
 

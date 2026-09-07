@@ -49,7 +49,7 @@ def adx_value(df):
 
 
 def websocket_price(symbol):
-    snap = read_json("kline_snapshot.json", {})
+    snap = read_json("ethusdc_spot_snapshot.json", {})
     bars = snap.get(f"{symbol}:15m") or snap.get(f"{symbol}:4h")
     try:
         return float(bars[-1][4]) if bars else None
