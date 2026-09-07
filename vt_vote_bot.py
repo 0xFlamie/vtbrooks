@@ -1320,6 +1320,7 @@ def record_judge(result, judge4, judge15):
         "dir4h": d4, "conf4h": judge4.get("confidence"),
         "dir15m": d15, "conf15m": judge15.get("confidence"),
         "summary4h": judge4.get("summary", ""), "summary15m": judge15.get("summary", ""),
+        "debate4": judge4.get("debate"), "debate15": judge15.get("debate"),
         "mag_tier": judge4.get("mag_tier"),  # 幅度档只有4h层给
         "ai_direction": d4,  # 幅度档结算以4h层方向为准
         "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],
@@ -2750,14 +2751,6 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         if sq is not None:
             amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
             L.append(f"🌊 波动: 挤压{sq:.0f}%分位, 未来12h预计振幅{amp_est:.1f}%")
-    # 方向强度分(5年回测弱信号合成, 仅参考; 只在定时卡算, 省请求)
-    if ptype == "定时":
-        try:
-            sc = strength_score(sym)
-            if sc is not None:
-                L.append(f"🧭 强度分: {sc:+d} ({'偏强' if sc > 0 else '偏弱' if sc < 0 else '中性'}, 回测胜率±5pp)")
-        except Exception:
-            pass
     L.append("")
     # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
@@ -3030,7 +3023,7 @@ def format_signal(result, plan, judge, sig_num, ai_decision=True, is_emergency=F
     if ctx4 and ctx4.get("wyckoff"):
         wy = ctx4["wyckoff"]
         L.append(f"📦 威科夫TR: ${wy['support']} — ${wy['resistance']} (宽{wy['width_pct']}%)")
-    lv = compute_levels(sym, sig)
+    lv = compute_levels(sym, "NEUTRAL")
     if lv:
         L.append(f"🗝️ {han_pad('支撑:', 8)} {lv['support']}")
         L.append(f"🗝️ {han_pad('压力:', 8)} {lv['resistance']}")
@@ -3780,13 +3773,6 @@ def build_brief_4h(result):
     """4h 层简报: 只含大周期数据(趋势/Brooks4h/挤压/威科夫/合约情绪), 判方向和幅度档"""
     sym = result["symbol"]; px = result["price"]
     L = [f"币种: {sym} | 现价: ${px:.2f}"]
-    # 方向强度分(2026-08-22 5年回测弱信号合成, 仅参考不作规则)
-    try:
-        sc = strength_score(sym)
-        if sc is not None:
-            L.append(f"方向强度分: {sc:+d} (5年回测: +2时未来4h涨54.7%, -2时41.2%)")
-    except Exception:
-        pass
     ml = _macro_line()
     if ml:
         L.append(ml)
@@ -3797,9 +3783,6 @@ def build_brief_4h(result):
     sr = self_review_block()
     if sr:
         L.append(sr)
-    hb = trader_handbook(sym)
-    if hb:
-        L.append(hb)
     ctx4 = compute_4h_context(sym)
     if ctx4:
         b4 = ctx4["brooks"]
@@ -3889,7 +3872,7 @@ def build_brief_4h(result):
 
 
 def build_market_brief(result, plan=None, events=None, prev=None):
-    """15m 层简报: 只含短周期数据(18因子投票/15m形态/关键位/RSI/量比/VWAP/合约情绪), 判入场方向
+    """15m 层简报: 只含15m结构/关键位/RSI/量比/VWAP与外部事件, 判入场方向
     events=本轮扫描触发的异动(规则检测原文), prev=上一次15m判决(迟滞/连续性)"""
     sym = result["symbol"]; sig = result["signal"]
     px = result["price"]
@@ -3898,14 +3881,6 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     ai_cn = {1: "多", -1: "空"}.get(ba.get("always_in", 0), "-")
     spike_cn = {1: "强势向上突破", -1: "强势向下跌破"}.get(ba.get("spike", 0), "无")
     bd15 = ba.get("deep") or {}
-
-    # 投票分布: 三组各几票看涨(🟢)
-    groups = {"VT因子": [0, 8], "NOFX": [0, 4], "Brooks": [0, 6]}
-    for d in result["details"]:
-        name = d["name"]
-        key = "NOFX" if name.startswith("NOFX_") else "Brooks" if name.startswith("BROOKS_") else "VT因子"
-        if d["direction"] == "🟢":
-            groups[key][0] += 1
 
     L = []
     L.append(f"币种: {sym} | 现价: ${px:.2f}")
@@ -3919,22 +3894,14 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     sr = self_review_block()
     if sr:
         L.append(sr)
-    hb = trader_handbook(sym)
-    if hb:
-        L.append(hb)
-    c1 = compute_1h_context(sym)
-    if c1:
-        L.append(f"1h层: RSI{c1['rsi1h']:.0f} 量比{c1['vr1h']:.2f} 24h{c1['ret24_1h']:+.1f}% 均线{c1['trend1h']}")
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"Brooks读K: {', '.join(bd15.get('bar_read', []))} | 位置{bd15.get('location','未知')} | "
              f"重叠{bd15.get('overlap', 0):.0%} | {bd15.get('risk','结构未确认')}")
     if bd15.get("structure"):
         L.append("Brooks结构链: " + "；".join(bd15["structure"][:2]))
-    L.append(f"投票分布: 看涨{result['bullish']}票 / 看跌{result['bearish']}票 (" +
-             " | ".join(f"{k} 看涨{v[0]}/{v[1]}" for k, v in groups.items()) + ")")
 
-    lv = compute_levels(sym, sig)
+    lv = compute_levels(sym, "NEUTRAL")
     if lv:
         L.append(f"关键支撑位: {lv['support']}")
         L.append(f"关键压力位: {lv['resistance']}")
@@ -3962,8 +3929,8 @@ def build_market_brief(result, plan=None, events=None, prev=None):
         if vw:
             L.append(f"VWAP(日内): ${vw[0]:.2f} | 价在VWAP{'上' if vw[1] >= 0 else '下'} ({vw[1]:+.2f}%)")
 
-    # 布林带位置(15m+1h, 20/2): 用户做空常用依据(缩量反弹打上轨/1h中轨), 2026-08-09 加入简报
-    for tf in ("15m", "1h"):
+    # 布林带只使用本层15m数据，避免跨周期污染短线裁决。
+    for tf in ("15m",):
         try:
             dfb = fetch_klines(sym, tf, 60)
             cb = dfb["close"]
@@ -4151,6 +4118,69 @@ def _judge(system, brief):
     return _judge_call(system, brief)
 
 
+RESEARCH_SYSTEM = ("你是ETH技术研究组，不做最终决策。必须基于给定材料同时独立写多头和空头论证，"
+                   "Brooks只作为结构语言，未验证因子和投票数量不得作为优势。只输出JSON："
+                   "{\"bull\":{\"strength\":0-100,\"thesis\":\"...\",\"invalidation\":\"...\"},"
+                   "\"bear\":{\"strength\":0-100,\"thesis\":\"...\",\"invalidation\":\"...\"},"
+                   "\"risk\":\"最容易判断错的地方\"}。没有证据就降低strength，不准补造价格或统计。")
+
+MANAGER_SYSTEM = ("你是ETH交易公司的最终经理。研究组已分别提交多空论证。你只能批准做多、批准做空或拒绝交易。"
+                  "不使用票数；历史胜率不足60%或样本不足100的因子没有方向权；Brooks用于解释结构，不等于概率。"
+                  "若多空强度接近、结构处在区间中部、风险条件未解决，必须拒绝交易。"
+                  "只输出JSON：{\"direction\":\"做多|做空|拒绝交易\",\"magnitude\":\"<1%|1-2%|2-3%|3%+\","
+                  "\"confidence\":0-100,\"summary\":\"一句大白话结论和关键位\",\"reasons\":[\"2-4条推演和失效条件\"]}。")
+
+
+def _research_call(brief):
+    """单次生成相互独立的多空研究材料；失败返回 None，由最终经理保守裁决。"""
+    try:
+        r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
+            {"role": "system", "content": RESEARCH_SYSTEM}, {"role": "user", "content": brief}],
+            "max_tokens": 700, "temperature": 0.1},
+            headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=35)
+        if r.status_code != 200:
+            return None
+        text = r.json()["choices"][0]["message"]["content"]
+        match = re.search(r"\{.*\}", text, re.S)
+        data = json.loads(match.group(0)) if match else None
+        return data if isinstance(data, dict) and data.get("bull") and data.get("bear") else None
+    except Exception as e:
+        print(f"WARN: 多空研究组异常 {type(e).__name__}: {e}")
+        return None
+
+
+def multi_agent_judge(brief):
+    """轻量多角色流水线：多空研究一次、最终经理一次；接口兼容旧 judge。"""
+    research = _research_call(brief)
+    if not research:
+        return _judge(MANAGER_SYSTEM, f"原始市场材料:\n{brief}\n\n多空研究组不可用，证据不足时拒绝交易。")
+    manager_brief = (f"原始市场材料:\n{brief}\n\n多空研究组报告:\n"
+                     f"{json.dumps(research, ensure_ascii=False)}")
+    decision = _judge(MANAGER_SYSTEM, manager_brief)
+    decision["debate"] = research
+    return decision
+
+
+def stabilize_judge(candidate, previous):
+    """反向必须连续两次收线确认；同向、首次建仓和退出不延迟。"""
+    if not previous or not previous.get("direction"):
+        return candidate
+    old_direction, new_direction = previous.get("direction"), candidate.get("direction")
+    if not new_direction or new_direction == old_direction:
+        candidate.pop("pending_direction", None)
+        return candidate
+    if previous.get("pending_direction") == new_direction:
+        candidate.pop("pending_direction", None)
+        return candidate
+    held = dict(previous)
+    held["pending_direction"] = new_direction
+    held["confidence"] = max(0, min(int(previous.get("confidence", 0)), int(candidate.get("confidence", 0))) - 10)
+    held["summary"] = "反向证据首次出现，等待下一根收线确认"
+    held["reasons"] = ["状态机暂不反手：反向信号需要连续两次收线确认"] + candidate.get("reasons", [])[:3]
+    held["debate"] = candidate.get("debate")
+    return held
+
+
 def ai_judge_4h(result, prev=None):
     """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)
     prev: 上一根4h收线的判决, 注入简报让 AI 自己扛迟滞(2026-08-08 临界区翻转抖动)"""
@@ -4160,12 +4190,13 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
-    return _judge(SYS_4H, brief)
+    return stabilize_judge(multi_agent_judge(brief), prev)
 
 
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
-    return _judge(SYS_15M, build_market_brief(result, events=events, prev=prev))
+    brief = build_market_brief(result, events=events, prev=prev)
+    return stabilize_judge(multi_agent_judge(brief), prev)
 
 
 def apply_macro_veto(judge4, judge15):
@@ -4225,7 +4256,7 @@ def main():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
 
-    print(f"VT投票信号机器人 v4.0 | 双层AI(4h方向+幅度档 / 15m入场) | 15分钟定时信号+翻向加推 | 监控: {args.symbols}")
+    print(f"BROOKS ETH v5.0 | 多空研究 + 风险审查 + 最终裁决 | 按K线收线更新 | 监控: {args.symbols}")
     print(f"{'='*60}")
 
     print("预加载因子...", end=" ", flush=True)
@@ -4247,6 +4278,7 @@ def main():
 
     last_dirs = {}     # sym → {"4h": dir, "15m": dir}, 上次扫描双层方向, 翻向检测用
     judge4_cache = {}  # sym → (bar_key, judge4), 4h 层每根4h收线重判一次(根内输入不变, 高频重判只会抖动)
+    judge15_cache = {} # sym → (bar_key, judge15), 15m层只在新15m收线时重判
     judge15_prev = {}  # sym → 上次15m判决, 注入简报保持连续性(迟滞)
     prev_metrics = {}  # sym → 上次扫描指标快照, 异动边沿检测用
     fast_ref = {}      # sym → 快检基准(价/阈值/摆动极值/VWAP), 3分钟休眠期10秒快检用
@@ -4258,7 +4290,8 @@ def main():
 
     def save_state():
         try:
-            json.dump({"judge4_cache": judge4_cache, "judge15_prev": judge15_prev,
+            json.dump({"judge4_cache": judge4_cache, "judge15_cache": judge15_cache,
+                       "judge15_prev": judge15_prev,
                        "last_dirs": last_dirs, "prev_metrics": prev_metrics, "fast_ref": fast_ref,
                        "news_seen": list(news_seen)[-500:], "recent_news": RECENT_NEWS[-10:]},
                       open(STATE_FILE, "w"))
@@ -4269,6 +4302,7 @@ def main():
         try:
             st = json.load(open(STATE_FILE))
             judge4_cache.update(st.get("judge4_cache", {}))
+            judge15_cache.update(st.get("judge15_cache", {}))
             judge15_prev.update(st.get("judge15_prev", {}))
             last_dirs.update(st.get("last_dirs", {}))
             prev_metrics.update(st.get("prev_metrics", {}))
@@ -4276,7 +4310,7 @@ def main():
             news_seen.update(st.get("news_seen", []))
             fast_seen = set(news_seen)
             RECENT_NEWS.extend([tuple(x) for x in st.get("recent_news", [])])
-            print(f"状态恢复: 4h缓存{len(judge4_cache)} 判决{len(judge15_prev)} 快照{len(prev_metrics)} 新闻{len(news_seen)}")
+            print(f"状态恢复: 4h缓存{len(judge4_cache)} 15m缓存{len(judge15_cache)} 快照{len(prev_metrics)} 新闻{len(news_seen)}")
         except Exception as e:
             print(f"WARN: 状态恢复失败 {e}, 冷启动")
 
@@ -4383,10 +4417,20 @@ def main():
                 except Exception:
                     pass
 
-                # ── 15m 层: 每次扫描都判, 携带上次判决(迟滞)+本轮异动(AI解读) ──
-                judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
-                judge4, judge15 = apply_macro_veto(judge4, judge15)
-                judge15_prev[sym] = judge15
+                # ── 15m 层: 只在新15m收线时重判，3分钟扫描不改变技术方向 ──
+                df15 = fetch_klines(sym, "15m", 3, drop_incomplete=False)
+                bar15_key = str(df15.index[-1]) if not df15.empty else ""
+                ck15 = judge15_cache.get(sym)
+                if (not ck15 or ck15[0] != bar15_key or ck15[1].get("confidence", -1) < 0
+                        or ck15[1].get("_src") == "kk"):
+                    judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
+                    judge15_cache[sym] = (bar15_key, judge15)
+                    judge15_prev[sym] = judge15
+                    print(f"\n  {sym} 15m层重判: {judge15['direction'] or '观望'} 置信{judge15['confidence']}")
+                else:
+                    judge15 = ck15[1]
+                # 宏观闸门作用于本轮展示，不污染按收线保存的技术判决。
+                judge4, judge15 = apply_macro_veto(dict(judge4), dict(judge15))
                 record_judge(result, judge4, judge15)
 
                 dirs = {"4h": judge4.get("direction"), "15m": judge15.get("direction")}
