@@ -78,6 +78,19 @@ def price_action_plan(df, direction):
         return None
 
 
+def plan_conflict(brooks, direction):
+    """Brooks 当前结构明确反向时，不输出会误导用户的具体交易计划。"""
+    if direction not in ("LONG", "SHORT"):
+        return None
+    expected = 1 if direction == "LONG" else -1
+    deep = (brooks or {}).get("deep") or {}
+    if deep.get("quality") == -expected:
+        return "AI方向与当前强信号K冲突，等待同向信号K确认"
+    if (brooks or {}).get("always_in") == -expected:
+        return "AI方向与当前Brooks主导方向冲突，等待结构翻转确认"
+    return None
+
+
 def snapshot():
     symbol = "ETHUSDC"
     ctx4 = bot.compute_4h_context(symbol) or {}
@@ -112,8 +125,10 @@ def snapshot():
     levels15 = bot.compute_levels(symbol, "LONG") or {}
     direction4 = latest.get("dir4h")
     direction15 = latest.get("dir15m")
-    plan4 = price_action_plan(df4, direction4)
-    plan15 = price_action_plan(df15, direction15)
+    conflict4 = plan_conflict(ctx4.get("brooks", {}), direction4)
+    conflict15 = plan_conflict(ba15, direction15)
+    plan4 = None if conflict4 else price_action_plan(df4, direction4)
+    plan15 = None if conflict15 else price_action_plan(df15, direction15)
     news = read_json("news_memory.json", {})
     return clean({
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -122,7 +137,7 @@ def snapshot():
         "4h": {"direction": direction4, "confidence": latest.get("conf4h"),
                "latest_reasons": latest.get("reasons", [])[:2], "summary": latest.get("summary4h", ""),
                "context": ctx4, "brooks": ctx4.get("brooks", {}),
-               "plan": plan4,
+               "plan": plan4, "plan_note": conflict4,
                "levels": (ctx4.get("wyckoff") or {}),
                "indicators": {"RSI": rsi4, "RSI历史": rsi_history(rsi4, stats.get("rsi")),
                               "EMA排列": "多头" if ctx4.get("trend_up") else "空头" if ctx4.get("trend_dn") else "纠缠",
@@ -132,7 +147,7 @@ def snapshot():
         "15m": {"direction": direction15, "confidence": latest.get("conf15m"),
                 "latest_reasons": latest.get("reasons", [])[-2:], "summary": latest.get("summary15m", ""),
                 "brooks": ba15, "levels": levels15,
-                "plan": plan15,
+                "plan": plan15, "plan_note": conflict15,
                 "indicators": {"RSI": rsi15, "RSI历史": rsi_history(rsi15, stats.get("m15", {}).get("rsi")),
                                "EMA20": levels15.get("ema20"), "EMA50": levels15.get("ema50"),
                                "ADX": adx15,

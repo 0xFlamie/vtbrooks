@@ -13,6 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import vt_vote_bot as V
+from web import server as Web
 
 RESULT = {"symbol": "ETHUSDC", "price": 1900.0, "signal": "LONG", "bullish": 5, "bearish": 3, "brooks": {}}
 LV = {"swing_high": 1950.0, "swing_low": 1850.0, "ema20": 1890.0, "ema50": 1880.0, "atr14": 30.0}
@@ -120,6 +121,16 @@ class TestBrooksDeepAnalysis(unittest.TestCase):
         result = V.brooks_deep_analyze(pd.DataFrame(rows))
         self.assertGreaterEqual(result["overlap"], 0.55)
         self.assertIn("重叠", result["risk"])
+
+
+class TestWebPlanConflict(unittest.TestCase):
+    def test_strong_bull_bar_blocks_short_plan(self):
+        brooks = {"deep": {"quality": 1}, "always_in": 0}
+        self.assertIn("强信号K冲突", Web.plan_conflict(brooks, "SHORT"))
+
+    def test_aligned_brooks_keeps_plan_available(self):
+        brooks = {"deep": {"quality": -1}, "always_in": -1}
+        self.assertIsNone(Web.plan_conflict(brooks, "SHORT"))
 
 
 if __name__ == "__main__":
