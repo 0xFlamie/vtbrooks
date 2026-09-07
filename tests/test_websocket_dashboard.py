@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from web import server
-from ws_kline import KlineBuffer
+from ws_kline import KlineBuffer, SYMBOL_MAP
 
 
 class TestWebsocketFrame(unittest.TestCase):
@@ -23,6 +23,9 @@ class TestWebsocketFrame(unittest.TestCase):
 
 
 class TestSnapshotThrottle(unittest.TestCase):
+    def test_okx_uses_real_eth_usdc_spot_symbol(self):
+        self.assertEqual(SYMBOL_MAP["okx"]["ETHUSDC"], "ETH-USDC")
+
     def test_active_bar_is_saved_after_one_second(self):
         with tempfile.TemporaryDirectory() as tmp:
             buffer = KlineBuffer(os.path.join(tmp, "snapshot.json"))

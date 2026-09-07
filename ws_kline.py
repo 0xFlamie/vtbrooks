@@ -64,7 +64,8 @@ SYMBOL_MAP = {
     "binance": {"ETHUSDT": "ethusdt", "BTCUSDT": "btcusdt"},
     "binanceus": {"ETHUSDT": "ethusdt", "BTCUSDT": "btcusdt"},
     "coinbase": {"ETHUSDT": "ETH-USD", "BTCUSDT": "BTC-USD"},
-    "okx": {"ETHUSDT": "ETH-USDT", "BTCUSDT": "BTC-USDT"},
+    "okx": {"ETHUSDT": "ETH-USDT", "BTCUSDT": "BTC-USDT",
+            "ETHUSDC": "ETH-USDC", "BTCUSDC": "BTC-USDC"},
     "hyperliquid": {"ETHUSDT": "ETH", "BTCUSDT": "BTC",
                     "ETHUSDC": "ETH", "BTCUSDC": "BTC"},
 }
