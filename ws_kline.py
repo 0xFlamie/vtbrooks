@@ -54,7 +54,7 @@ CONFIGS = {
     },
     "okx": {
         "rest": "https://www.okx.com/api/v5/market/candles?instId={sym}&bar={iv}&limit=300",
-        "ws": "wss://ws.okx.com:8443/ws/v5/public",
+        "ws": "wss://ws.okx.com:8443/ws/v5/business",
         "parse": "okx",
     },
 }
