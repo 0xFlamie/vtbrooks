@@ -14,6 +14,7 @@
 
 import argparse
 import asyncio
+import fcntl
 import json
 import os
 import sys
@@ -94,10 +95,20 @@ class KlineBuffer:
 
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.snapshot_path), exist_ok=True)
-        tmp = self.snapshot_path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.bars, f)
-        os.replace(tmp, self.snapshot_path)
+        lock_path = self.snapshot_path + ".lock"
+        tmp = f"{self.snapshot_path}.{os.getpid()}.tmp"
+        with open(lock_path, "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            merged = {}
+            try:
+                with open(self.snapshot_path) as current:
+                    merged = json.load(current)
+            except (OSError, ValueError):
+                pass
+            merged.update(self.bars)
+            with open(tmp, "w") as f:
+                json.dump(merged, f)
+            os.replace(tmp, self.snapshot_path)
         self._last_saved = time.time()
 
 

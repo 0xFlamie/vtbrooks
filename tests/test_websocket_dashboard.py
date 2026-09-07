@@ -32,6 +32,20 @@ class TestSnapshotThrottle(unittest.TestCase):
 
             self.assertTrue(os.path.exists(buffer.snapshot_path))
 
+    def test_save_preserves_other_process_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "snapshot.json")
+            with open(path, "w") as existing:
+                json.dump({"ETHUSDT:15m": [[1, 1, 1, 1, 1, 1, 0]]}, existing)
+            buffer = KlineBuffer(path)
+            buffer.bars = {"ETHUSDC:15m": [[2, 2, 2, 2, 2, 2, 0]]}
+
+            buffer.save()
+
+            with open(path) as saved:
+                keys = json.load(saved).keys()
+            self.assertEqual(set(keys), {"ETHUSDT:15m", "ETHUSDC:15m"})
+
 
 if __name__ == "__main__":
     unittest.main()
