@@ -10,7 +10,7 @@ const structureText = (trend, direction) => {
   if (trend === "bear_leg" && direction === "LONG") return "下降趋势中反弹";
   return cnDir(trend);
 };
-function putData(id, rows){ $(id).innerHTML = rows.map(([k,v]) => `<div><span>${k}</span><b>${v}</b></div>`).join(""); }
+function putModules(id, rows){ $(id).innerHTML = rows.map(([k,t,v]) => `<article class="module-card"><span>${k}</span><b>${t}</b><small>${v}</small></article>`).join(""); }
 function render(s){
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};
   $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=s.news;
@@ -19,12 +19,25 @@ function render(s){
   $("trend4").textContent=structureText(d4.trend_leg,t4.direction); $("squeeze").textContent=`挤压 ${fmt(c4.squeeze_pct)}% · ATR ${fmt(c4.atr4h_pct)}% · 4小时收线更新`;
   $("trend15").textContent=structureText(d15.trend_leg,t15.direction); $("bar15").textContent=`${(d15.bar_read||[]).join("；")||"暂无K线判断"} · 15分钟收线更新`;
   $("support").textContent=fmt(lv.swing_low); $("resistance").textContent=fmt(lv.swing_high);
-  $("structure4").textContent=[...(d4.bar_read||[]),...(d4.structure||[])].join("；")||"暂无结构结论"; $("risk4").textContent=d4.risk||"—";
-  $("structure15").textContent=[...(d15.bar_read||[]),...(d15.structure||[])].join("；")||"暂无结构结论"; $("risk15").textContent=d15.risk||"—";
-  const planText=(p,d)=>p?`进场参考 $${fmt(p.entry)} · 止损 $${fmt(p.sl)} · 一目标 $${fmt(p.tp1)} · 二目标 $${fmt(p.tp2)}<small>${p.rule}</small>`:`${dirText(d)}：暂不进场，不给虚假止盈止损点位`;
-  $("plan4").innerHTML=`<b>Brooks进出场计划</b>${planText(t4.plan,t4.direction)}`; $("plan15").innerHTML=`<b>Brooks进出场计划</b>${planText(t15.plan,t15.direction)}`;
-  putData("data4",[["RSI",`${fmt(i4.RSI)} · ${i4["RSI历史"].text}`],["EMA排列",i4["EMA排列"]||"—"],["挤压分位",`${fmt(i4["挤压分位"])}%`],["ADX",fmt(i4.ADX)],["ATR",`${fmt(i4.ATR)}%`],["量比",fmt(i4["量比"])],["Brooks",[...(d4.bar_read||[]),...(d4.structure||[])].join("；")||"—"],["威科夫TR",c4.wyckoff?`${c4.wyckoff.support} — ${c4.wyckoff.resistance}`:"—"]]);
-  putData("data15",[["RSI",`${fmt(i15.RSI)} · ${i15["RSI历史"].text}`],["EMA20 / EMA50",`${fmt(i15.EMA20)} / ${fmt(i15.EMA50)}`],["ADX",fmt(i15.ADX)],["量比",fmt(i15["量比"])],["VWAP",i15.VWAP?`${fmt(i15.VWAP[0])} (${fmt(i15.VWAP[1])}%)`:"—"],["Brooks",[...(d15.bar_read||[]),...(d15.structure||[])].join("；")||"—"],["形态",(b15.setups||[]).join("；")||"无"],["重叠度",`${Math.round((d15.overlap||0)*100)}%`]]);
+  $("risk4").textContent=d4.risk||"—"; $("risk15").textContent=d15.risk||"—";
+  const planText=(p,d,note)=>p?`进场参考 $${fmt(p.entry)} · 止损 $${fmt(p.sl)} · 一目标 $${fmt(p.tp1)} · 二目标 $${fmt(p.tp2)}<small>${p.rule}</small>`:`${note||`${dirText(d)}：暂不进场，不给虚假止盈止损点位`}`;
+  $("plan4").innerHTML=`<b>Brooks进出场计划</b>${planText(t4.plan,t4.direction,t4.plan_note)}`; $("plan15").innerHTML=`<b>Brooks进出场计划</b>${planText(t15.plan,t15.direction,t15.plan_note)}`;
+  putModules("modules4",[
+    ["核心 · Brooks",structureText(d4.trend_leg,t4.direction),[...(d4.bar_read||[]),...(d4.structure||[])].join("；")||"暂无结构结论"],
+    ["结构 · 缠论","未接入","尚无经过回测的笔、中枢和背驰模块"],
+    ["趋势",`EMA ${i4["EMA排列"]||"—"} · RSI ${fmt(i4.RSI)}`,i4["RSI历史"].text],
+    ["波动率",`挤压 ${fmt(i4["挤压分位"])}% · ATR ${fmt(i4.ATR)}%`,`ADX ${fmt(i4.ADX)} · 只判断波动强弱`],
+    ["量能",`量比 ${fmt(i4["量比"])}`,"用于确认突破，不单独决定方向"],
+    ["区间 · 威科夫",c4.wyckoff?`${c4.wyckoff.support} — ${c4.wyckoff.resistance}`:"暂无区间","辅助识别吸筹、派发和区间突破"]
+  ]);
+  putModules("modules15",[
+    ["核心 · Brooks",structureText(d15.trend_leg,t15.direction),[...(d15.bar_read||[]),...(d15.structure||[])].join("；")||"暂无结构结论"],
+    ["结构 · 缠论","未接入","尚无经过回测的笔、中枢和背驰模块"],
+    ["动量",`RSI ${fmt(i15.RSI)} · ADX ${fmt(i15.ADX)}`,i15["RSI历史"].text],
+    ["短线趋势",`EMA20 ${fmt(i15.EMA20)} · EMA50 ${fmt(i15.EMA50)}`,"只服务15分钟入场，不代替4小时方向"],
+    ["量能与成本",`量比 ${fmt(i15["量比"])} · VWAP ${i15.VWAP?fmt(i15.VWAP[0]):"—"}`,i15.VWAP?`距VWAP ${fmt(i15.VWAP[1])}%`:"暂无VWAP"],
+    ["形态确认",(b15.setups||[]).join("；")||"无",`K线重叠 ${Math.round((d15.overlap||0)*100)}%`]
+  ]);
   $("journal").innerHTML=(s.journal||[]).slice().reverse().map(x=>`<div>${x.time||""} · 4h ${x.dir4h||"观望"} / 15m ${x.dir15m||"观望"} · ${x.reasons||[]}</div>`).join("")||"暂无判决记录";
 }
 async function refresh(){try{const r=await fetch('/api/snapshot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);render(await r.json())}catch(e){$("health").textContent='通信中断';$("health").className='pill muted'}}
