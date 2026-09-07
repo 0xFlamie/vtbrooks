@@ -114,3 +114,11 @@ ssh ccvps 'journalctl -u vtbrooks --since today | grep WARN'  # 裁判失败记�
 **观察名单（攒样本，不可开单）**：4h 放量突破 pivot 阻力（n=57, +10.9pp, EV+0.89% 全场最强但不达标）；Vix Fix 去簇绿柱（底部恐慌标记 +3~5pp 稳定但 EV≈0，适合喂 15m 层 AI 解读）；WaveTrend 4h 超卖金叉→12h（n=67, +9.2pp 右尾依赖 40%）；swing50 大结构 BOS/CHoCH（样本不足）
 **证伪勿再投入**：SuperTrend 翻转（三种测法全负，ETH 上=震荡磨损）；ADX/DI 方向跟随（DI 滞后，空头侧反指）；1h 挤压释放（稳定反向 -5~-6pp）；ChartArt BB+RSI（触发太少/胜率虚高均值负）；swing5 BOS/CHoCH 在 1h（稳定负 edge，印证"15m形态IC≈0"）；订单块回踩（反应率全面低于基线，"OB支撑"在 ETH 不存在）；FVG 方向延续（填充率 63-80% 真实但无方向 edge）
 数据缓存：analysis/tv_indicators/data/okx_4h.csv / okx_1h.csv（OKX 现货，分析用）
+
+## 当前状态（2026-09-07）
+
+- 已将 Brooks 深度价格行为诊断接入 4h/15m AI 简报：趋势腿、信号K、K线重叠、突破/假突破、摆动结构、位置与失效风险；不额外增加未经验证的方向票。
+- 已新增只读网站 `web/`，设计沿用 lp/cs 的暖米色网格纸感；展示实时价格、双周期 Brooks 结构、支撑压力、挤压/研究边界和最近判决。
+- 已部署到 ccvps：`vtbrooks.service` 与 `vtbrooks-web.service` active，站内 API `127.0.0.1:8423/api/snapshot` 已验证 200；Caddy 已加入 `brooks.polymeow.com` 入口并 reload。
+- 部署提交：`cbc6f8b`。公网 DNS 尚未解析 `brooks.polymeow.com`，补 A 记录指向 ccvps 后才可访问域名。
+- Brooks 仍遵循回测边界：假突破/15m H2-L2 作为结构过滤；4h 挤压释放+动量方向才是当前确认的生产 edge；SMC/订单块/FVG/SuperTrend 不作为独立开单依据。
