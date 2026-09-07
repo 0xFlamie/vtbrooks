@@ -142,7 +142,8 @@ def _fetch_history(cfg: dict, sym: str, iv: str) -> list:
                 float(row["c"]), float(row["v"]), 0.0] for row in data]
         out.sort(key=lambda r: r[0])
         return out
-    url = cfg["rest"].format(sym=sym, iv=iv, sec=ms // 1000)
+    api_interval = _okx_interval(iv) if cfg["parse"] == "okx" else iv
+    url = cfg["rest"].format(sym=sym, iv=api_interval, sec=ms // 1000)
     data = _http_json(url)
     if cfg["parse"] == "okx":
         data = data.get("data", [])
