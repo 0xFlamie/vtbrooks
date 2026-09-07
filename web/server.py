@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """vtbrooks 只读观察页。浏览器只读快照，不持有交易凭证，也没有下单接口。"""
 import json
+import base64
+import hashlib
+import struct
 import sys
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +18,7 @@ from analysis.tv_indicators.adx_di import adx_di  # noqa: E402
 HOST = "127.0.0.1"
 PORT = 8423
 STATIC = Path(__file__).resolve().parent / "static"
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 def read_json(name, fallback):
@@ -159,6 +164,18 @@ def snapshot():
     })
 
 
+def websocket_frame(payload):
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    size = len(body)
+    if size < 126:
+        header = bytes((0x81, size))
+    elif size < 65536:
+        header = bytes((0x81, 126)) + struct.pack("!H", size)
+    else:
+        header = bytes((0x81, 127)) + struct.pack("!Q", size)
+    return header + body
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         return
@@ -172,6 +189,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802
+        if self.path == "/ws":
+            self.serve_websocket()
+            return
         if self.path == "/api/snapshot":
             self.send_bytes(json.dumps(snapshot(), ensure_ascii=False).encode(), "application/json; charset=utf-8")
             return
@@ -183,6 +203,25 @@ class Handler(BaseHTTPRequestHandler):
         content_type = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                         ".js": "text/javascript; charset=utf-8"}.get(target.suffix, "application/octet-stream")
         self.send_bytes(target.read_bytes(), content_type)
+
+    def serve_websocket(self):
+        key = self.headers.get("Sec-WebSocket-Key")
+        if self.headers.get("Upgrade", "").lower() != "websocket" or not key:
+            self.send_error(400)
+            return
+        accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        try:
+            while True:
+                self.wfile.write(websocket_frame(snapshot()))
+                self.wfile.flush()
+                time.sleep(2)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
 
 if __name__ == "__main__":

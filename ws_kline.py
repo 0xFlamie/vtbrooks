@@ -88,8 +88,8 @@ class KlineBuffer:
             buf.append([open_ms, o, h, l, c, v, taker_buy])
             if len(buf) > 400:
                 del buf[:50]
-        # 收盘 bar 或每 30s 落盘一次快照
-        if closed or time.time() - self._last_saved > 30:
+        # 网页实时流读取该快照；每秒落盘兼顾实时性与磁盘写入压力。
+        if closed or time.time() - self._last_saved >= 1:
             self.save()
 
     def save(self) -> None:

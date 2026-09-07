@@ -41,4 +41,12 @@ function render(s){
   $("journal").innerHTML=(s.journal||[]).slice().reverse().map(x=>`<div>${x.time||""} · 4h ${x.dir4h||"观望"} / 15m ${x.dir15m||"观望"} · ${x.reasons||[]}</div>`).join("")||"暂无判决记录";
 }
 async function refresh(){try{const r=await fetch('/api/snapshot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);render(await r.json())}catch(e){$("health").textContent='通信中断';$("health").className='pill muted'}}
-refresh(); setInterval(refresh,30000);
+let socket;
+function connect(){
+  const protocol=location.protocol==="https:"?"wss":"ws";
+  socket=new WebSocket(`${protocol}://${location.host}/ws`);
+  socket.onmessage=(event)=>{try{render(JSON.parse(event.data))}catch(_){}};
+  socket.onerror=()=>socket.close();
+  socket.onclose=()=>{$("health").textContent="通信重连中";$("health").className="pill muted";setTimeout(connect,2000)};
+}
+refresh(); connect(); setInterval(()=>{if(!socket||socket.readyState!==WebSocket.OPEN)refresh()},30000);
