@@ -1304,6 +1304,11 @@ def record_judge(result, judge4, judge15):
         "LONG" if result["bullish"] >= result["bearish"] else "SHORT")
     # 交易计划只按 AI 实际主张的方向生成; 观望无计划, entry 仅作观望质量基准价
     plan = calc_trade_plan(result["symbol"], d4 or d15 or sig0, result["price"], ba) if verdict == "执行" else None
+    factor_evidence = [
+        {"name": x.get("name"), "direction": x.get("direction"), "txt": x.get("txt", "")}
+        for x in result.get("details", [])
+    ]
+    deep = ba.get("deep") or {}
     j["entries"].append({
         "time": pd.Timestamp.now().isoformat(),
         "symbol": result["symbol"], "direction": d4 or d15,  # 观望=None, 结算不再用投票方向顶替(2026-08-20 修)
@@ -1320,6 +1325,14 @@ def record_judge(result, judge4, judge15):
         "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
+        "factor_evidence": factor_evidence,
+        "brooks_evidence": {
+            "state": ba.get("state"), "always_in": ba.get("always_in"),
+            "setups": ba.get("setups", []), "trend_leg": deep.get("trend_leg"),
+            "bar_read": deep.get("bar_read", []), "structure": deep.get("structure", []),
+            "location": deep.get("location"), "risk": deep.get("risk"),
+        },
+        "macro_veto": active_macro_veto(),
         # 结算字段已删(2026-08-23 用户决策): 机械判对错对15m信号是假精确, 复盘走AI叙事(maybe_update_lessons)
     })
     if len(j["entries"]) > 500:
