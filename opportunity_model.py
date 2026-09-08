@@ -134,5 +134,6 @@ def build_dataset(df, horizon):
             last_seen[key] = index
             row = feature_row(df, index, setup, direction)
             row["label"] = triple_barrier(df, index, direction, row["atr"], horizon)
+            row["forward_return_pct"] = (float(df["close"].iloc[index + horizon]) / row["entry"] - 1) * 100
             rows.append(row)
     return pd.DataFrame(rows)
