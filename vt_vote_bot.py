@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 import requests
+from brooks_evidence import evidence_brief, inspect_evidence
 
 VT_PKG = None
 for p in sys.path:
@@ -749,6 +750,9 @@ def brooks_analyze(df):
     """返回 {state, spike, always_in, votes=[(name,±1)], setups=[str], sl={long,short}}"""
     res = {"state": "range", "spike": 0, "always_in": 0, "votes": [],
            "setups": [], "sl": {"long": None, "short": None}}
+    res["evidence"] = inspect_evidence(df)
+    if res["evidence"]["quality"]["status"] == "invalid":
+        return res
     c = df["close"].values; h = df["high"].values
     l = df["low"].values; o = df["open"].values
     n = len(c)
@@ -921,6 +925,10 @@ def brooks_analyze(df):
 
     if qbar and qbar == ai:
         v.append(("BROOKS_信号K线", qbar))
+    if res["evidence"]["quality"]["blocked"]:
+        res["votes"] = [(name, side) for name, side in v if name in ("BROOKS_市场状态", "BROOKS_AlwaysIn")]
+        res["setups"] = []
+        res["sl"] = {"long": None, "short": None}
     res["deep"] = brooks_deep_analyze(df)
     return res
 
@@ -3791,6 +3799,7 @@ def build_brief_4h(result):
         sq_word = "极度压缩(未来12h振幅偏低,回测-15%)" if sq < 20 else "压缩中" if sq < 40 else "正常波动" if sq < 70 else "高波动(已释放,未来12h振幅偏大+23%)"
         ai4_cn = {1: "多", -1: "空"}.get(b4.get("always_in", 0), "-")
         bd4 = b4.get("deep") or {}
+        L.append(evidence_brief(b4.get("evidence")))
         L.append(f"4h研判: 均线{trend4_label(ctx4)}(7/25/99), 价在4hEMA25{'上' if ctx4['above_ema20'] else '下'} | "
                  f"Brooks4h: {state4_cn}, Always In: {ai4_cn}")
         L.append(f"Brooks价格行为: {bd4.get('trend_leg','未知')} | {', '.join(bd4.get('bar_read', []))} | "
@@ -3895,6 +3904,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     if sr:
         L.append(sr)
     L.append(f"市场状态(15m): {state_cn} | Always In: {ai_cn} | Spike: {spike_cn}")
+    L.append(evidence_brief(ba.get("evidence")))
     L.append(f"Brooks形态: {'; '.join(ba['setups']) if ba.get('setups') else '无'}")
     L.append(f"Brooks读K: {', '.join(bd15.get('bar_read', []))} | 位置{bd15.get('location','未知')} | "
              f"重叠{bd15.get('overlap', 0):.0%} | {bd15.get('risk','结构未确认')}")
