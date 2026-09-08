@@ -85,6 +85,9 @@ def price_action_plan(df, direction):
 
 def plan_conflict(brooks, direction):
     """Brooks 当前结构明确反向时，不输出会误导用户的具体交易计划。"""
+    quality = ((brooks or {}).get("evidence") or {}).get("quality") or {}
+    if quality.get("blocked"):
+        return quality.get("message") or "K线质量不足，暂停入场确认"
     if direction not in ("LONG", "SHORT"):
         return None
     expected = 1 if direction == "LONG" else -1

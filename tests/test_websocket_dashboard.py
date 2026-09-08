@@ -12,6 +12,16 @@ from ws_kline import CONFIGS, KlineBuffer, SYMBOL_MAP, _fetch_history, _okx_inte
 
 
 class TestWebsocketFrame(unittest.TestCase):
+    def test_invalid_confirmation_suppresses_trade_plan(self):
+        brooks = {"always_in": 1, "deep": {"quality": 1},
+                  "evidence": {"quality": {"blocked": True, "message": "本根无成交，暂停入场确认"}}}
+        self.assertIn("无成交", server.plan_conflict(brooks, "LONG"))
+
+    def test_historical_sparse_bar_does_not_veto_normal_current_plan(self):
+        brooks = {"always_in": 1, "deep": {"quality": 1},
+                  "evidence": {"quality": {"blocked": False, "status": "degraded"}}}
+        self.assertIsNone(server.plan_conflict(brooks, "LONG"))
+
     def test_encodes_large_unicode_snapshot(self):
         payload = {"price": 2497.11, "summary": "做多" * 100}
         frame = server.websocket_frame(payload)
