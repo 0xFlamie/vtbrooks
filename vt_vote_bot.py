@@ -11,7 +11,9 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 import requests
+import sqlite3
 from brooks_evidence import evidence_brief, inspect_evidence
+from decision_audit import archive_decision, stamp_decision
 
 VT_PKG = None
 for p in sys.path:
@@ -55,6 +57,7 @@ def _read_kline_snapshot(symbol, interval):
     except Exception:
         return None
 JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_journal.json")
+DECISION_AUDIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decision_audit.sqlite3")
 LESSONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_lessons.json")
 OI_SNAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oi_snapshots.json")
 
@@ -1329,6 +1332,7 @@ def record_judge(result, judge4, judge15):
         "dir15m": d15, "conf15m": judge15.get("confidence"),
         "summary4h": judge4.get("summary", ""), "summary15m": judge15.get("summary", ""),
         "debate4": judge4.get("debate"), "debate15": judge15.get("debate"),
+        "decision_meta": {"4h": judge4.get("decision_meta"), "15m": judge15.get("decision_meta")},
         "mag_tier": judge4.get("mag_tier"),  # 幅度档只有4h层给
         "ai_direction": d4,  # 幅度档结算以4h层方向为准
         "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],
@@ -4191,6 +4195,15 @@ def stabilize_judge(candidate, previous):
     return held
 
 
+def audited_decision(symbol, decision, timeframe, brief):
+    result = stamp_decision(decision, timeframe, brief)
+    try:
+        archive_decision(DECISION_AUDIT_FILE, symbol, result, brief)
+    except (OSError, sqlite3.Error, ValueError, TypeError) as error:
+        print(f"WARN: 独立判决归档失败 {type(error).__name__}")
+    return result
+
+
 def ai_judge_4h(result, prev=None):
     """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)
     prev: 上一根4h收线的判决, 注入简报让 AI 自己扛迟滞(2026-08-08 临界区翻转抖动)"""
@@ -4200,13 +4213,13 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
-    return stabilize_judge(multi_agent_judge(brief), prev)
+    return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "4h", brief)
 
 
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
     brief = build_market_brief(result, events=events, prev=prev)
-    return stabilize_judge(multi_agent_judge(brief), prev)
+    return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "15m", brief)
 
 
 def apply_macro_veto(judge4, judge15):

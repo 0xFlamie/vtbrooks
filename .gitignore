@@ -9,3 +9,4 @@ vt_bot.log
 __pycache__/
 .env
 oi_history.json
+decision_audit.sqlite3*
