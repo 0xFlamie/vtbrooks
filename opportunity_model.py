@@ -5,7 +5,37 @@ import pandas as pd
 import vt_vote_bot as bot
 
 FEATURES = ["body_ratio", "upper_wick", "lower_wick", "close_pos", "overlap",
-            "pullback_atr", "range20_atr", "distance_edge_atr", "atr_pct", "vol_ratio"]
+            "pullback_atr", "range20_atr", "distance_edge_atr", "atr_pct", "vol_ratio",
+            "context_trend", "context_alignment", "context_location", "context_atr_pct", "context_momentum"]
+
+
+def add_market_context(df):
+    """为每根K线附加当时已经收完的4H环境；15M不会读取形成中的4H。"""
+    frame = df.copy()
+    step = frame.index.to_series().diff().median()
+    if step <= pd.Timedelta("30min"):
+        bars = frame.resample("4h", label="right", closed="left").agg(
+            open=("open", "first"), high=("high", "max"), low=("low", "min"),
+            close=("close", "last"), volume=("volume", "sum"), count=("close", "count"))
+        bars = bars[bars["count"] >= 15]
+    else:
+        bars = frame[["open", "high", "low", "close", "volume"]].copy()
+        bars.index = bars.index + step
+    ema = bars["close"].ewm(span=20, adjust=False).mean()
+    atr = (bars["high"] - bars["low"]).rolling(14).mean()
+    high20, low20 = bars["high"].rolling(20).max(), bars["low"].rolling(20).min()
+    bars["context_trend"] = np.where((bars["close"] > ema) & (ema > ema.shift(2)), 1,
+                                     np.where((bars["close"] < ema) & (ema < ema.shift(2)), -1, 0))
+    bars["context_location"] = (bars["close"] - low20) / (high20 - low20).replace(0, np.nan)
+    bars["context_atr_pct"] = atr / bars["close"] * 100
+    bars["context_momentum"] = bars["close"].pct_change(3) * 100
+    context = bars[["context_trend", "context_location", "context_atr_pct", "context_momentum"]]
+    available = pd.DataFrame({"available_at": frame.index.to_series() + step}, index=frame.index)
+    mapped = pd.merge_asof(available.sort_values("available_at"), context.sort_index(),
+                           left_on="available_at", right_index=True, direction="backward")
+    for column in context:
+        frame[column] = mapped[column].to_numpy()
+    return frame
 
 
 def triple_barrier(df, index, direction, atr, horizon, target_atr=1.0, stop_atr=1.0):
@@ -84,10 +114,16 @@ def feature_row(df, index, setup, direction):
             "close_pos": (row["close"] - row["low"]) / rng, "overlap": deep["overlap"],
             "pullback_atr": pullback, "range20_atr": (high20 - low20) / atr,
             "distance_edge_atr": edge, "atr_pct": atr / row["close"] * 100,
-            "vol_ratio": float(row["volume"]) / max(volume_mean, 1e-9)}
+            "vol_ratio": float(row["volume"]) / max(volume_mean, 1e-9),
+            "context_trend": row.get("context_trend", 0),
+            "context_alignment": direction * row.get("context_trend", 0),
+            "context_location": row.get("context_location", np.nan),
+            "context_atr_pct": row.get("context_atr_pct", np.nan),
+            "context_momentum": row.get("context_momentum", np.nan)}
 
 
 def build_dataset(df, horizon):
+    df = add_market_context(df)
     rows = []
     last_seen = {}
     for index in range(119, len(df) - horizon):

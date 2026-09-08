@@ -36,6 +36,23 @@ def report_setups(frame, probability, labels, cost_pct=.10):
         print(f"  {setup:20s} n={mask.sum():4d} 胜率={labels[mask].mean():5.1%} 净EV={returns.mean():+.3f}%")
 
 
+def report_conditions(frame, labels, cost_pct=.10):
+    location = frame["context_location"].to_numpy()
+    direction = frame["direction"].to_numpy()
+    conditions = {
+        "4h同向": frame["context_alignment"].to_numpy() == 1,
+        "4h震荡": frame["context_alignment"].to_numpy() == 0,
+        "4h逆向": frame["context_alignment"].to_numpy() == -1,
+        "4h结构边缘": ((direction == 1) & (location <= .25)) | ((direction == -1) & (location >= .75)),
+    }
+    for name, mask in conditions.items():
+        if mask.sum() < 100:
+            continue
+        outcomes = np.where(labels[mask] == 1, 1, -1)
+        returns = outcomes * frame.loc[mask, "atr_pct"].to_numpy() - cost_pct
+        print(f"  条件 {name:10s} n={mask.sum():4d} 胜率={labels[mask].mean():5.1%} 净EV={returns.mean():+.3f}%")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", default="analysis/tv_indicators/data/okx_4h.csv")
@@ -61,6 +78,7 @@ def main():
         print(f"\n{name}: AUC={roc_auc_score(labels, probability):.3f} Brier={brier_score_loss(labels, probability):.4f}")
         report_buckets(probability, labels)
         report_setups(decided.iloc[sl], probability, labels)
+        report_conditions(decided.iloc[sl], labels)
 
 
 if __name__ == "__main__":
