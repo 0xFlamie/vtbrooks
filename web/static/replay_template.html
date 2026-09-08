@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BROOKS ETH · 识图回放</title>
+<style>
+:root{--paper:#f2eee3;--panel:#fbf9f3;--ink:#303c3d;--muted:#737b76;--line:#d7cfba;--green:#33785f;--red:#b6544d}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.6 system-ui,sans-serif}main{max-width:1440px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:16px}h1{font-size:21px;letter-spacing:.08em;margin:0}h2{font-size:17px;margin:0 0 8px}p{margin:6px 0}small,.muted{color:var(--muted)}button,select,textarea{font:inherit;color:inherit;border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:8px 12px}button{cursor:pointer}button:hover{border-color:var(--green)}button:disabled{opacity:.4;cursor:default}.active,.primary{background:var(--green);color:white;border-color:var(--green)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.toolbar input{flex:1;min-width:160px;accent-color:var(--green)}.panel{padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:10px}.layout{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(290px,1fr);gap:14px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}.price{font:600 26px ui-monospace,monospace}.up{color:var(--green)}.down{color:var(--red)}.chart-head{display:flex;justify-content:space-between;align-items:start;gap:12px}canvas{width:100%;height:355px;display:block;margin-top:12px}.badge{display:inline-block;border:1px solid var(--line);border-radius:16px;padding:2px 9px;font-size:12px}.evidence{padding-left:19px;margin:8px 0}.evidence li{margin:4px 0}.audit label{display:block;margin:14px 0 5px}.audit select,.audit textarea{width:100%}.audit textarea{height:82px;resize:vertical}.audit button{margin-top:10px}.note{padding:10px 12px;background:#ece8db;border-radius:6px;margin-top:12px}.answer{margin-top:14px;border-left:3px solid var(--green);padding:10px 14px;background:#eef2eb}.answer.hidden{display:none}footer{color:var(--muted);font-size:12px;margin:18px 0}.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}#status{min-height:24px;color:var(--green)}#reviewState{font-size:12px}.cursor{font-variant-numeric:tabular-nums;min-width:60px}.rules{font-size:12px;color:var(--muted);margin-top:12px}#source{max-width:760px;overflow-wrap:anywhere}@media(max-width:850px){main{padding:12px}.layout{grid-template-columns:1fr}.cards{grid-template-columns:1fr}header{align-items:start;flex-direction:column}canvas{height:290px}.price{font-size:22px}}
+</style>
+</head>
+<body><main>
+<header><div><h1>BROOKS ETH <span class="muted">/ 识图回放</span></h1><small id="source"></small></div><span class="badge">历史研究 · 人工核对</span></header>
+<div class="toolbar"><button id="four" class="active">4小时</button><button id="fifteen">15分钟</button><select id="clip" aria-label="选择历史片段"></select><span id="range" class="muted"></span></div>
+<div class="toolbar"><button id="previous">← 上一根</button><input id="seek" type="range" min="0" value="0" aria-label="逐根回放"><button id="next">下一根 →</button><span id="cursor" class="cursor"></span></div>
+<div class="layout"><section>
+<article class="panel"><div class="chart-head"><div><div id="time" class="muted"></div><div id="price" class="price"></div></div><div><span id="bias" class="badge"></span><p id="mode" class="muted"></p></div></div><canvas id="chart" role="img" aria-label="截至当前回放时刻的K线及已确认摆动点"></canvas><div class="legend"><span class="up">● 多头K线 / 支撑</span><span class="down">● 空头K线 / 压力</span><span>○ 已确认摆动点（右侧两根确认）</span></div></article>
+<div class="cards"><article class="panel"><h2>这根收完，知道什么</h2><p id="structure"></p><ul id="evidence" class="evidence"></ul><p id="invalidation" class="muted"></p><details><summary>查看摆动点及确认时间</summary><ul id="swings" class="evidence muted"></ul></details></article><article class="panel"><h2>旧规则怎么读图</h2><p id="legacy"></p><p id="legacySetups"></p><div id="difference" class="note"></div></article></div>
+<article class="panel" style="margin-top:14px"><h2>候选机会与等待条件</h2><div id="opportunities"></div><div class="rules">候选是待核对的规则匹配，不是已验证开单信号。4小时与15分钟仅使用各自120根历史K线；15分钟规则尚未完成该周期回测。</div><button id="reveal" style="margin-top:12px">揭晓后续走势</button><div id="answer" class="answer hidden"></div></article>
+</section><aside class="panel audit"><h2>先判断，再看后续</h2><p class="muted">核对结构、信号K和候选位置。判断是否识图正确，不用交易盈亏倒推形态对错。</p><label for="verdict">这一刻的识图结果</label><select id="verdict"><option value="">请选择</option><option value="agree">基本符合</option><option value="false_positive">疑似误判</option><option value="missed">疑似漏判</option><option value="uncertain">无法判断</option></select><label for="notes">具体哪根K线、哪里不对</label><textarea id="notes" placeholder="例如：这里是第一次回调，不能算二次入场。"></textarea><p id="reviewState" class="muted"></p><button id="save" class="primary">保存这一条标注</button><div id="status" role="status"></div><div class="note"><strong id="count">已标注 0 条</strong><p>标注保留在当前页面内存中。关闭页面前请导出；文件会注明标注前是否已看到后续K线。</p><button id="export">导出标注 JSON</button></div><div class="rules">片段按时间等距选择，不按未来涨跌挑样本。旧规则是历史K线重放的输出，不是历史AI判决。此页不调用AI，也不代表模型通过验证。</div></aside></div>
+<footer>北京时间展示；K线时间为开盘时间，识图判断在该根收盘后可用。历史回放无实时行情连接。</footer>
+</main>
+<script id="replay-data" type="application/json">__REPLAY_DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('replay-data').textContent);
+const $=id=>document.getElementById(id), money=n=>Number(n).toFixed(2);
+const percent=n=>n===null?'不可计算':`${(Math.abs(n)*100).toFixed(0)}%`;
+let timeframe='4h',clipIndex=0,cursor=0,revealed=false;
+const reviews=new Map(),furthestSeen=new Map();
+const stateNames={trend_up:'上升趋势',trend_down:'下降趋势',range:'震荡区间'};
+const outcomeNames={target:'先到止盈',stop:'先到止损',stop_gap:'跳空止损',ambiguous_stop:'同根双触，保守按止损',timeout:'到期平仓'};
+const clip=()=>data.timeframes[timeframe].clips[clipIndex];
+const snapshot=()=>clip().snapshots[cursor];
+const key=()=>`${timeframe}:${snapshot().time}`;
+const clipKey=()=>`${timeframe}:${clipIndex}`;
+const date=t=>new Date(t).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
+function text(id,value){$(id).textContent=value;}
+function node(tag,value,cls){const e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e;}
+function populate(){
+  $('clip').replaceChildren(...data.timeframes[timeframe].clips.map((c,i)=>{const o=node('option',`片段 ${i+1} · ${c.title}`);o.value=i;return o;}));
+  $('clip').value=clipIndex;
+  const group=data.timeframes[timeframe];
+  text('range',`${group.rows.toLocaleString()} 根历史K线 · 无振幅 ${(group.flat_bars/group.rows*100).toFixed(1)}% · 等距取样`);
+  $('four').classList.toggle('active',timeframe==='4h');$('fifteen').classList.toggle('active',timeframe==='15m');
+}
+function render(){
+  const s=snapshot(),c=clip(),d=s.structure.direction;
+  furthestSeen.set(clipKey(),Math.max(furthestSeen.get(clipKey())??-1,c.offset+cursor));
+  $('seek').max=c.snapshots.length-1;$('seek').value=cursor;
+  $('previous').disabled=cursor===0;$('next').disabled=cursor===c.snapshots.length-1;
+  text('cursor',`${cursor+1} / ${c.snapshots.length}`);text('time',`${date(s.time)} · ${timeframe==='4h'?'4小时':'15分钟'}K线`);
+  text('price',`$${money(s.price)}`);text('bias',d===1?'摆动结构偏多':d===-1?'摆动结构偏空':'摆动结构无单边');
+  $('bias').className=`badge ${d===1?'up':d===-1?'down':''}`;
+  text('mode',revealed?'后续已揭晓':'只显示当时可见K线');text('structure',s.structure.description);
+  $('evidence').replaceChildren(...[...s.bar_read,...s.breakouts,`最近5根重叠度 ${percent(s.overlap)} · 实体占比 ${percent(s.body_ratio)}`,`前20根支撑 $${money(s.support)} / 压力 $${money(s.resistance)}`,...(s.flat_bars_20?[`最近20根中有 ${s.flat_bars_20} 根无振幅K线，识图需考虑成交稀疏。`]:[])].map(v=>node('li',v)));
+  text('invalidation',s.structure.invalid!==null?`结构检验位 $${money(s.structure.invalid)}：${d===1?'跌破最近确认低点':'突破最近确认高点'}时重新检查结构；不是自动止损单。`:'等待高低点形成同向序列，或区间边缘出现确认。');
+  $('swings').replaceChildren(...s.swings.map(v=>node('li',`${v.kind==='high'?'高点':'低点'} $${money(v.price)} · ${date(v.time)}；右侧确认K线 ${date(v.confirmed_at)}`)));
+  text('legacy',stateNames[s.legacy.state]);text('legacySetups',s.legacy.setups.join('；')||'旧规则没有标出形态');
+  const legacyDirection={trend_up:1,trend_down:-1,range:0}[s.legacy.state];
+  text('difference',legacyDirection===d?'两种结构读法目前一致，仍需结合图形核对。':'两种读法出现分歧：旧规则使用趋势段等条件，这里使用已确认摆动高低点。分歧本身不能证明谁错。');
+  $('opportunities').replaceChildren(...(s.candidates.length?s.candidates.map(v=>node('p',`${v.direction===1?'偏多':'偏空'} · ${v.title}（研究候选）`,v.direction===1?'up':'down')):[node('p',d===1?'多头结构仍在，等待回调后的确认K线。':d===-1?'空头结构仍在，等待反弹后的确认K线。':'当前没有规则候选，关注支撑压力附近的拒绝或突破。')]));
+  const saved=reviews.get(key());$('verdict').value=saved?.verdict??'';$('notes').value=saved?.notes??'';
+  text('status',saved?'本根已有标注':'');text('reviewState',furthestSeen.get(clipKey())>c.offset+cursor?'本根的部分后续K线已经看过，标注会记录这一点。':'本片段内尚未展示本根之后的K线。');
+  $('answer').classList.toggle('hidden',!revealed);$('reveal').disabled=revealed;
+  if(revealed)renderAnswer();draw();
+}
+function renderAnswer(){
+  const a=clip().answers[cursor];$('answer').replaceChildren();
+  if(!a.available){$('answer').append(node('p','后续数据不足'));return;}
+  $('answer').append(node('strong',`${timeframe==='4h'?'12小时':'4小时'}后：${a.return_pct>=0?'+':''}${a.return_pct.toFixed(2)}%（次根开盘→到期收盘）`));
+  for(const v of a.outcomes)$('answer').append(node('p',`${v.title}：${outcomeNames[v.outcome]}；模拟扣费收益 ${v.net_return_pct.toFixed(3)}%`));
+  $('answer').append(node('small','模拟使用±1 ATR障碍；手续费0.10%＋滑点0.04%。双触保守止损；做空未计借币/资金费。'));
+}
+function draw(){
+  const canvas=$('chart'),ctx=canvas.getContext('2d'),w=canvas.clientWidth,h=canvas.clientHeight,dpr=window.devicePixelRatio||1;
+  canvas.width=w*dpr;canvas.height=h*dpr;ctx.scale(dpr,dpr);
+  const c=clip(),s=snapshot(),last=c.offset+cursor,begin=Math.max(0,last-59),end=last+(revealed?c.answers[cursor].horizon:0);
+  const bars=c.bars.slice(begin,end+1),top=Math.max(s.resistance,...bars.map(b=>b.high)),bottom=Math.min(s.support,...bars.map(b=>b.low)),pad=(top-bottom)*.08||1;
+  const left=12,right=w-68,upper=18,lower=h-34,step=(right-left)/bars.length;
+  const y=p=>upper+(top+pad-p)/(top-bottom+2*pad)*(lower-upper),x=i=>left+(i+.5)*step;
+  ctx.clearRect(0,0,w,h);ctx.font='11px system-ui';ctx.fillStyle='#737b76';
+  for(let i=0;i<=4;i++){const price=bottom+(top-bottom)*i/4,yp=y(price);ctx.strokeStyle='#e7e0d1';ctx.beginPath();ctx.moveTo(left,yp);ctx.lineTo(right,yp);ctx.stroke();ctx.fillText(money(price),right+6,yp+4);}
+  if(revealed){ctx.fillStyle='#e5e8df';ctx.fillRect(x(last-begin)+step*.5,upper,right-x(last-begin)-step*.5,lower-upper);}
+  for(const [price,color] of [[s.support,'#33785f'],[s.resistance,'#b6544d']]){ctx.strokeStyle=color;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(left,y(price));ctx.lineTo(right,y(price));ctx.stroke();}ctx.setLineDash([]);
+  bars.forEach((b,i)=>{ctx.strokeStyle=ctx.fillStyle=b.close>=b.open?'#33785f':'#b6544d';ctx.beginPath();ctx.moveTo(x(i),y(b.high));ctx.lineTo(x(i),y(b.low));ctx.stroke();ctx.fillRect(x(i)-step*.29,Math.min(y(b.open),y(b.close)),step*.58,Math.max(1,Math.abs(y(b.open)-y(b.close))));});
+  for(const swing of s.swings){const i=bars.findIndex(b=>b.time===swing.time);if(i<0)continue;ctx.strokeStyle=swing.kind==='high'?'#b6544d':'#33785f';ctx.beginPath();ctx.arc(x(i),y(swing.price)+(swing.kind==='high'?-7:7),3,0,Math.PI*2);ctx.stroke();}
+  ctx.strokeStyle='#8b826c';ctx.setLineDash([2,3]);ctx.beginPath();ctx.moveTo(x(last-begin),upper);ctx.lineTo(x(last-begin),lower);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#737b76';ctx.fillText('当前收线',Math.min(right-56,x(last-begin)-22),h-10);
+  ctx.fillText(date(bars[0].time).slice(0,16),left,h-10);
+}
+function move(value){cursor=Number(value);revealed=false;render();}
+$('four').onclick=()=>{timeframe='4h';clipIndex=0;cursor=0;revealed=false;populate();render();};
+$('fifteen').onclick=()=>{timeframe='15m';clipIndex=0;cursor=0;revealed=false;populate();render();};
+$('clip').onchange=()=>{clipIndex=Number($('clip').value);cursor=0;revealed=false;populate();render();};
+$('previous').onclick=()=>move(Math.max(0,cursor-1));$('next').onclick=()=>move(Math.min(clip().snapshots.length-1,cursor+1));$('seek').oninput=()=>move($('seek').value);
+$('reveal').onclick=()=>{revealed=true;furthestSeen.set(clipKey(),Math.max(furthestSeen.get(clipKey())??0,clip().offset+cursor+clip().answers[cursor].horizon));render();};
+$('save').onclick=()=>{if(!$('verdict').value){text('status','先选择识图结果');return;}reviews.set(key(),{timeframe,time:snapshot().time,verdict:$('verdict').value,notes:$('notes').value,seen_future_before_review:furthestSeen.get(clipKey())>clip().offset+cursor,snapshot:snapshot()});text('count',`已标注 ${reviews.size} 条`);text('status','已保存在当前页面，请导出留存');};
+$('export').onclick=()=>{const payload={version:data.version,source:data.source,symbol:data.symbol,source_sha256:data.source_sha256,reviews:[...reviews.values()]};const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='brooks-price-action-reviews.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+window.addEventListener('resize',draw);text('source',`${data.source} · ${data.symbol} · 4小时由同一份15分钟数据完整聚合`);populate();render();
+</script>
+</body></html>
