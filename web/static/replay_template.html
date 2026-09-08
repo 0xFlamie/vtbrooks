@@ -53,7 +53,7 @@ function render(){
   $('bias').className=`badge ${d===1?'up':d===-1?'down':''}`;
   text('mode',revealed?'后续已揭晓':'只显示当时可见K线');text('structure',s.structure.description);
   $('evidence').replaceChildren(...[...s.bar_read,...s.breakouts,`最近5根重叠度 ${percent(s.overlap)} · 实体占比 ${percent(s.body_ratio)}`,`前20根支撑 $${money(s.support)} / 压力 $${money(s.resistance)}`,...(s.flat_bars_20?[`最近20根中有 ${s.flat_bars_20} 根无振幅K线，识图需考虑成交稀疏。`]:[])].map(v=>node('li',v)));
-  text('invalidation',s.structure.invalid!==null?`结构检验位 $${money(s.structure.invalid)}：${d===1?'跌破最近确认低点':'突破最近确认高点'}时重新检查结构；不是自动止损单。`:'等待高低点形成同向序列，或区间边缘出现确认。');
+  text('invalidation',s.structure.broken?`旧结构已收破 $${money(s.structure.invalid)}，等待新的高低点序列确认；不直接翻向。`:s.structure.invalid!==null?`结构检验位 $${money(s.structure.invalid)}：${d===1?'跌破最近确认低点':'突破最近确认高点'}时重新检查结构；不是自动止损单。`:'等待高低点形成同向序列，或区间边缘出现确认。');
   $('swings').replaceChildren(...s.swings.map(v=>node('li',`${v.kind==='high'?'高点':'低点'} $${money(v.price)} · ${date(v.time)}；右侧确认K线 ${date(v.confirmed_at)}`)));
   text('legacy',stateNames[s.legacy.state]);text('legacySetups',s.legacy.setups.join('；')||'旧规则没有标出形态');
   const legacyDirection={trend_up:1,trend_down:-1,range:0}[s.legacy.state];

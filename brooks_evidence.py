@@ -52,8 +52,10 @@ def confirmed_swings(frame):
             match = (values[index] == segment.max() and values[index] > segment[0] and values[index] > segment[-1]) if kind == "high" else (
                 values[index] == segment.min() and values[index] < segment[0] and values[index] < segment[-1])
             if match:
-                points.append({"kind": kind, "time": str(frame.index[index]), "price": float(values[index]),
-                               "confirmed_at": str(frame.index[index + width])})
+                times = [value.isoformat() if hasattr(value, "isoformat") else str(value)
+                         for value in (frame.index[index], frame.index[index + width])]
+                points.append({"kind": kind, "time": times[0], "price": float(values[index]),
+                               "confirmed_at": times[1], "confirmed_index": index + width})
         result.extend(points[-3:])
     return result
 
@@ -73,7 +75,15 @@ def swing_structure(points):
 def inspect_evidence(frame):
     quality = quality_check(frame)
     points = [] if quality["status"] == "invalid" else confirmed_swings(frame.tail(STRUCTURE_WINDOW))
-    return {"quality": quality, "swings": points, "structure": swing_structure(points)}
+    structure = swing_structure(points)
+    direction, invalid = structure["direction"], structure["invalid"]
+    anchor = max((p["confirmed_index"] for p in points), default=0)
+    closes = frame.tail(STRUCTURE_WINDOW).close.iloc[anchor:] if direction else []
+    if direction and (direction * (closes - invalid) < 0).any():
+        structure = {"direction": 0, "previous_direction": direction, "broken": True, "invalid": invalid,
+                     "description": "原上升摆动低点已被收破，等待重新确认" if direction == 1
+                     else "原下降摆动高点已被收破，等待重新确认"}
+    return {"quality": quality, "swings": points, "structure": structure}
 
 
 def evidence_brief(evidence):

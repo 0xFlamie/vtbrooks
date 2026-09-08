@@ -68,6 +68,45 @@ class TestBrooksEvidence(unittest.TestCase):
         self.assertIn("已确认摆动", brief)
         self.assertIn("不是经回测", brief)
 
+    def test_broken_bull_structure_is_not_still_reported_bullish(self):
+        frame = bars()
+        original = inspect_evidence(frame)["structure"]
+        self.assertEqual(original["direction"], 1)
+        frame.iloc[-1, frame.columns.get_loc("close")] = original["invalid"] - 1
+        frame.iloc[-1, frame.columns.get_loc("low")] = original["invalid"] - 1.1
+        current = inspect_evidence(frame)["structure"]
+        self.assertEqual(current["direction"], 0)
+        self.assertTrue(current["broken"])
+        self.assertEqual(current["previous_direction"], 1)
+
+    def test_wick_alone_does_not_invalidate_structure(self):
+        frame = bars()
+        original = inspect_evidence(frame)["structure"]
+        frame.iloc[-1, frame.columns.get_loc("low")] = original["invalid"] - 1
+        self.assertEqual(inspect_evidence(frame)["structure"]["direction"], 1)
+
+    def test_broken_bear_structure_waits_instead_of_flipping_long(self):
+        base = bars()
+        frame = base.copy()
+        frame["open"], frame["close"] = 300 - base.open, 300 - base.close
+        frame["high"], frame["low"] = 300 - base.low, 300 - base.high
+        original = inspect_evidence(frame)["structure"]
+        self.assertEqual(original["direction"], -1)
+        frame.iloc[-1, frame.columns.get_loc("close")] = original["invalid"] + 1
+        frame.iloc[-1, frame.columns.get_loc("high")] = original["invalid"] + 1.1
+        current = inspect_evidence(frame)["structure"]
+        self.assertEqual(current["direction"], 0)
+        self.assertTrue(current["broken"])
+        self.assertEqual(current["previous_direction"], -1)
+
+    def test_broken_structure_is_not_resurrected_by_price_returning_inside(self):
+        frame = bars()
+        original = inspect_evidence(frame)["structure"]
+        frame.iloc[-2, frame.columns.get_loc("close")] = original["invalid"] - 1
+        frame.iloc[-2, frame.columns.get_loc("low")] = original["invalid"] - 1.1
+        self.assertGreater(frame.close.iloc[-1], original["invalid"])
+        self.assertTrue(inspect_evidence(frame)["structure"]["broken"])
+
 
 if __name__ == "__main__":
     unittest.main()
