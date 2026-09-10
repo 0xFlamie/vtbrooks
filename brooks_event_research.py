@@ -10,7 +10,9 @@ SETUPS = ("trend_pullback", "breakout_retest", "range_failed_breakout")
 MODEL_FEATURES = FEATURES + ["efficiency", "trend_direction", "direction"]
 
 
-def validate_bars(frame):
+def validate_bars(frame, timeframe="4h"):
+    if timeframe not in ("4h", "15m"):
+        raise ValueError("研究周期只支持4h/15m")
     if not isinstance(frame.index, pd.DatetimeIndex):
         raise ValueError("K线索引必须为 DatetimeIndex")
     if len(frame) < LOOKBACK + 3 or frame.index.has_duplicates or not frame.index.is_monotonic_increasing:
@@ -21,8 +23,9 @@ def validate_bars(frame):
     if ((frame.high < frame[["open", "close", "low"]].max(axis=1)) |
             (frame.low > frame[["open", "close", "high"]].min(axis=1)) | (frame.volume < 0)).any():
         raise ValueError("OHLC/量能关系无效")
-    if not frame.index.to_series().diff().iloc[1:].eq(pd.Timedelta(hours=4)).all():
-        raise ValueError("研究输入必须为连续4H K线；缺口须先补齐")
+    step = pd.Timedelta(hours=4) if timeframe == "4h" else pd.Timedelta(minutes=15)
+    if not frame.index.to_series().diff().iloc[1:].eq(step).all():
+        raise ValueError(f"研究输入必须为连续{timeframe.upper()} K线；缺口须先分段")
 
 
 def event_context(frame):
@@ -124,12 +127,14 @@ def _bar_exit(bar, direction, target, stop):
     return None, None
 
 
-def build_event_dataset(frame, cost_pct=.10, slippage_pct=.04):
-    validate_bars(frame)
+def build_event_dataset(frame, cost_pct=.10, slippage_pct=.04, timeframe="4h", horizon=3):
+    validate_bars(frame, timeframe)
+    if not isinstance(horizon, int) or horizon < 1:
+        raise ValueError("持有窗口必须为正整数")
     events = candidates(frame)
-    events = events[events.signal_index + 3 < len(frame)].copy()
+    events = events[events.signal_index + horizon < len(frame)].copy()
     records = [trade_outcome(frame, int(row.signal_index), int(row.direction), float(row.atr),
-                             cost_pct=cost_pct, slippage_pct=slippage_pct) for row in events.itertuples()]
+                             horizon=horizon, cost_pct=cost_pct, slippage_pct=slippage_pct) for row in events.itertuples()]
     outcomes = pd.DataFrame(records, index=events.index)
     return pd.concat([events, outcomes], axis=1)
 

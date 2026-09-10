@@ -1,0 +1,32 @@
+[Unit]
+Description=Brooks ETH isolated prospective shadow observer (no orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=vtbrooks-shadow
+StateDirectoryMode=0700
+WorkingDirectory=/opt/vtbrooks-shadow
+ExecStart=/opt/vtbrooks-shadow-venv/bin/python -B -u /opt/vtbrooks-shadow/brooks_shadow_runtime.py --mode capture --ledger /var/lib/vtbrooks-shadow/ledger-v2.sqlite3 --manifest /opt/vtbrooks-shadow/deploy/shadow-runtime-manifest.json --continuous
+Restart=no
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=512M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
