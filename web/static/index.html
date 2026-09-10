@@ -7,10 +7,29 @@
   <section class="hero panel"><div><h2 id="price">—</h2><p id="news">读取重点事件与盘面综述…</p></div><div class="hero-tags"><span>实时价格</span><span>新闻事件</span><span>不提供下单</span></div></section>
   <section class="direction-grid"><article class="direction panel"><div class="eyebrow">4小时方向</div><strong id="direction4">观望</strong><span id="confidence4" class="pill muted">暂无判决</span><p id="reason4">等待4小时收线与判决原因</p></article><article class="direction panel"><div class="eyebrow">15分钟方向</div><strong id="direction15">观望</strong><span id="confidence15" class="pill muted">暂无判决</span><p id="reason15">等待15分钟收线与判决原因</p></article></section>
   <section class="panel section" id="research-signals" aria-labelledby="research-title">
-    <style>.research-event{min-width:0}.research-event .eyebrow{overflow-wrap:anywhere;line-height:1.6}.research-event strong{font-size:20px}.research-event .pill{white-space:normal;line-height:1.6}.research-event small,#research-sound-note{color:var(--muted)}#research-list>:only-child{grid-column:1/-1}#research-sound{cursor:pointer}#research-signals .subtitle{font-size:12px;margin-top:8px}</style>
-    <div class="section-head"><div><div class="eyebrow">独立研究信号 · BRK-FR-15M-v1</div><h2 id="research-title">Brooks 区间假突破 · 15M</h2></div><div class="hero-tags"><span id="research-health" class="pill muted">连接中</span><button id="research-sound" type="button" class="pill muted" aria-pressed="false">开启研究信号声音</button></div></div>
-    <p id="research-rule" class="subtitle">区间越界 → 回收 → 向区间内推进；与原AI方向分开记录</p>
-    <div id="research-list" class="direction-grid" aria-live="polite"><p class="subtitle">等待研究账本…</p></div>
+    <style>
+      #research-list{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start;overflow-x:auto;padding:4px 2px 10px}
+      .research-tile{width:100%;min-width:0;min-height:210px;padding:10px 8px;border:1px solid var(--line);border-top:3px solid var(--line);border-radius:8px;background:var(--panel2);overflow-wrap:anywhere}
+      .research-tile.long{border-color:#478571;background:#e8f0e9;color:#275c47}.research-tile.short{border-color:#b76558;background:#f3e7e0;color:#953e35}
+      .research-tile .tile-name{font-size:12px;font-weight:700;min-height:26px}.research-tile strong{display:block;font-size:22px;line-height:1.2;margin:6px 0}.research-tile small{display:block;font-size:10px;line-height:1.45;color:var(--muted)}
+      .tile-price{font:600 12px var(--mono);margin-top:8px}.tile-rate{margin-top:8px}.research-tile details{font-size:10px;margin-top:7px}.research-tile summary{cursor:pointer}.research-tile details p{font-size:10px;line-height:1.5;margin:7px 0}
+      .research-flash{animation:research-pulse 1.6s ease-in-out 5}#research-list[data-stale="true"] .research-flash{animation:none}#research-list[data-stale="true"] .research-tile{filter:grayscale(1)}
+      @keyframes research-pulse{50%{box-shadow:inset 0 0 0 3px currentColor;filter:brightness(1.08)}}
+      @media(prefers-reduced-motion:reduce){.research-flash{animation:none;outline:2px solid currentColor;outline-offset:-4px}}
+      @media(max-width:1100px){#research-list{grid-template-columns:repeat(7,150px)}}
+      #research-sound{cursor:pointer}#research-signals .subtitle{font-size:12px;margin-top:8px}#research-sound-note{color:var(--muted)}
+    </style>
+    <div class="section-head"><div><div class="eyebrow">七类独立研究提醒</div><h2 id="research-title">Brooks 形态雷达 · 15M</h2></div><div class="hero-tags"><span id="research-health" class="pill muted">连接中</span><button id="research-sound" type="button" class="pill muted" aria-pressed="false">开启研究信号声音</button></div></div>
+    <p id="research-rule" class="subtitle">七类独立触发，多绿空红；新信号闪烁。窄屏可左右滑动查看。</p>
+    <div id="research-list" aria-live="polite">
+      <article class="research-tile flat"><div class="tile-name">H2/L2二次入场</div><strong>—</strong><small>连接中</small></article>
+      <article class="research-tile flat"><div class="tile-name">突破首次回触</div><strong>—</strong><small>连接中</small></article>
+      <article class="research-tile flat"><div class="tile-name">外包K后突破</div><strong>—</strong><small>连接中</small></article>
+      <article class="research-tile flat"><div class="tile-name">区间假突破</div><strong>—</strong><small>连接中</small></article>
+      <article class="research-tile flat"><div class="tile-name">强突破第二腿</div><strong>—</strong><small>连接中</small></article>
+      <article class="research-tile flat"><div class="tile-name">双顶 / 双底</div><strong>—</strong><small>连接中</small></article>
+      <article class="research-tile flat"><div class="tile-name">楔形三推</div><strong>—</strong><small>连接中</small></article>
+    </div>
     <p id="research-history" class="subtitle"></p><p id="research-source" class="subtitle">Coinbase ETH-USD · 点位不能混用主站OKX ETH-USDC报价</p>
     <small id="research-sound-note">提示音只提醒开启后新到的信号；页面须保持打开，后台休眠或静音可能漏提醒。</small>
   </section>

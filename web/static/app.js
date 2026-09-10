@@ -27,6 +27,7 @@ function evidenceRows(brooks){
   ];
 }
 const researchSeen=new Set();
+const researchFlashes=new Map();
 let researchInitialized=false, researchAudio=null, researchSoundEnabled=false, researchLastUpdate=0, researchSignature="";
 const researchTime=v=>new Date(v).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
 function researchTone(preview=false){
@@ -65,16 +66,46 @@ function researchCard(signal){
   for(const [tag,text,cls] of fields){const el=document.createElement(tag);el.textContent=text;if(cls)el.className=cls;card.append(el);}
   return card;
 }
+function researchTile(family){
+  const signal=family.signals?.[0], healthy=family.collector?.status==="live";
+  const simultaneous=(family.signals||[]).filter(s=>s.available_at===signal?.available_at&&["new","observing"].includes(s.status));
+  const conflict=healthy&&new Set(simultaneous.map(s=>s.direction)).size>1;
+  const active=healthy&&!conflict&&signal&&["new","observing"].includes(signal.status);
+  const card=document.createElement("article");
+  const flashing=healthy&&simultaneous.some(s=>s.status==="new"&&(researchFlashes.get(s.id)||0)>Date.now());
+  card.className=`research-tile ${active?dirClass(signal.direction):"flat"}${flashing?" research-flash":""}`;
+  card.setAttribute("data-family",family.family);
+  const labels={new:"新信号",observing:"观察中 · 不追单",history:"回看 · 不响铃",ended:"已结束",unverified:"数据中断"};
+  const direction=signal?(signal.direction==="LONG"?"偏多":"偏空"):"等待形态";
+  const fields=[["div",family.name,"tile-name"],["strong",conflict?"多空同现":active?direction:signal?`上次${direction}`:"—"],
+    ["small",conflict?"同分钟冲突 · 不合并方向":!healthy?(family.collector?.label||"连接中"):signal?(labels[signal.status]||"状态未知"):"等待形态"],
+    ["div",signal?`触发 $${fmt(signal.observed_price)}`:"触发价 —","tile-price"],
+    ["small",signal?`ATR $${fmt(signal.atr)}`:"ATR —"],
+    ["small",signal?researchTime(signal.available_at):"15M · 盘中观察"],
+    ["small",`三年空间率 ${family.rate||"—"}`,"tile-rate"]];
+  for(const [tag,text,cls] of fields){const el=document.createElement(tag);el.textContent=text;if(cls)el.className=cls;card.append(el);}
+  const details=document.createElement("details"), summary=document.createElement("summary");summary.textContent="依据 / 结构位";details.append(summary);
+  for(const text of [family.strategy_id,signal?.reason||"暂无候选，不代表AI观望判决",
+    signal?`结构参考 $${fmt(signal.structure_reference)} · 非验证止损`:"等待真实信号后显示点位",
+    `历史样本 ${family.sample??"—"} · 空间率非盈利胜率`,signal?.result||"研究提醒，不自动开单"]){
+    const p=document.createElement("p");p.textContent=text;details.append(p);
+  }
+  if(conflict)for(const s of simultaneous){const p=document.createElement("p");p.textContent=`${s.direction==="LONG"?"偏多":"偏空"} · 触发 $${fmt(s.observed_price)} · 结构 $${fmt(s.structure_reference)}`;details.append(p);}
+  card.append(details);return card;
+}
 function renderResearch(data){
   if(!$("research-list"))return;
   const live=data?.collector?.status==="live", signals=data?.signals||[], serverAt=Date.parse(data?.updated_at);
   let incoming=false;
   for(const signal of signals){
     if(researchInitialized&&!researchSeen.has(signal.id)&&live&&signal.status==="new"&&serverAt<Date.parse(signal.entry_not_before)&&
-       Date.now()<Date.parse(signal.entry_not_before)&&Date.now()-serverAt>=-5000&&Date.now()-serverAt<=20000)incoming=true;
+       Date.now()<Date.parse(signal.entry_not_before)&&Date.now()-serverAt>=-5000&&Date.now()-serverAt<=20000){
+      incoming=true;researchFlashes.set(signal.id,Date.now()+8000);
+    }
     researchSeen.add(signal.id);
   }
   while(researchSeen.size>1000)researchSeen.delete(researchSeen.values().next().value);
+  for(const [id,until] of researchFlashes)if(until<=Date.now())researchFlashes.delete(id);
   if(data?.collector?.status!=="unavailable"&&data)researchInitialized=true;
   if(incoming&&researchSoundEnabled&&!researchTone()){
     researchSoundEnabled=false;$("research-sound").textContent="重新开启研究信号声音";$("research-sound").setAttribute("aria-pressed","false");
@@ -86,10 +117,12 @@ function renderResearch(data){
   $("research-health").title=data?.collector?.last_heartbeat_at?`采集心跳 ${researchTime(data.collector.last_heartbeat_at)}`:"";
   $("research-rule").textContent=data?.rule_note||"独立研究账本，与原AI方向分开记录";
   $("research-history").textContent=data?.history_note||"";$("research-source").textContent=data?.source_note||"Coinbase ETH-USD · 不混用OKX ETH-USDC报价";
-  const signature=JSON.stringify([signals,live]);
+  $("research-list").setAttribute("data-stale",String(!live));
+  const signature=JSON.stringify([signals,live,data?.families,[...researchFlashes.keys()]]);
   if(signature!==researchSignature){
     researchSignature=signature;
-    if(signals.length)$("research-list").replaceChildren(...signals.map(researchCard));
+    if(data?.families)$("research-list").replaceChildren(...data.families.map(researchTile));
+    else if(signals.length)$("research-list").replaceChildren(...signals.map(researchCard));
     else{const p=document.createElement("p");p.className="subtitle";p.textContent=live?"尚无符合条件的研究信号，继续等待形态形成。":"研究数据暂不可用或采集尚未就绪；不是观望判决。";$("research-list").replaceChildren(p);}
   }
 }
@@ -133,5 +166,5 @@ function connect(){
   socket.onclose=()=>{$("health").textContent="通信重连中";$("health").className="pill muted";setTimeout(connect,2000)};
 }
 $("research-sound")?.addEventListener("click",toggleResearchSound);
-setInterval(()=>{if(researchLastUpdate&&Date.now()-researchLastUpdate>20000){$("research-health").textContent="页面通信过期 · 请勿追旧信号";$("research-health").className="pill muted";$("research-list").style.opacity=".55";}else if($("research-list"))$("research-list").style.opacity="1";},2000);
+setInterval(()=>{if(researchLastUpdate&&Date.now()-researchLastUpdate>20000){$("research-health").textContent="页面通信过期 · 请勿追旧信号";$("research-health").className="pill muted";$("research-list").style.opacity=".55";$("research-list").setAttribute("data-stale","true");}else if($("research-list"))$("research-list").style.opacity="1";},2000);
 refresh(); connect(); setInterval(()=>{if(!socket||socket.readyState!==WebSocket.OPEN)refresh()},30000);

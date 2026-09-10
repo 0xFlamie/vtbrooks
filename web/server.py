@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import vt_vote_bot as bot  # noqa: E402
 from analysis.tv_indicators.adx_di import adx_di  # noqa: E402
-from web.research_signals import read_snapshot as research_snapshot  # noqa: E402
+from web.seven_signals import read_snapshot as research_snapshot  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = 8423
