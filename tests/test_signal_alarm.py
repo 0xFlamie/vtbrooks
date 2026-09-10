@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TestSignalAlarm(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node required")
-    def test_global_alarm_lifecycle_and_direction_freshness(self):
+    def test_brooks_alarm_lifecycle_and_silent_direction_cards(self):
         result = subprocess.run(["node", "-e", ALARM_CHECK, str(ROOT / "web/static/app.js")],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -32,7 +32,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
 let now=Date.parse('2026-09-11T00:00:00Z');
 class Clock extends Date{constructor(...args){super(...(args.length?args:[now]))}static now(){return now}}
 const ids=new Map();
-function element(){return {textContent:'',className:'',children:[],attrs:{},
+function element(){return {textContent:'',className:'',children:[],attrs:{},dataset:{},style:{},
  append(...items){this.children.push(...items)},replaceChildren(...items){this.children=items},
  setAttribute(k,v){this.attrs[k]=v},addEventListener(){},closest(){return this}}}
 const document={getElementById(id){if(!ids.has(id))ids.set(id,element());return ids.get(id)},createElement:element};
@@ -44,7 +44,7 @@ class Audio{
   source.failStart=this.failStart;this.nodes.push(source);return source}
  async resume(){this.state='running';this.onstatechange?.()}
 }
-const context={document,window:{AudioContext:Audio},Date:Clock,Set,Map,JSON,console,assert,Audio,
+const context={document,window:{AudioContext:Audio},Date:Clock,Set,Map,JSON,console,assert,Audio,process,
  advance(ms){now+=ms},location:{protocol:'https:',host:'test'},fetch:()=>new Promise(()=>{}),
  setInterval(){},setTimeout(){},WebSocket:class{close(){}}};
 vm.createContext(context);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
@@ -52,32 +52,39 @@ vm.runInContext(`
 (async()=>{
  researchAudio=new Audio();researchAudio.onstatechange=syncResearchSound;researchSoundEnabled=true;
  const iso=()=>new Date().toISOString();
- const layer=(id,direction='LONG')=>({source:'latest_display_after_macro_veto',decision_id:id,
-  decision_at:iso(),shown_at:iso(),direction});
- const snapshot=(a,b)=>({updated_at:iso(),'4h':a,'15m':b});
- let a=layer('a'),b=layer('b','SHORT');notifyDirections(snapshot(a,b));
+ const layer=(id,family='h2',direction='LONG')=>({id,family,direction,status:'new',available_at:iso(),
+  generated_at:iso(),entry_not_before:new Date(Date.now()+120000).toISOString()});
+ const snapshot=(...signals)=>({updated_at:iso(),collector:{status:'live'},signals});
+ let a=layer('a'),b=layer('b','retest','SHORT');renderResearch(snapshot(a,b));
  assert.equal(signalAlarm.until,0,'first snapshot must not replay');
- advance(1000);a=layer('a2');b=layer('b2','SHORT');notifyDirections(snapshot(a,b));
+ advance(1000);a=layer('a2');b=layer('b2','retest','SHORT');renderResearch(snapshot(a,b));
  const deadline=signalAlarm.until,first=signalAlarm.node;
  assert.equal(deadline-Date.now(),300000);assert.equal(first.loop,true);
  assert.equal(first.stops[0],310,'native audio cutoff must be scheduled');
  assert.equal(first.buffer.data.length,9600);assert(first.buffer.data.some(x=>Math.abs(x)>.01));
  assert.equal(signalAlarm.sources.size,2);assert.equal(researchAudio.nodes.length,1);
  assert.equal($('signal-alarm-stop').disabled,false);
+ assert.equal($('signal-alarm-stop').hidden,false);assert.equal($('signal-alarm-countdown').hidden,false);
+ assert.equal($('signal-alarm-countdown').textContent,'5:00');
  advance(60000);notifySignals([{family:'failed_range',direction:'LONG'}]);
+ assert.equal($('signal-alarm-countdown').textContent,'4:00');
  assert.equal(signalAlarm.until,deadline,'additional signals must not extend deadline');
  assert.equal(signalAlarm.sources.size,3);assert.equal(researchAudio.nodes.length,1);
- notifyDirections(snapshot(a,b));assert.equal(researchAudio.nodes.length,1,'duplicate no replay');
+ renderResearch(snapshot(a,b));assert.equal(researchAudio.nodes.length,1,'duplicate no replay');
  stopSignalAlarm();assert(first.disconnected);assert.equal(first.stops.at(-1),undefined);
  assert.equal(signalAlarm.until,0);assert(researchSoundEnabled);assert($('signal-alarm-stop').disabled);
- notifyDirections(snapshot(a,b));assert.equal(signalAlarm.until,0,'manual stop survives duplicates');
- advance(1000);a=layer('a3');notifyDirections(snapshot(a,b));assert(signalAlarm.node);
+ assert($('signal-alarm-stop').hidden);assert($('signal-alarm-countdown').hidden);
+ renderResearch(snapshot(a,b));assert.equal(signalAlarm.until,0,'manual stop survives duplicates');
+ advance(1000);a=layer('a3');renderResearch(snapshot(a,b));assert(signalAlarm.node);
  const deadline2=signalAlarm.until,pauseNode=signalAlarm.node;
  advance(90000);researchAudio.state='suspended';syncResearchSound();
  assert.equal(signalAlarm.node,null);assert(pauseNode.disconnected);assert.equal(signalAlarm.until,deadline2);
+ assert.equal($('research-sound').attrs['aria-label'],'恢复Brooks形态声音');
  researchAudio.state='running';syncResearchSound();
  assert.equal(signalAlarm.node.stops[0],220,'resume only remaining 210 seconds');
  assert.equal(signalAlarm.until,deadline2);const resumed=signalAlarm.node;
+ assert.equal($('research-sound').textContent,'声音开');
+ assert.equal($('research-sound').attrs['aria-label'],'关闭Brooks形态声音');
  advance(210001);tickSignalAlarm();assert(resumed.disconnected);assert.equal(signalAlarm.until,0);
  syncResearchSound();assert.equal(signalAlarm.node,null,'expired resume must not restart');
  advance(1000);notifySignals([{family:'h2',direction:'SHORT'}]);const nativeEnd=signalAlarm.node;
@@ -93,25 +100,22 @@ vm.runInContext(`
  assert.equal(signalAlarm.node,null);assert(researchAudio.nodes.at(-1).disconnected,'failed start must disconnect');
  stopSignalAlarm();researchAudio.failStart=false;
 
- directionAlarmStates.clear();let old=layer('old');assert.equal(directionSignal(old,'4h',Date.now()),null);
- advance(1000);assert.equal(directionSignal({...old,direction:'SHORT'},'4h',Date.now()),null,'same timestamp rejected');
- const flip={...old,direction:'SHORT',shown_at:iso()};
- assert.equal(directionSignal(flip,'4h',Date.now()).direction,'SHORT','macro display change uses shown time');
- assert.equal(directionSignal(old,'4h',Date.now()),null,'out of order rejected');
- advance(1000);assert.equal(directionSignal(layer('neutral',null),'4h',Date.now()),null);
- advance(1000);assert(directionSignal(layer('new'),'4h',Date.now()));
- advance(1000);assert.equal(directionSignal({...layer('stale'),decision_at:new Date(Date.now()-120001).toISOString()},'4h',Date.now()),null);
- advance(1000);assert.equal(directionSignal(layer('late'),'4h',Date.now()-20001),null);
- advance(1000);assert.equal(directionSignal({...layer('future'),decision_at:new Date(Date.now()+5001).toISOString()},'4h',Date.now()),null);
- advance(1000);assert.equal(directionSignal({...layer('legacy'),source:'legacy_journal'},'4h',Date.now()),null);
- advance(1000);assert.equal(directionSignal({...layer('invalid'),shown_at:'invalid'},'4h',Date.now()),null);
- advance(1000);assert(directionSignal(layer('fresh'),'4h',Date.now()));
+ const nodes=researchAudio.nodes.length;
+ for(const direction of ['LONG','SHORT',null,'LONG']){
+  advance(1000);
+  const judgment={source:'latest_display_after_macro_veto',decision_id:iso(),decision_at:iso(),shown_at:iso(),direction};
+  render({updated_at:iso(),'4h':judgment,'15m':judgment,research_signals:snapshot()});
+  assert.equal(signalAlarm.until,0,'direction changes must not ring');
+ }
+ assert.equal(researchAudio.nodes.length,nodes);
+ advance(1000);renderResearch(snapshot(layer('after-directions','wedge')));
+ assert(signalAlarm.node,'Brooks still rings after silent direction changes');stopSignalAlarm();
  assert.equal(plainMacroText('🚨 宏观硬闸门:数据'),'宏观硬闸门:数据');
  renderDirection('4',{summary:'🚨 宏观硬闸门 <img onerror=x>',latest_reasons:['🚨 宏观硬闸门:旧'],change:'🚨 宏观硬闸门:变动'});
  assert.equal($('reason4').textContent,'宏观硬闸门 <img onerror=x>');
  assert.equal($('reasons4').children[0].textContent,'宏观硬闸门:旧');
  assert(!$('change4').textContent.includes('🚨'));
- console.log('PASS global 5min loop, native cutoff, manual stop, merge, pause/resume, dedup, freshness, safe legacy text');
+ console.log('PASS Brooks 5min loop, native cutoff, manual stop, merge, pause/resume, dedup, silent directions, safe legacy text');
 })().catch(e=>{console.error(e);process.exitCode=1});
 `,context);
 """

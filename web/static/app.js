@@ -107,8 +107,9 @@ function playSignalAlarm(){
 }
 function showSignalAlarm(){
   const active=signalAlarm.until>Date.now(),seconds=Math.max(0,Math.ceil((signalAlarm.until-Date.now())/1000));
-  const status=$("signal-alarm-status"),stop=$("signal-alarm-stop");
-  if(stop)stop.disabled=!active;
+  const status=$("signal-alarm-status"),stop=$("signal-alarm-stop"),countdown=$("signal-alarm-countdown");
+  if(stop){stop.disabled=!active;stop.hidden=!active;}
+  if(countdown){countdown.hidden=!active;countdown.textContent=`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}`;}
   if(status)status.textContent=active?`${[...signalAlarm.sources].join(" / ")} · ${signalAlarm.node?"循环响铃":"声音暂停 / 未能播放"} ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · 提醒不代表当前仍可入场`:signalAlarm.message;
 }
 function tickSignalAlarm(){
@@ -123,30 +124,12 @@ function startSignalAlarm(labels){
   signalAlarm.until=Date.now()+SIGNAL_ALARM_MS;signalAlarm.sources=new Set(labels);
   const played=playSignalAlarm();showSignalAlarm();return played;
 }
-const signalNames={"4h":"4小时方向","15m":"15分钟方向",h2:"二次入场",retest:"突破回触",outside:"外包K",failed_range:"区间假突破",second_leg:"第二腿",double_test:"双顶双底",wedge:"楔形"};
+const signalNames={h2:"二次入场",retest:"突破回触",outside:"外包K",failed_range:"区间假突破",second_leg:"第二腿",double_test:"双顶双底",wedge:"楔形"};
 const signalLabel=signal=>`${signalNames[signal.family]||"Brooks"} · ${signal.direction==="LONG"?"偏多":"偏空"}`;
 function notifySignals(signals){
   if(!signals.length)return;
   const played=startSignalAlarm(signals.map(signalLabel));
   for(const signal of signals)logResearchAlert(signal,played?"已提交播放 / 合并本轮5分钟提醒（设备是否发声无法确认）":researchSoundEnabled?"浏览器暂停或播放失败，请恢复剩余提醒":"声音开关未开启，未播放");
-}
-const directionAlarmStates=new Map();
-function directionSignal(layer,tf,serverAt){
-  if(layer?.source!=="latest_display_after_macro_veto"||!layer.decision_id)return null;
-  const shown=Date.parse(layer.shown_at),old=directionAlarmStates.get(tf),key=`${layer.decision_id}:${layer.direction}`;
-  if(!Number.isFinite(shown)||(old&&shown<=old.shown))return null;
-  directionAlarmStates.set(tf,{key,shown,id:layer.decision_id});
-  if(!old||old.key===key||!["LONG","SHORT"].includes(layer.direction))return null;
-  const signal={family:tf,direction:layer.direction};
-  const eventAt=old.id===layer.decision_id?shown:Date.parse(layer.decision_at),age=Date.now()-eventAt,lag=Date.now()-serverAt;
-  if(!(age>=-5000&&age<=120000&&lag>=-5000&&lag<=20000)){
-    logResearchAlert(signal,"方向判决到达过期或时钟异常，不追旧信号");return null;
-  }
-  return signal;
-}
-function notifyDirections(snapshot){
-  const at=Date.parse(snapshot.updated_at);
-  notifySignals(["4h","15m"].map(tf=>directionSignal(snapshot[tf],tf,at)).filter(Boolean));
 }
 function researchTone(preview=false){
   if(!researchAudio||researchAudio.state!=="running")return false;
@@ -161,9 +144,10 @@ function researchTone(preview=false){
 }
 function syncResearchSound(){
   const running=researchSoundEnabled&&researchAudio?.state==="running",button=$("research-sound");
-  button.textContent=running?"全站声音已开启":researchSoundEnabled?"声音暂停 · 点击恢复":"开启全站信号声音";
+  button.textContent=running?"声音开":researchSoundEnabled?"声音暂停":"声音关";
+  button.setAttribute("aria-label",running?"关闭Brooks形态声音":researchSoundEnabled?"恢复Brooks形态声音":"开启Brooks形态声音");
   button.className=running?"pill":"pill muted";button.setAttribute("aria-pressed",String(running));
-  $("research-sound-note").textContent=running?"4h / 15m / Brooks新信号循环响5分钟；同轮不续时。刷新需重开，后台/静音可能漏提醒。":researchSoundEnabled?"浏览器暂停音频；点击恢复本轮剩余时间，已过期不补响。":"声音未开启；卡片仍会更新。先试听，再开启全站提醒。";
+  $("research-sound-note").textContent=running?"仅Brooks新形态循环响5分钟；方向卡不响，同轮不续时。刷新需重开，后台/静音可能漏提醒。":researchSoundEnabled?"浏览器暂停音频；点击恢复本轮剩余时间，已过期不补响。":"形态声音未开启；方向卡不响。可先试听检查设备音量。";
   tickSignalAlarm();
   if(signalAlarm.until&&running&&!signalAlarm.node)playSignalAlarm();
   showSignalAlarm();
@@ -176,7 +160,7 @@ async function prepareResearchAudio(){
   if(researchAudio.state!=="running")throw new Error("suspended");
 }
 async function toggleResearchSound(){
-  if(researchSoundEnabled&&researchAudio?.state==="running"){researchSoundEnabled=false;stopSignalAlarm("全站声音已关闭");syncResearchSound();return;}
+  if(researchSoundEnabled&&researchAudio?.state==="running"){researchSoundEnabled=false;stopSignalAlarm("形态声音已关闭");syncResearchSound();return;}
   try{
     await prepareResearchAudio();researchSoundEnabled=true;syncResearchSound();if(!signalAlarm.until)researchTone(true);
   }catch(_){researchSoundEnabled=false;syncResearchSound();$("research-sound-note").textContent="声音未能开启，请检查浏览器声音权限；仍可查看卡片。";}
@@ -273,7 +257,6 @@ function renderResearch(data){
   }
 }
 function render(s){
-  notifyDirections(s);
   renderMacro(s.macro_events);
   renderResearch(s.research_signals);
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};

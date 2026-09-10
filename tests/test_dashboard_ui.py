@@ -26,6 +26,9 @@ class TestDashboardUI(unittest.TestCase):
             self.assertIn(identity, parser.ids)
         self.assertIn('<details class="panel section source-fold">', text)
         self.assertNotIn('<section class="metrics">', text)
+        self.assertIn('<details class="sound-options">', text)
+        self.assertIn('id="signal-alarm-countdown"', text)
+        self.assertIn('aria-label="停止本轮响铃"', text)
 
     @unittest.skipUnless(shutil.which("node"), "Node required")
     def test_event_scope_audio_state_reasons_and_safe_text(self):
