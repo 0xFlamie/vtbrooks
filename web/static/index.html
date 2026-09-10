@@ -4,7 +4,16 @@
 <body><div class="shell">
   <aside><a class="brand" href="/">BROOKS ETH</a><a class="pill muted" href="/replay.html">识图回放</a><span id="health" class="pill"><i></i> 连接中</span></aside>
   <main>
-  <section class="hero panel"><div><h2 id="price">—</h2><p id="news">读取重点事件与盘面综述…</p></div><div class="hero-tags"><span>实时价格</span><span>新闻事件</span><span>不提供下单</span></div></section>
+  <link rel="stylesheet" href="/macro.css">
+  <section class="hero panel market-top">
+    <div class="market-price"><span class="eyebrow">以太坊 · USDC现货</span><h2 id="price">—</h2><p id="news">读取重点事件与盘面综述…</p><small>实时价格 · 不提供下单</small></div>
+    <div class="macro-events" aria-labelledby="macro-title">
+      <div class="macro-head"><h2 id="macro-title">近日关注事件</h2><span id="macro-status" class="pill muted" role="status">读取事前预期…</span></div>
+      <p id="macro-note">北京时间 · 市场预期与前值在公布前准备，缺失时不猜数字。</p>
+      <div id="macro-list"><p>正在读取事件日历…</p></div>
+      <small id="macro-source"></small>
+    </div>
+  </section>
   <section class="direction-grid"><article class="direction panel"><div class="eyebrow">4小时方向</div><strong id="direction4">观望</strong><span id="confidence4" class="pill muted">暂无判决</span><p id="reason4">等待4小时收线与判决原因</p></article><article class="direction panel"><div class="eyebrow">15分钟方向</div><strong id="direction15">观望</strong><span id="confidence15" class="pill muted">暂无判决</span><p id="reason15">等待15分钟收线与判决原因</p></article></section>
   <section class="panel section" id="research-signals" aria-labelledby="research-title">
     <style>

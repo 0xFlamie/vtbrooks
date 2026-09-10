@@ -1,0 +1,11 @@
+.market-top{display:grid;grid-template-columns:minmax(170px,.7fr) minmax(0,2fr);align-items:start;gap:20px}
+.market-price{min-width:0}.market-price small{display:block;margin-top:12px;color:var(--muted);font-size:11px}.market-price #news{font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.macro-events{min-width:0}.macro-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.macro-head #macro-title{font:600 15px var(--sans);margin:0}
+#macro-note,#macro-source{display:block;font-size:10px;line-height:1.6;color:var(--muted);margin:7px 0}#macro-source a{color:var(--accent-text)}
+#macro-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.macro-card{min-width:0;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}.macro-card[data-priority="A"]{border-top:2px solid var(--amber)}
+.macro-card h3{font-size:12px;margin:0 0 4px;line-height:1.5}.macro-time,.macro-capture{font-size:10px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}.macro-countdown{display:block;color:var(--amber)}
+.macro-table{width:100%;border-collapse:collapse;margin-top:7px;font-size:11px}.macro-table th{font-size:10px;font-weight:400;color:var(--muted);text-align:right}.macro-table th:first-child,.macro-table td:first-child{text-align:left}.macro-table td{text-align:right;border-top:1px solid var(--line);padding:3px 0;font-family:var(--mono)}.macro-table td:first-child{font-family:var(--sans)}
+.macro-missing{font-size:11px;color:var(--muted);margin:7px 0}.macro-card details{font-size:10px;margin-top:6px;overflow-wrap:anywhere}.macro-card summary{cursor:pointer;color:var(--accent-text)}.macro-card details p{font-size:10px;margin:5px 0;line-height:1.6}.macro-card a{color:var(--accent-text)}
+#macro-list[data-stale="true"]{opacity:.65}.macro-card .macro-capture{margin-top:5px}
+@media(max-width:800px){.market-top{grid-template-columns:1fr}.market-price #news{max-width:none}}
+@media(max-width:520px){#macro-list{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:92%;overflow-x:auto;scroll-snap-type:x proximity;padding-bottom:5px}.market-top{gap:14px}.macro-head .pill{white-space:normal}.macro-card{padding:9px;scroll-snap-align:start}.macro-table{font-size:12px}}

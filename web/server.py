@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 import vt_vote_bot as bot  # noqa: E402
 from analysis.tv_indicators.adx_di import adx_di  # noqa: E402
 from web.seven_signals import read_snapshot as research_snapshot  # noqa: E402
+from macro_expectations import snapshot as macro_snapshot  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = 8423
@@ -143,6 +144,7 @@ def snapshot():
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "symbol": symbol,
         "price": price,
+        "macro_events": macro_snapshot(),
         "4h": {"direction": direction4, "confidence": latest.get("conf4h"),
                "latest_reasons": latest.get("reasons", [])[:2], "summary": latest.get("summary4h", ""),
                "context": ctx4, "brooks": ctx4.get("brooks", {}),

@@ -127,6 +127,7 @@ function renderResearch(data){
   }
 }
 function render(s){
+  renderMacro(s.macro_events);
   renderResearch(s.research_signals);
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};
   $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=s.news;
@@ -157,6 +158,65 @@ function render(s){
   $("journal").innerHTML=(s.journal||[]).slice().reverse().map(x=>`<div>${x.time||""} · 4h ${x.dir4h||"观望"} / 15m ${x.dir15m||"观望"} · ${x.reasons||[]}</div>`).join("")||"暂无判决记录";
 }
 async function refresh(){try{const r=await fetch('/api/snapshot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);render(await r.json())}catch(e){$("health").textContent='通信中断';$("health").className='pill muted'}}
+let macroClock=null,macroSignature="";
+function macroText(tag,text,className=""){
+  const element=document.createElement(tag);element.textContent=text;element.className=className;return element;
+}
+function macroTime(value){
+  const date=new Date(value);return Number.isFinite(date.getTime())?date.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}):"时间未知";
+}
+function macroCard(event){
+  const card=macroText("article","","macro-card");card.dataset.priority=event.priority;card.dataset.release=event.release_at;
+  card.append(macroText("h3",event.name),macroText("div",`北京 ${macroTime(event.release_at)}`,"macro-time"),macroText("span","","macro-countdown"));
+  const metrics=event.metrics||[];
+  if(metrics.length){
+    const table=document.createElement("table");table.className="macro-table";
+    const head=document.createElement("tr");for(const value of ["分项","市场预期","前值"])head.append(macroText("th",value));
+    const thead=document.createElement("thead");thead.append(head);table.append(thead);
+    const body=document.createElement("tbody");
+    for(const q of metrics){const row=document.createElement("tr");for(const value of [q.label,q.forecast??"未获取",q.prior_status==="conflict"?"待核对 ⚠":q.previous??"未获取"])row.append(macroText("td",value));body.append(row);}
+    table.append(body);card.append(table);
+  }else card.append(macroText("p","市场预期 — · 前值 —\n尚无已获取的事前数字","macro-missing"));
+  const state={fresh:"事前采集",frozen:"公布前留档",stale:"旧参考 · 抓取已过期",missing:"预期未获取",conflict:"前值口径冲突 · 禁止直接比较"};
+  card.append(macroText("div",`${state[event.expectation_status]||"状态未知"}${event.captured_at?` · ${macroTime(event.captured_at)}`:""}`,"macro-capture"));
+  const detail=document.createElement("details");detail.append(macroText("summary","预案与依据"));
+  for(const text of [...metrics.map(q=>`${q.label}：${q.comparison}`),...(event.scenarios||[]),"预期相对前值的变化不代表市场已经定价；不是买卖指令。"]){detail.append(macroText("p",text));}
+  try{const url=new URL(event.calendar_source);if(url.protocol==="https:"){const a=macroText("a","日历来源");a.href=url.href;a.target="_blank";a.rel="noopener noreferrer";detail.append(a);}}catch(_){/* 无有效来源时不生成链接。 */}
+  card.append(detail);return card;
+}
+function tickMacro(){
+  if(!macroClock||!$("macro-list"))return;
+  const elapsed=performance.now()-macroClock.started,stale=elapsed>20000;
+  $("macro-list").dataset.stale=String(stale);
+  if(stale)$("macro-status").textContent="页面通信过期 · 旧预期仅供参考";
+  for(const card of $("macro-list").querySelectorAll(".macro-card")){
+    const seconds=Math.ceil((Date.parse(card.dataset.release)-macroClock.server-elapsed)/1000);
+    let text="公布时间未知";
+    if(Number.isFinite(seconds))text=seconds<=0?"已到计划公布时间 · 等待核实实际值":`还有 ${Math.floor(seconds/86400)?`${Math.floor(seconds/86400)}天 `:""}${Math.floor(seconds%86400/3600)}小时 ${Math.floor(seconds%3600/60)}分 ${seconds%60}秒`;
+    card.querySelector(".macro-countdown").textContent=stale?"通信过期 · 请重连核对时间":text;
+  }
+}
+function renderMacro(data){
+  if(!$("macro-list"))return;
+  if(!data){macroClock=null;$("macro-status").textContent="事件数据暂不可用";$("macro-list").dataset.stale="true";return;}
+  const server=Date.parse(data.updated_at);
+  if(!Number.isFinite(server)){macroClock=null;$("macro-status").textContent="事件时间无效";$("macro-list").dataset.stale="true";return;}
+  macroClock={server,started:performance.now()};
+  const events=data.events||[],hasQuotes=events.some(e=>e.metrics?.length);
+  const missing=events.some(e=>!e.metrics?.length||e.metrics.some(q=>q.forecast==null));
+  const state=data.collector_status==="ok"?(hasQuotes?(missing?"部分预期已采集":"事前预期已采集"):"部分事件预期暂缺"):data.collector_status==="error"?"预期采集失败 · 保留旧参考":"预期尚未采集";
+  $("macro-status").textContent=data.calendar_stale?"日历需复核 · 预期仅供参考":state;
+  if(events.some(e=>e.expectation_status==="conflict"))$("macro-status").textContent+=" · 部分前值待核对";
+  $("macro-note").textContent=`北京时间 · 未来7天及刚到公布时间的事件 · 展示 ${events.length}/${data.total_events??events.length} 项`;
+  $("macro-source").textContent=`${data.source||"预期来源待确认"} · ${data.note||"不是实时实际值通道"}`;
+  const signature=JSON.stringify(events.map(({seconds_to_release,...rest})=>rest));
+  if(signature!==macroSignature){
+    macroSignature=signature;
+    $("macro-list").replaceChildren(...(events.length?events.map(macroCard):[macroText("p","未来7天暂无已核验日程，不代表没有重要事件。","macro-missing")]));
+  }
+  tickMacro();
+}
+setInterval(tickMacro,1000);
 let socket;
 function connect(){
   const protocol=location.protocol==="https:"?"wss":"ws";

@@ -14,6 +14,8 @@ import requests
 import sqlite3
 from brooks_evidence import evidence_brief, inspect_evidence
 from decision_audit import archive_decision, stamp_decision
+import macro_events as macro
+import macro_expectations as expectations
 
 VT_PKG = None
 for p in sys.path:
@@ -137,59 +139,43 @@ _kline_cache = {}
 # 近期新闻(供两层裁判简报读取): [(ts, "来源: 中文标题")], 保留12h/10条, 主循环更新
 RECENT_NEWS = []
 
-# 宏观日历(美东日期): 事件日两层简报注入, AI 提高新闻/宏观权重(2026-08-20 财政部划线漏报事故)
-MACRO_EVENTS = {
-    "2026-08-19": "FOMC会议纪要",  # 补录: 2026-08-20 发现遗漏(当天收益率划线行情)
-    "2026-09-15": "FOMC议息首日", "2026-09-16": "FOMC议息决议+鲍威尔发布会",
-    "2026-10-07": "FOMC会议纪要", "2026-10-27": "FOMC议息首日", "2026-10-28": "FOMC议息决议",
-    "2026-11-18": "FOMC会议纪要", "2026-12-08": "FOMC议息首日", "2026-12-09": "FOMC议息决议",
-    "2026-12-30": "FOMC会议纪要",
-    "2026-09-11": "美国8月CPI", "2026-10-13": "美国9月CPI",
-    "2026-11-10": "美国10月CPI", "2026-12-10": "美国11月CPI",
-}
+# 保留旧调用的当日名称接口；多事件和准确时刻由有来源的日历提供。
+MACRO_EVENTS = {day: macro.day_label(day) for day in
+                {e["release_at"].date().isoformat() for e in macro.EVENTS if e["priority"] != "C"}}
 
 
 def _macro_line():
-    """今天是宏观事件日则返回提示行, 否则 None"""
+    """日期/数据缺失也明确注入，不能把日历空白解释成没有风险事件。"""
+    now = pd.Timestamp.now(tz="America/New_York")
+    return macro.brief(now) + "\n" + expectations.preparation_brief(now=now)
+
+
+def refresh_macro_expectations():
+    """每轮先检查预期缓存；实际网络由采集器按30分钟节流，网页不发外部请求。"""
     try:
-        d = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
-        ev = MACRO_EVENTS.get(d)
-        if ev:
-            return f"⚠️ 今日宏观事件: {ev}(美东)。事件日波动放大概率高, 新闻/宏观面的权重上调, 别只看技术面。"
-    except Exception:
-        pass
-    return None
+        expectations.refresh()
+    except (OSError, sqlite3.Error) as error:
+        print(f"WARN: 事前预期存储不可用 {type(error).__name__}")
 
 
 def _event_release_et(ev):
-    """事件落地时刻(美东): CPI=08:30, 其余(FOMC等)=14:00"""
-    hh, mm = (8, 30) if "CPI" in (ev or "") else (14, 0)
-    return pd.Timestamp.now(tz="America/New_York").replace(hour=hh, minute=mm, second=0, microsecond=0)
+    """兼容单事件查询；未知事件不能默认套用FOMC的14点。"""
+    today = pd.Timestamp.now(tz="America/New_York").date().isoformat()
+    rows = [e for e in macro.events_on(today) if e["name"] in (ev or "")]
+    if len(rows) != 1:
+        raise ValueError("需按事件ID选择准确公布时间")
+    return pd.Timestamp(rows[0]["release_at"])
 
 
 def preview_visible(ep, today_et):
-    """事件预判只在落地前~落地后2h显示, 之后就是过时信息(2026-08-20 用户被旧预判误导)"""
-    if ep.get("date") != today_et:
-        return False
-    ev = MACRO_EVENTS.get(today_et)
-    if not ev:
-        return False
-    return pd.Timestamp.now(tz="America/New_York") < _event_release_et(ev) + pd.Timedelta(hours=2)
+    """公布即作废事前预案；同日下一个事件需另生成，不混用。"""
+    now = pd.Timestamp.now(tz="America/New_York")
+    return today_et == now.date().isoformat() and macro.preview_is_current(ep, now)
 
 
 def in_event_window():
-    """事件落地窗口(落地前1h~后2h, 美东): CPI=08:30, FOMC决议/纪要=14:00。
-    窗口内综述每轮强制重写, 把RSS空窗压到物理极限(2026-08-20 纪要空窗问题)"""
-    try:
-        now = pd.Timestamp.now(tz="America/New_York")
-        ev = MACRO_EVENTS.get(now.strftime("%Y-%m-%d"))
-        if not ev:
-            return False
-        hh, mm = (8, 30) if "CPI" in ev else (14, 0)
-        release = now.replace(hour=hh, minute=mm, second=0)
-        return pd.Timedelta(hours=-1) <= now - release <= pd.Timedelta(hours=2)
-    except Exception:
-        return False
+    """逐事件检查前1h至后2h；这只是关注窗口，不是实际数据已到达。"""
+    return macro.in_window(pd.Timestamp.now(tz="America/New_York"))
 
 
 NEWS_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "news_memory.json")
@@ -308,16 +294,19 @@ def news_editor(items, mem):
 
 
 def event_preview(sym):
-    """宏观事件日预判(2026-08-20 用户要求: FOMC这种要有提前情景推演):
-    事件日当天生成一次(美东日期), 市场预期+三情景ETH路径+关键位, 落盘供卡片/简报/推送"""
+    """当日未公布事件的条件预案；公布前1h每半小时复核，不编造预期值。"""
     try:
-        today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
-        ev = MACRO_EVENTS.get(today)
-        if not ev:
+        now = pd.Timestamp.now(tz="America/New_York")
+        rows = macro.pending(now)
+        if not rows:
             return None
+        today = now.date().isoformat()
+        ev = " / ".join(e["name"] for e in rows)
+        key = macro.preparation_key(now)
+        key["consensus_version"] = expectations.preparation_version(now=now)
         mem = load_news_memory()
         ep = mem.get("event_preview") or {}
-        if ep.get("date") == today and ep.get("text"):
+        if macro.preview_is_current(ep, now) and ep.get("preparation_key") == key and ep.get("text"):
             return ep["text"]
         wv = (mem.get("world_view") or {}).get("text", "无")
         lv = compute_levels(sym, "LONG")
@@ -325,10 +314,12 @@ def event_preview(sym):
         pm = next((x for x in polymarket_odds() if x["topic"] == "联储降息"), None)
         pm_txt = f"预测市场联储降息概率{pm['prob']}%" if pm else "无赔率数据"
         px = fetch_fast_price(sym)
-        sys_p = ("你是只交易ETH的加密交易员(BTC为联动参照)。今天有宏观事件, 写事件预判, 3-4条, 每条≤40字: "
-                 "1)市场当前预期是什么 2)鸽派情景ETH怎么走(到哪个位) 3)鹰派情景ETH怎么走(到哪个位) "
-                 "4)现在该做什么准备(挂单价/不动/减仓)。大白话, 落到给定关键位上, 不喊口号。")
-        user = f"事件: {ev}\n盘面综述: {wv}\n现价: ${px}\n关键位: {lv_txt}\n{pm_txt}"
+        sys_p = ("你是只交易ETH的加密交易员(BTC为联动参照)。为每个未公布事件写条件预案: "
+                 "高于/符合/低于预期时观察什么价格反应、给定结构位和失效条件。没有可靠预期值就写缺失，不能编数；"
+                 "降息赔率不是CPI/PPI/非农的市场预期。数据高低不机械等于ETH涨跌；总体/核心或增长/就业冲突时待确认。"
+                 "方向倾向与是否适合入场分开，不预先宣称实际值或必涨必跌。大白话，不给保证收益。")
+        user = (f"事件: {ev}\n{macro.brief(now)}\n{expectations.preparation_brief(now=now)}\n"
+                f"盘面综述: {wv}\n现价: ${px}\n关键位: {lv_txt}\n{pm_txt}")
         r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
             {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
             "max_tokens": 400, "temperature": 0.3},
@@ -336,7 +327,10 @@ def event_preview(sym):
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"].strip()
             if text:
-                mem["event_preview"] = {"date": today, "text": text}
+                if not macro.preview_is_current({"date": today, "event_ids": key["event_ids"]}):
+                    return None  # 模型返回时已跨公布时刻，不保存过期预案。
+                mem["event_preview"] = {"date": today, "text": text, "event_label": ev, "event_ids": key["event_ids"],
+                                        "preparation_key": key, "generated_at": pd.Timestamp.now(tz="UTC").isoformat()}
                 save_news_memory(mem)
                 return text
     except Exception as e:
@@ -403,7 +397,7 @@ def _recent_news_lines(hours=12, limit=5):
         ep0 = (mem0.get("event_preview") or {})
         today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
         if ep0.get("text") and preview_visible(ep0, today_et):
-            lines.append(f"事件预判({MACRO_EVENTS.get(today_et)}): {ep0['text']}")
+            lines.append(f"事件预判({ep0.get('event_label', '未公布事件')}): {ep0['text']}")
         wv = (mem0.get("world_view") or {}).get("text")
         if wv:
             lines.append(f"盘面综述: {wv}")
@@ -2777,7 +2771,7 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
         today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
         ep = (wv_mem.get("event_preview") or {})
         if ep.get("text") and preview_visible(ep, today_et):
-            L.append(f"🗓 {MACRO_EVENTS.get(today_et)}预判: {ep['text']}")
+            L.append(f"🗓 {ep.get('event_label', '未公布事件')}预判: {ep['text']}")
     except Exception:
         pass
     if hc:
@@ -4348,6 +4342,7 @@ def main():
         is_15m = (minute % 15 == 0) or (slot != last_timed_slot and minute % 15 <= 3)
 
         print(f"\n[{now.strftime('%H:%M:%S')}] {'15分钟定时' if is_15m else '3分钟'}扫描...")
+        refresh_macro_expectations()
 
         # ── AI 叙事复盘(取代机械结算 2026-08-23) ──
         try:
@@ -4359,6 +4354,7 @@ def main():
         for sym, config in watch:
             try:
                 print(f"  {sym}...", end=" ", flush=True)
+                event_preview(sym)  # 先准备已取得的共识与情景，再进入方向判决。
                 result = vote(sym, config)
 
                 # ── 4h 层: 每根4h收线重判一次, 中间用缓存 ──

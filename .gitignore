@@ -10,3 +10,4 @@ __pycache__/
 .env
 oi_history.json
 decision_audit.sqlite3*
+macro_expectations.sqlite3*
