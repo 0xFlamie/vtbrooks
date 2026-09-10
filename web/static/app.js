@@ -26,7 +26,75 @@ function evidenceRows(brooks){
     ["已确认摆动",structure.description||"等待结构事实",`${points||"确认摆动点不足"}${structure.invalid!=null?` · 结构检验位 $${fmt(structure.invalid)}`:""} · 右侧两根收线确认，不是胜率预测`]
   ];
 }
+const researchSeen=new Set();
+let researchInitialized=false, researchAudio=null, researchSoundEnabled=false, researchLastUpdate=0, researchSignature="";
+const researchTime=v=>new Date(v).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
+function researchTone(preview=false){
+  if(!researchAudio||researchAudio.state!=="running")return false;
+  const start=researchAudio.currentTime;
+  for(const [delay,hz] of (preview?[[0,660]]:[[0,660],[.2,880]])){
+    const oscillator=researchAudio.createOscillator(), gain=researchAudio.createGain();
+    oscillator.type="sine";oscillator.frequency.value=hz;gain.gain.setValueAtTime(0,start+delay);
+    gain.gain.linearRampToValueAtTime(.09,start+delay+.015);gain.gain.exponentialRampToValueAtTime(.001,start+delay+.16);
+    oscillator.connect(gain);gain.connect(researchAudio.destination);oscillator.start(start+delay);oscillator.stop(start+delay+.18);
+  }
+  return true;
+}
+async function toggleResearchSound(){
+  const button=$("research-sound");
+  if(researchSoundEnabled){researchSoundEnabled=false;button.textContent="开启研究信号声音";button.className="pill muted";button.setAttribute("aria-pressed","false");return;}
+  try{
+    const Audio=window.AudioContext||window.webkitAudioContext;
+    if(!Audio)throw new Error("unsupported");
+    researchAudio=researchAudio||new Audio();await researchAudio.resume();
+    if(researchAudio.state!=="running")throw new Error("suspended");
+    researchSoundEnabled=true;button.textContent="研究信号声音已开启";button.className="pill";button.setAttribute("aria-pressed","true");researchTone(true);
+    $("research-sound-note").textContent="已试听提示音；只响新信号，不重播历史。刷新后需重新开启；后台休眠或静音可能漏提醒。";
+  }catch(_){researchSoundEnabled=false;button.setAttribute("aria-pressed","false");$("research-sound-note").textContent="声音未能开启，请检查浏览器声音权限；仍可查看卡片。";}
+}
+function researchCard(signal){
+  const active=signal.status==="new"||signal.status==="observing", card=document.createElement("article");
+  card.className=`direction panel research-event ${active?dirClass(signal.direction):"flat"}`;
+  const labels={new:"新出现 · 等待研究参考时刻",observing:"观察中 · 参考时刻已过，不作追单提示",ended:"观察窗口已结束",unverified:"行情中断 · 暂不能确认"};
+  const fields=[["div",`${signal.id}`,"eyebrow"],["strong",`${signal.direction==="LONG"?"偏多":"偏空"} · 研究候选`],
+    ["div",labels[signal.status]||"状态未知","pill muted"],["p",signal.reason],
+    ["p",`触发时价格 $${fmt(signal.observed_price)} · 区间 $${fmt(signal.range_low)}–$${fmt(signal.range_high)} · ATR $${fmt(signal.atr)}`],
+    ["p",`信号结构参考 $${fmt(signal.structure_reference)}（不是已验证止损）；回到区间外需重看假突破思路`],
+    ["p",`生成 ${researchTime(signal.generated_at)} · 研究参考 ${researchTime(signal.entry_not_before)} · 窗口截止 ${researchTime(signal.deadline)}（北京时间）`],
+    ["small",signal.result]];
+  for(const [tag,text,cls] of fields){const el=document.createElement(tag);el.textContent=text;if(cls)el.className=cls;card.append(el);}
+  return card;
+}
+function renderResearch(data){
+  if(!$("research-list"))return;
+  const live=data?.collector?.status==="live", signals=data?.signals||[], serverAt=Date.parse(data?.updated_at);
+  let incoming=false;
+  for(const signal of signals){
+    if(researchInitialized&&!researchSeen.has(signal.id)&&live&&signal.status==="new"&&serverAt<Date.parse(signal.entry_not_before)&&
+       Date.now()<Date.parse(signal.entry_not_before)&&Date.now()-serverAt>=-5000&&Date.now()-serverAt<=20000)incoming=true;
+    researchSeen.add(signal.id);
+  }
+  while(researchSeen.size>1000)researchSeen.delete(researchSeen.values().next().value);
+  if(data?.collector?.status!=="unavailable"&&data)researchInitialized=true;
+  if(incoming&&researchSoundEnabled&&!researchTone()){
+    researchSoundEnabled=false;$("research-sound").textContent="重新开启研究信号声音";$("research-sound").setAttribute("aria-pressed","false");
+    $("research-sound-note").textContent="有新研究信号，但浏览器暂停了声音；请重新点击开启。";
+  }
+  researchLastUpdate=Date.now();
+  $("research-health").textContent=data?.collector?.label||"研究数据暂不可用";
+  $("research-health").className=live?"pill":"pill muted";
+  $("research-health").title=data?.collector?.last_heartbeat_at?`采集心跳 ${researchTime(data.collector.last_heartbeat_at)}`:"";
+  $("research-rule").textContent=data?.rule_note||"独立研究账本，与原AI方向分开记录";
+  $("research-history").textContent=data?.history_note||"";$("research-source").textContent=data?.source_note||"Coinbase ETH-USD · 不混用OKX ETH-USDC报价";
+  const signature=JSON.stringify([signals,live]);
+  if(signature!==researchSignature){
+    researchSignature=signature;
+    if(signals.length)$("research-list").replaceChildren(...signals.map(researchCard));
+    else{const p=document.createElement("p");p.className="subtitle";p.textContent=live?"尚无符合条件的研究信号，继续等待形态形成。":"研究数据暂不可用或采集尚未就绪；不是观望判决。";$("research-list").replaceChildren(p);}
+  }
+}
 function render(s){
+  renderResearch(s.research_signals);
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};
   $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=s.news;
   $("direction4").textContent=dirText(t4.direction); $("direction4").className=dirClass(t4.direction); $("direction4").closest(".direction").className=`direction panel ${dirClass(t4.direction)}`; $("confidence4").textContent=t4.confidence == null ? "暂无判决" : `置信 ${t4.confidence}%`; $("reason4").textContent=t4.summary||((t4.latest_reasons||[]).join("；"))||"原因随下一次4h判决更新";
@@ -64,4 +132,6 @@ function connect(){
   socket.onerror=()=>socket.close();
   socket.onclose=()=>{$("health").textContent="通信重连中";$("health").className="pill muted";setTimeout(connect,2000)};
 }
+$("research-sound")?.addEventListener("click",toggleResearchSound);
+setInterval(()=>{if(researchLastUpdate&&Date.now()-researchLastUpdate>20000){$("research-health").textContent="页面通信过期 · 请勿追旧信号";$("research-health").className="pill muted";$("research-list").style.opacity=".55";}else if($("research-list"))$("research-list").style.opacity="1";},2000);
 refresh(); connect(); setInterval(()=>{if(!socket||socket.readyState!==WebSocket.OPEN)refresh()},30000);

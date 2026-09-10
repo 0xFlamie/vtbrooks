@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import vt_vote_bot as bot  # noqa: E402
 from analysis.tv_indicators.adx_di import adx_di  # noqa: E402
+from web.research_signals import read_snapshot as research_snapshot  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = 8423
@@ -162,6 +163,7 @@ def snapshot():
                                "量比": levels15.get("vol_ratio"), "VWAP": bot.compute_vwap(symbol),
                                "Brooks": ba15.get("deep", {})}},
         "journal": journal[-8:],
+        "research_signals": research_snapshot(),
         "news": (news.get("world_view") or {}).get("card") or "暂无盘面综述",
         "health": {"klines_15m": len(df15), "context_4h": bool(ctx4)},
     })
