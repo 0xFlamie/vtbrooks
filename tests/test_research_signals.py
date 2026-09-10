@@ -190,7 +190,7 @@ const context={document,window:{},Date,Set,JSON,console,location:{protocol:'http
  fetch:()=>new Promise(()=>{}),setInterval(){},setTimeout(){},WebSocket:class {close(){}}};
 vm.createContext(context);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
 vm.runInContext(`
-let calls=0;researchTone=()=>{calls++;return true};researchSoundEnabled=true;
+let calls=0;playSignalAlarm=()=>{calls++;signalAlarm.node={stop(){},disconnect(){}};return true};researchSoundEnabled=true;
 const base={collector:{status:'live',label:'采集中'},updated_at:new Date().toISOString(),signals:[]};
 const row={id:'BRK-FR-15M-v1:test',direction:'LONG',status:'new',reason:'<img src=x onerror=alert(1)>',
  generated_at:base.updated_at,entry_not_before:new Date(Date.now()+120000).toISOString(),deadline:new Date(Date.now()+3600000).toISOString()};

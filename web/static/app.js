@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const plainMacroText=value=>typeof value==="string"?value.replace(/🚨\uFE0F?\s*(?=宏观硬闸门)/g,""):value;
 const cnDir = (v) => ({bull_leg:"多头腿",bear_leg:"空头腿",range:"震荡/无连续方向"}[v] || v || "—");
 const fmt = (v) => typeof v === "number" ? v.toFixed(2) : (v ?? "—");
 const dirText = (v) => v === "LONG" ? "做多" : v === "SHORT" ? "做空" : "观望";
@@ -35,11 +36,11 @@ function renderDirection(id,layer){
   $("direction"+id).closest(".direction").className=`direction panel ${dirClass(direction)}`;
   $("confidence"+id).textContent=layer.confidence==null||layer.confidence<0?"暂无评分":`参考评分 ${layer.confidence}`;
   $("confidence"+id).title="模型自评或规则调整值，不是经回测校准的盈利概率";
-  $("reason"+id).textContent=layer.summary||"本轮未提供一句话判断";
+  $("reason"+id).textContent=plainMacroText(layer.summary)||"本轮未提供一句话判断";
   numberedReasons("reasons"+id,layer.latest_reasons);
   $("decision-time"+id).textContent=layer.decision_at?`技术判断 ${macroTime(layer.decision_at)} · 不是逐笔重判`:"判断时间未记录 · 请留意旧观点";
   if(layer.shown_at&&Date.now()-Date.parse(layer.shown_at)>600000)$("decision-time"+id).textContent+=" · 展示超过10分钟未更新";
-  $("change"+id).textContent=[layer.change,layer.previous_summary?`上次：${layer.previous_summary}`:""].filter(Boolean).join(" · ");
+  $("change"+id).textContent=plainMacroText([layer.change,layer.previous_summary?`上次：${layer.previous_summary}`:""].filter(Boolean).join(" · "));
   if(layer.source==="legacy_journal")$("change"+id).textContent="历史记录回退，非最新逐次判决";
   renderPlan("plan"+id,layer);
 }
@@ -77,6 +78,76 @@ const researchSeen=new Set();
 const researchFlashes=new Map();
 let researchInitialized=false, researchAudio=null, researchSoundEnabled=false, researchLastUpdate=0, researchSignature="";
 const researchTime=v=>new Date(v).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
+const SIGNAL_ALARM_MS=5*60*1000;
+const signalAlarm={until:0,node:null,sources:new Set(),message:"等待新信号"};
+function dropAlarmAudio(){
+  const source=signalAlarm.node;signalAlarm.node=null;
+  if(source){source.onended=null;source.stop();source.disconnect();}
+}
+function stopSignalAlarm(message="已手动停止本轮；下个新信号仍会提醒"){
+  dropAlarmAudio();signalAlarm.until=0;signalAlarm.sources.clear();signalAlarm.message=message;showSignalAlarm();
+}
+function playSignalAlarm(){
+  if(!researchAudio||researchAudio.state!=="running"||signalAlarm.until<=Date.now())return false;
+  let source=null,started=false;
+  try{
+    const rate=researchAudio.sampleRate,buffer=researchAudio.createBuffer(1,Math.ceil(rate*1.2),rate),data=buffer.getChannelData(0);
+    for(let i=0;i<data.length;i++){
+      const t=i/rate,part=t%.4,hz=Math.floor(t/.4)===1?880:660;
+      data[i]=part<.28?.16*Math.min(part/.02,1)*Math.exp(-12*part)*Math.sin(2*Math.PI*hz*part):0;
+    }
+    source=researchAudio.createBufferSource();source.buffer=buffer;source.loop=true;source.connect(researchAudio.destination);
+    source.start();started=true;source.stop(researchAudio.currentTime+Math.max(0,(signalAlarm.until-Date.now())/1000));
+    source.onended=()=>{if(signalAlarm.node===source)stopSignalAlarm("本轮5分钟响铃结束；等待新信号")};
+    signalAlarm.node=source;return true;
+  }catch(_){
+    if(source){source.disconnect();if(started)source.stop();}
+    signalAlarm.message="音频播放失败，请检查权限并重新开启声音";return false;
+  }
+}
+function showSignalAlarm(){
+  const active=signalAlarm.until>Date.now(),seconds=Math.max(0,Math.ceil((signalAlarm.until-Date.now())/1000));
+  const status=$("signal-alarm-status"),stop=$("signal-alarm-stop");
+  if(stop)stop.disabled=!active;
+  if(status)status.textContent=active?`${[...signalAlarm.sources].join(" / ")} · ${signalAlarm.node?"循环响铃":"声音暂停 / 未能播放"} ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · 提醒不代表当前仍可入场`:signalAlarm.message;
+}
+function tickSignalAlarm(){
+  if(signalAlarm.until&&Date.now()>=signalAlarm.until){stopSignalAlarm("本轮5分钟响铃结束；等待新信号");return;}
+  if(signalAlarm.until&&researchAudio?.state!=="running")dropAlarmAudio();
+  showSignalAlarm();
+}
+function startSignalAlarm(labels){
+  if(!researchSoundEnabled)return false;
+  if(signalAlarm.until&&Date.now()>=signalAlarm.until)stopSignalAlarm("本轮结束");
+  if(signalAlarm.until){for(const label of labels)signalAlarm.sources.add(label);showSignalAlarm();return !!signalAlarm.node;}
+  signalAlarm.until=Date.now()+SIGNAL_ALARM_MS;signalAlarm.sources=new Set(labels);
+  const played=playSignalAlarm();showSignalAlarm();return played;
+}
+const signalNames={"4h":"4小时方向","15m":"15分钟方向",h2:"二次入场",retest:"突破回触",outside:"外包K",failed_range:"区间假突破",second_leg:"第二腿",double_test:"双顶双底",wedge:"楔形"};
+const signalLabel=signal=>`${signalNames[signal.family]||"Brooks"} · ${signal.direction==="LONG"?"偏多":"偏空"}`;
+function notifySignals(signals){
+  if(!signals.length)return;
+  const played=startSignalAlarm(signals.map(signalLabel));
+  for(const signal of signals)logResearchAlert(signal,played?"已提交播放 / 合并本轮5分钟提醒（设备是否发声无法确认）":researchSoundEnabled?"浏览器暂停或播放失败，请恢复剩余提醒":"声音开关未开启，未播放");
+}
+const directionAlarmStates=new Map();
+function directionSignal(layer,tf,serverAt){
+  if(layer?.source!=="latest_display_after_macro_veto"||!layer.decision_id)return null;
+  const shown=Date.parse(layer.shown_at),old=directionAlarmStates.get(tf),key=`${layer.decision_id}:${layer.direction}`;
+  if(!Number.isFinite(shown)||(old&&shown<=old.shown))return null;
+  directionAlarmStates.set(tf,{key,shown,id:layer.decision_id});
+  if(!old||old.key===key||!["LONG","SHORT"].includes(layer.direction))return null;
+  const signal={family:tf,direction:layer.direction};
+  const eventAt=old.id===layer.decision_id?shown:Date.parse(layer.decision_at),age=Date.now()-eventAt,lag=Date.now()-serverAt;
+  if(!(age>=-5000&&age<=120000&&lag>=-5000&&lag<=20000)){
+    logResearchAlert(signal,"方向判决到达过期或时钟异常，不追旧信号");return null;
+  }
+  return signal;
+}
+function notifyDirections(snapshot){
+  const at=Date.parse(snapshot.updated_at);
+  notifySignals(["4h","15m"].map(tf=>directionSignal(snapshot[tf],tf,at)).filter(Boolean));
+}
 function researchTone(preview=false){
   if(!researchAudio||researchAudio.state!=="running")return false;
   const start=researchAudio.currentTime;
@@ -90,9 +161,12 @@ function researchTone(preview=false){
 }
 function syncResearchSound(){
   const running=researchSoundEnabled&&researchAudio?.state==="running",button=$("research-sound");
-  button.textContent=running?"声音已开启":researchSoundEnabled?"声音暂停 · 点击恢复":"开启研究信号声音";
+  button.textContent=running?"全站声音已开启":researchSoundEnabled?"声音暂停 · 点击恢复":"开启全站信号声音";
   button.className=running?"pill":"pill muted";button.setAttribute("aria-pressed",String(running));
-  $("research-sound-note").textContent=running?"声音就绪 · 只提醒新信号；刷新后需重新开启，后台/静音仍可能漏提醒。":researchSoundEnabled?"浏览器已暂停音频；请点击恢复，错过的旧信号不补响。":"声音未开启；卡片仍会更新。可先试听检查设备音量。";
+  $("research-sound-note").textContent=running?"4h / 15m / Brooks新信号循环响5分钟；同轮不续时。刷新需重开，后台/静音可能漏提醒。":researchSoundEnabled?"浏览器暂停音频；点击恢复本轮剩余时间，已过期不补响。":"声音未开启；卡片仍会更新。先试听，再开启全站提醒。";
+  tickSignalAlarm();
+  if(signalAlarm.until&&running&&!signalAlarm.node)playSignalAlarm();
+  showSignalAlarm();
 }
 async function prepareResearchAudio(){
   const Audio=window.AudioContext||window.webkitAudioContext;
@@ -102,18 +176,19 @@ async function prepareResearchAudio(){
   if(researchAudio.state!=="running")throw new Error("suspended");
 }
 async function toggleResearchSound(){
-  if(researchSoundEnabled&&researchAudio?.state==="running"){researchSoundEnabled=false;syncResearchSound();return;}
+  if(researchSoundEnabled&&researchAudio?.state==="running"){researchSoundEnabled=false;stopSignalAlarm("全站声音已关闭");syncResearchSound();return;}
   try{
-    await prepareResearchAudio();researchSoundEnabled=true;syncResearchSound();researchTone(true);
+    await prepareResearchAudio();researchSoundEnabled=true;syncResearchSound();if(!signalAlarm.until)researchTone(true);
   }catch(_){researchSoundEnabled=false;syncResearchSound();$("research-sound-note").textContent="声音未能开启，请检查浏览器声音权限；仍可查看卡片。";}
 }
 async function testResearchSound(){
+  if(signalAlarm.until>Date.now()){showSignalAlarm();return;}
   try{await prepareResearchAudio();researchTone();$("research-sound-note").textContent="已请求播放三声试听；请自己确认能否听到。试听不改变提醒开关。";}
   catch(_){$("research-sound-note").textContent="试听失败，请检查浏览器权限和设备声音。";}
 }
 const researchAlertLog=[];
 function logResearchAlert(signal,outcome){
-  const label=`${researchTime(new Date().toISOString())} · ${signal.family||"研究"} ${signal.direction==="LONG"?"偏多":"偏空"} · ${outcome}`;
+  const label=`${researchTime(new Date().toISOString())} · ${signalLabel(signal)} · ${outcome}`;
   researchAlertLog.unshift(label);researchAlertLog.splice(20);
   $("research-alert-log")?.replaceChildren(...researchAlertLog.map(text=>macroText("li",text)));
 }
@@ -181,11 +256,7 @@ function renderResearch(data){
   while(researchSeen.size>1000)researchSeen.delete(researchSeen.values().next().value);
   for(const [id,until] of researchFlashes)if(until<=Date.now())researchFlashes.delete(id);
   if(data?.collector?.status!=="unavailable"&&data)researchInitialized=true;
-  if(incoming.length){
-    const played=researchSoundEnabled&&researchTone();
-    for(const signal of incoming)logResearchAlert(signal,played?"已提交播放（设备是否发声无法确认）":researchSoundEnabled?"浏览器暂停音频，未播放":"声音开关未开启，未播放");
-    if(researchSoundEnabled&&!played)syncResearchSound();
-  }
+  notifySignals(incoming);
   researchLastUpdate=Date.now();
   $("research-health").textContent=data?.collector?.label||"研究数据暂不可用";
   $("research-health").className=live?"pill":"pill muted";
@@ -202,10 +273,11 @@ function renderResearch(data){
   }
 }
 function render(s){
+  notifyDirections(s);
   renderMacro(s.macro_events);
   renderResearch(s.research_signals);
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};
-  $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=s.news;
+  $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=plainMacroText(s.news);
   renderDirection("4",t4);renderDirection("15",t15);
   $("price-params").textContent=`15m量比 ${fmt(i15["量比"])} · 4h ATR ${fmt(i4.ATR)}%`;
   $("price-updated").textContent=`页面快照 ${macroTime(s.updated_at)} · 非成交指令`;
@@ -235,7 +307,7 @@ function render(s){
 async function refresh(){try{const r=await fetch('/api/snapshot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);render(await r.json())}catch(e){$("health").textContent='通信中断';$("health").className='pill muted'}}
 let macroClock=null,macroSignature="";
 function macroText(tag,text,className=""){
-  const element=document.createElement(tag);element.textContent=text;element.className=className;return element;
+  const element=document.createElement(tag);element.textContent=plainMacroText(text);element.className=className;return element;
 }
 function macroTime(value){
   const date=new Date(value);return Number.isFinite(date.getTime())?date.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}):"时间未知";
@@ -306,5 +378,7 @@ function connect(){
 }
 $("research-sound")?.addEventListener("click",toggleResearchSound);
 $("research-test")?.addEventListener("click",testResearchSound);
+$("signal-alarm-stop")?.addEventListener("click",()=>stopSignalAlarm());
+setInterval(tickSignalAlarm,1000);
 setInterval(()=>{if(researchLastUpdate&&Date.now()-researchLastUpdate>20000){$("research-health").textContent="页面通信过期 · 请勿追旧信号";$("research-health").className="pill muted";$("research-list").style.opacity=".55";$("research-list").setAttribute("data-stale","true");}else if($("research-list"))$("research-list").style.opacity="1";},2000);
 refresh(); connect(); setInterval(()=>{if(!socket||socket.readyState!==WebSocket.OPEN)refresh()},30000);

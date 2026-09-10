@@ -3791,7 +3791,7 @@ def build_brief_4h(result):
     L.extend(_recent_news_lines())
     veto = active_macro_veto()
     if veto:
-        L.append(f"🚨 宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
+        L.append(f"宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
     sr = self_review_block()
     if sr:
         L.append(sr)
@@ -3903,7 +3903,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     L.extend(_recent_news_lines())
     veto = active_macro_veto()
     if veto:
-        L.append(f"🚨 宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
+        L.append(f"宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
     sr = self_review_block()
     if sr:
         L.append(sr)
@@ -4246,13 +4246,13 @@ def apply_macro_veto(judge4, judge15):
         return judge4, judge15
     direction = veto["direction"]
     label = "做多" if direction == "LONG" else "做空"
-    reason = f"🚨 宏观硬闸门: {veto.get('event', '宏观数据')}高影响意外，否决反向判断；{veto.get('reason', '')}"
+    reason = f"宏观硬闸门: {veto.get('event', '宏观数据')}高影响意外，否决反向判断；{veto.get('reason', '')}"
     for judge in (judge4, judge15):
         if judge.get("direction") != direction:
             judge["direction"] = direction
             judge["verdict"] = "执行"
             judge["confidence"] = max(70, min(int(judge.get("confidence", 0)), 82))
-            judge["reasons"] = [reason] + [r for r in judge.get("reasons", []) if not r.startswith("🚨")][:3]
+            judge["reasons"] = [reason] + [r for r in judge.get("reasons", []) if not r.startswith(("🚨", "宏观硬闸门"))][:3]
             judge["summary"] = f"宏观意外后只看{label}，反向信号暂时作废"
     return judge4, judge15
 

@@ -145,7 +145,7 @@ const context={document,window:{},Date,Set,Map,JSON,console,location:{protocol:'
 fetch:()=>new Promise(()=>{}),setInterval(){},setTimeout(){},WebSocket:class{close(){}}};
 vm.createContext(context);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
 vm.runInContext(`
-let calls=0;researchTone=()=>{calls++;return true};researchSoundEnabled=true;
+let calls=0;playSignalAlarm=()=>{calls++;signalAlarm.node={stop(){},disconnect(){}};return true};researchSoundEnabled=true;
 const now=new Date().toISOString(),health={status:'live',label:'采集中'};
 const families=['h2','retest','outside','failed_range','second_leg','double_test','wedge'].map(f=>({family:f,name:f,collector:health,signals:[]}));
 const base={collector:health,updated_at:now,families,signals:[]};

@@ -31,7 +31,7 @@
       @media(max-width:1100px){#research-list{grid-template-columns:repeat(7,150px)}}
       #research-sound{cursor:pointer}#research-signals .subtitle{font-size:12px;margin-top:8px}#research-sound-note{color:var(--muted)}
     </style>
-    <div class="section-head"><div><div class="eyebrow">七类独立研究提醒</div><h2 id="research-title">Brooks 形态雷达 · 15M</h2></div><div class="hero-tags"><span id="research-health" class="pill muted">连接中</span><button id="research-sound" type="button" class="pill muted" aria-pressed="false">开启研究信号声音</button><button id="research-test" type="button" class="pill muted">试听</button></div></div>
+    <div class="section-head"><div><div class="eyebrow">七类独立研究提醒</div><h2 id="research-title">Brooks 形态雷达 · 15M</h2></div><div class="hero-tags"><span id="research-health" class="pill muted">连接中</span></div></div>
     <p id="research-rule" class="subtitle">七类独立触发，多绿空红；新信号闪烁。窄屏可左右滑动查看。</p>
     <div id="research-list" aria-live="polite">
       <article class="research-tile flat"><div class="tile-name">H2/L2二次入场</div><strong>—</strong><small>连接中</small></article>
@@ -43,11 +43,10 @@
       <article class="research-tile flat"><div class="tile-name">楔形三推</div><strong>—</strong><small>连接中</small></article>
     </div>
     <p id="research-history" class="subtitle"></p><p id="research-source" class="subtitle">Coinbase ETH-USD · 点位不能混用主站OKX ETH-USDC报价</p>
-    <small id="research-sound-note">提示音只提醒开启后新到的信号；页面须保持打开，后台休眠或静音可能漏提醒。</small>
-    <details class="context-fold"><summary>本页提醒记录 · 为什么响 / 没响</summary><ol id="research-alert-log"><li>尚未收到信号；仅记录本页打开后的到达，不回填历史。</li></ol></details>
+    <details class="context-fold"><summary>全站提醒记录 · 为什么响 / 没响</summary><ol id="research-alert-log"><li>尚未收到信号；仅记录本页打开后的到达，不回填历史。</li></ol></details>
   </section>
   <details class="panel section source-fold"><summary>指标依据 · 4小时 / 15分钟 <small>需要核对时展开，不再重复占据主屏</small></summary><div class="grid"><section><h2>4小时 · 结构与波动</h2><div class="module-grid" id="modules4"></div></section><section><h2>15分钟 · 行为与量能</h2><div class="module-grid" id="modules15"></div></section></div></details>
   <details class="panel section source-fold"><summary>系统说明 <small>不是另一轮AI判决</small></summary><p>方向卡是AI观察判断，七类卡是独立Brooks研究提醒，两者不合并投票。指标用于核对依据；结构计划未验证成交，模型评分不是盈利胜率，概率模型尚未接管。</p></details>
   <section class="panel terminal"><div class="section-head"><div><div class="eyebrow">判决记录</div><h2>最近判决</h2></div></div><div id="journal" class="journal">—</div></section>
   <footer><span>BROOKS ETH · 不构成自动开单指令</span><span>WebSocket 实时更新</span></footer>
-  </main></div></body></html>
+  </main></div><section class="signal-dock panel" aria-label="全站信号声音控制"><div><b id="signal-alarm-status">等待新信号</b><small id="research-sound-note">4小时、15分钟与Brooks新信号均提醒；需点击开启声音。</small></div><div class="hero-tags"><button id="research-sound" type="button" class="pill muted" aria-pressed="false">开启全站信号声音</button><button id="research-test" type="button" class="pill muted">试听</button><button id="signal-alarm-stop" type="button" class="pill muted" disabled>停止本轮响铃</button></div></section></body></html>

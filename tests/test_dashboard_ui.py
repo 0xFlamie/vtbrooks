@@ -69,6 +69,7 @@ vm.runInContext(`
  if($('journal').children[0].children[1].children.some(col=>col.children.at(-1).children.some(li=>li.textContent.includes('uncertain'))))throw Error('ambiguous legacy reasons assigned');
  window.AudioContext=class{constructor(){this.state='suspended'}async resume(){this.state='running';this.onstatechange?.()}};
  let sounds=0;researchTone=()=>{if(researchAudio?.state!=='running')return false;sounds++;return true};
+ playSignalAlarm=()=>{sounds++;signalAlarm.node={stop(){},disconnect(){}};return true};
  await toggleResearchSound();if($('research-sound').attrs['aria-pressed']!=='true')throw Error('not enabled');
  researchAudio.state='suspended';researchAudio.onstatechange();
  if(!$('research-sound').textContent.includes('暂停')||$('research-sound').attrs['aria-pressed']!=='false')throw Error('suspended audio falsely enabled');
