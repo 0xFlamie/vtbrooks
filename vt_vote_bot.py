@@ -16,6 +16,7 @@ from brooks_evidence import evidence_brief, inspect_evidence
 from decision_audit import archive_decision, stamp_decision
 import macro_events as macro
 import macro_expectations as expectations
+from dashboard_state import save_current
 
 VT_PKG = None
 for p in sys.path:
@@ -1295,6 +1296,10 @@ def verify_predictions():
 def record_judge(result, judge4, judge15):
     """双层判决落盘: 4h层(dir4h/conf4h/mag_tier)与15m层(dir15m/conf15m)分开记;
     双层方向都不变且1h内有记录则去重; 上限500条"""
+    try:
+        save_current(result["symbol"], judge4, judge15)
+    except (OSError, ValueError, TypeError) as error:
+        print(f"WARN: 最新展示判决保存失败 {type(error).__name__}")
     ba = result.get("brooks") or {}
     lv = compute_levels(result["symbol"], result["signal"])
     d4, d15 = judge4.get("direction"), judge15.get("direction")
@@ -1330,6 +1335,7 @@ def record_judge(result, judge4, judge15):
         "mag_tier": judge4.get("mag_tier"),  # 幅度档只有4h层给
         "ai_direction": d4,  # 幅度档结算以4h层方向为准
         "reasons": (judge4.get("reasons") or [])[:2] + (judge15.get("reasons") or [])[:1],
+        "reasons4h": (judge4.get("reasons") or [])[:4], "reasons15m": (judge15.get("reasons") or [])[:4],
         "rsi": round(lv["rsi14"]) if lv else None,
         "state": ba.get("state"), "votes": result["votes"],
         "factor_evidence": factor_evidence,
@@ -4135,6 +4141,11 @@ RESEARCH_SYSTEM = ("你是ETH技术研究组，不做最终决策。必须基于
 MANAGER_SYSTEM = ("你是ETH交易公司的最终经理。研究组已分别提交多空论证。你只能批准做多、批准做空或拒绝交易。"
                   "不使用票数；历史胜率不足60%或样本不足100的因子没有方向权；Brooks用于解释结构，不等于概率。"
                   "若多空强度接近、结构处在区间中部、风险条件未解决，必须拒绝交易。"
+                  "summary只说现在偏向与下一步等待条件，不把confidence写成盈利概率。"
+                  "理由依次回答：本轮相对上次新增了什么证据、当前价格所在位置、等待什么确认、什么情况认错。"
+                  "引用材料中的具体价格和时间；没有新证据就明确写维持旧判断，不编造新故事。"
+                  "区分已发生事实与条件推演，不把旧新闻当新冲击，不推断未知持仓者在出货或接盘。"
+                  "不假定用户已持仓，不用泛泛的宏观口号代替本周期价格证据；材料不足直接说明缺失。"
                   "只输出JSON：{\"direction\":\"做多|做空|拒绝交易\",\"magnitude\":\"<1%|1-2%|2-3%|3%+\","
                   "\"confidence\":0-100,\"summary\":\"一句大白话结论和关键位\",\"reasons\":[\"2-4条推演和失效条件\"]}。")
 
@@ -4198,6 +4209,16 @@ def audited_decision(symbol, decision, timeframe, brief):
     return result
 
 
+def previous_decision_context(previous):
+    if not previous:
+        return "\n没有可用的上次判决，不虚构前次观点。"
+    meta = previous.get("decision_meta") or {}
+    return (f"\n前次判断时间：{meta.get('available_at') or '未记录'}；"
+            f"前次结论：{previous.get('summary') or '未记录'}；"
+            f"前次依据：{'；'.join(str(x) for x in (previous.get('reasons') or [])[:4]) or '未记录'}。"
+            "以上是旧观点，不是本轮新事实；对照当前材料说明成立、失效或尚未验证，不能照抄为新证据。")
+
+
 def ai_judge_4h(result, prev=None):
     """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)
     prev: 上一根4h收线的判决, 注入简报让 AI 自己扛迟滞(2026-08-08 临界区翻转抖动)"""
@@ -4207,12 +4228,14 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
+    brief += previous_decision_context(prev)
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "4h", brief)
 
 
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
     brief = build_market_brief(result, events=events, prev=prev)
+    brief += previous_decision_context(prev)
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "15m", brief)
 
 

@@ -6,15 +6,18 @@
   <main>
   <link rel="stylesheet" href="/macro.css">
   <section class="hero panel market-top">
-    <div class="market-price"><span class="eyebrow">以太坊 · USDC现货</span><h2 id="price">—</h2><p id="news">读取重点事件与盘面综述…</p><small>实时价格 · 不提供下单</small></div>
+    <div class="market-price"><span class="eyebrow">以太坊 · USDC现货</span><h2 id="price">—</h2><div id="price-params" class="price-params">等待量能与波动数据</div><small id="price-updated">等待页面快照</small><details class="context-fold"><summary>市场背景</summary><p id="news">暂无盘面综述</p></details></div>
     <div class="macro-events" aria-labelledby="macro-title">
-      <div class="macro-head"><h2 id="macro-title">近日关注事件</h2><span id="macro-status" class="pill muted" role="status">读取事前预期…</span></div>
-      <p id="macro-note">北京时间 · 市场预期与前值在公布前准备，缺失时不猜数字。</p>
+      <div class="macro-head"><h2 id="macro-title">临近事件</h2><span id="macro-status" class="pill muted" role="status">读取事前预期…</span></div>
+      <p id="macro-note">只展开未来24小时内最近一组事件；同一时刻的分项放一起。</p>
       <div id="macro-list"><p>正在读取事件日历…</p></div>
-      <small id="macro-source"></small>
+      <details class="context-fold"><summary>来源与数据边界</summary><small id="macro-source"></small></details>
     </div>
   </section>
-  <section class="direction-grid"><article class="direction panel"><div class="eyebrow">4小时方向</div><strong id="direction4">观望</strong><span id="confidence4" class="pill muted">暂无判决</span><p id="reason4">等待4小时收线与判决原因</p></article><article class="direction panel"><div class="eyebrow">15分钟方向</div><strong id="direction15">观望</strong><span id="confidence15" class="pill muted">暂无判决</span><p id="reason15">等待15分钟收线与判决原因</p></article></section>
+  <section class="direction-grid">
+    <article class="direction panel"><div class="eyebrow">4小时方向 · 独立周期</div><strong id="direction4">观望</strong><span id="confidence4" class="pill muted">暂无判决</span><div id="decision-time4" class="decision-time"></div><p id="reason4">等待4小时判决</p><ol id="reasons4" class="decision-reasons"></ol><div id="change4" class="decision-change"></div><div class="direction-structure"><div><small>当前结构</small><b id="trend4">—</b></div><div><small>支撑 · 4h区间</small><b id="support4">—</b></div><div><small>压力 · 4h区间</small><b id="resistance4">—</b></div></div><small id="squeeze" class="structure-note">—</small><div id="risk4" class="risk-note">—</div><div id="plan4" class="trade-plan">—</div></article>
+    <article class="direction panel"><div class="eyebrow">15分钟方向 · 独立周期</div><strong id="direction15">观望</strong><span id="confidence15" class="pill muted">暂无判决</span><div id="decision-time15" class="decision-time"></div><p id="reason15">等待15分钟判决</p><ol id="reasons15" class="decision-reasons"></ol><div id="change15" class="decision-change"></div><div class="direction-structure"><div><small>当前结构</small><b id="trend15">—</b></div><div><small>支撑 · 15m摆动</small><b id="support">—</b></div><div><small>压力 · 15m摆动</small><b id="resistance">—</b></div></div><small id="bar15" class="structure-note">—</small><div id="risk15" class="risk-note">—</div><div id="plan15" class="trade-plan">—</div></article>
+  </section>
   <section class="panel section" id="research-signals" aria-labelledby="research-title">
     <style>
       #research-list{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start;overflow-x:auto;padding:4px 2px 10px}
@@ -28,7 +31,7 @@
       @media(max-width:1100px){#research-list{grid-template-columns:repeat(7,150px)}}
       #research-sound{cursor:pointer}#research-signals .subtitle{font-size:12px;margin-top:8px}#research-sound-note{color:var(--muted)}
     </style>
-    <div class="section-head"><div><div class="eyebrow">七类独立研究提醒</div><h2 id="research-title">Brooks 形态雷达 · 15M</h2></div><div class="hero-tags"><span id="research-health" class="pill muted">连接中</span><button id="research-sound" type="button" class="pill muted" aria-pressed="false">开启研究信号声音</button></div></div>
+    <div class="section-head"><div><div class="eyebrow">七类独立研究提醒</div><h2 id="research-title">Brooks 形态雷达 · 15M</h2></div><div class="hero-tags"><span id="research-health" class="pill muted">连接中</span><button id="research-sound" type="button" class="pill muted" aria-pressed="false">开启研究信号声音</button><button id="research-test" type="button" class="pill muted">试听</button></div></div>
     <p id="research-rule" class="subtitle">七类独立触发，多绿空红；新信号闪烁。窄屏可左右滑动查看。</p>
     <div id="research-list" aria-live="polite">
       <article class="research-tile flat"><div class="tile-name">H2/L2二次入场</div><strong>—</strong><small>连接中</small></article>
@@ -41,10 +44,10 @@
     </div>
     <p id="research-history" class="subtitle"></p><p id="research-source" class="subtitle">Coinbase ETH-USD · 点位不能混用主站OKX ETH-USDC报价</p>
     <small id="research-sound-note">提示音只提醒开启后新到的信号；页面须保持打开，后台休眠或静音可能漏提醒。</small>
+    <details class="context-fold"><summary>本页提醒记录 · 为什么响 / 没响</summary><ol id="research-alert-log"><li>尚未收到信号；仅记录本页打开后的到达，不回填历史。</li></ol></details>
   </section>
-  <section class="metrics"><article class="panel metric"><div class="eyebrow">4小时结构</div><strong id="trend4">—</strong><p id="squeeze">—</p></article><article class="panel metric"><div class="eyebrow">15分钟价格行为</div><strong id="trend15">—</strong><p id="bar15">—</p></article><article class="panel metric"><div class="eyebrow">支撑</div><strong id="support">—</strong><p>近20根15分钟低点 / TR底</p></article><article class="panel metric"><div class="eyebrow">压力</div><strong id="resistance">—</strong><p>近20根15分钟高点 / TR顶</p></article></section>
-  <div class="grid"><section class="panel section"><div class="section-head"><div><div class="eyebrow">4小时系统</div><h2>长线结构与确认</h2></div><span id="risk4" class="pill muted">—</span></div><div class="module-grid" id="modules4"></div><div id="plan4" class="trade-plan">—</div></section><section class="panel section"><div class="section-head"><div><div class="eyebrow">15分钟系统</div><h2>短线行为与入场</h2></div><span id="risk15" class="pill muted">—</span></div><div class="module-grid" id="modules15"></div><div id="plan15" class="trade-plan">—</div></section></div>
-  <section class="panel section"><div class="section-head"><div><div class="eyebrow">系统构成</div><h2>信号来源与分工</h2></div><span class="pill muted">概率模型尚未接管</span></div><div class="research"><div><b>候选 · 价格行为</b><span>Brooks</span><small>只发现二次入场、假突破、突破回踩和趋势延续候选；不直接等于开单信号</small></div><div><b>过滤 · 概率模型</b><span>研究中</span><small>按先止盈、先止损和无行情训练；未通过样本外验证前不放行交易</small></div><div><b>环境 · 波动</b><span>挤压 / ATR / ADX</span><small>判断行情会不会放大、止损和仓位怎么收缩；不把波动当方向</small></div><div><b>辅助 · 情绪</b><span>RSI / OI / 资金费率</span><small>只作为候选特征，不拥有单独决策权</small></div><div><b>风控 · 事件</b><span>宏观 / 新闻</span><small>PCE、非农、FOMC进入硬风险闸门；不参与纯技术方向概率</small></div><div><b>结构 · 关键位</b><span>VWAP / Wyckoff</span><small>提供成本、支撑压力、失效位和目标位</small></div><div><b>当前 · 4小时</b><span>AI观察判断</span><small>概率模型尚未接管，当前方向只能作为盘面分析，不能视为已验证信号</small></div><div><b>当前 · 15分钟</b><span>AI观察判断</span><small>持续展示短线结构；未通过概率过滤时不应自动执行</small></div></div></section>
+  <details class="panel section source-fold"><summary>指标依据 · 4小时 / 15分钟 <small>需要核对时展开，不再重复占据主屏</small></summary><div class="grid"><section><h2>4小时 · 结构与波动</h2><div class="module-grid" id="modules4"></div></section><section><h2>15分钟 · 行为与量能</h2><div class="module-grid" id="modules15"></div></section></div></details>
+  <details class="panel section source-fold"><summary>系统说明 <small>不是另一轮AI判决</small></summary><p>方向卡是AI观察判断，七类卡是独立Brooks研究提醒，两者不合并投票。指标用于核对依据；结构计划未验证成交，模型评分不是盈利胜率，概率模型尚未接管。</p></details>
   <section class="panel terminal"><div class="section-head"><div><div class="eyebrow">判决记录</div><h2>最近判决</h2></div></div><div id="journal" class="journal">—</div></section>
   <footer><span>BROOKS ETH · 不构成自动开单指令</span><span>WebSocket 实时更新</span></footer>
   </main></div></body></html>

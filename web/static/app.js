@@ -26,6 +26,53 @@ function evidenceRows(brooks){
     ["已确认摆动",structure.description||"等待结构事实",`${points||"确认摆动点不足"}${structure.invalid!=null?` · 结构检验位 $${fmt(structure.invalid)}`:""} · 右侧两根收线确认，不是胜率预测`]
   ];
 }
+function numberedReasons(id,reasons){
+  $(id).replaceChildren(...(Array.isArray(reasons)&&reasons.length?reasons:["本轮未提供分项依据"]).map(text=>macroText("li",text)));
+}
+function renderDirection(id,layer){
+  const direction=layer.direction;
+  $("direction"+id).textContent=dirText(direction);$("direction"+id).className=dirClass(direction);
+  $("direction"+id).closest(".direction").className=`direction panel ${dirClass(direction)}`;
+  $("confidence"+id).textContent=layer.confidence==null||layer.confidence<0?"暂无评分":`参考评分 ${layer.confidence}`;
+  $("confidence"+id).title="模型自评或规则调整值，不是经回测校准的盈利概率";
+  $("reason"+id).textContent=layer.summary||"本轮未提供一句话判断";
+  numberedReasons("reasons"+id,layer.latest_reasons);
+  $("decision-time"+id).textContent=layer.decision_at?`技术判断 ${macroTime(layer.decision_at)} · 不是逐笔重判`:"判断时间未记录 · 请留意旧观点";
+  if(layer.shown_at&&Date.now()-Date.parse(layer.shown_at)>600000)$("decision-time"+id).textContent+=" · 展示超过10分钟未更新";
+  $("change"+id).textContent=[layer.change,layer.previous_summary?`上次：${layer.previous_summary}`:""].filter(Boolean).join(" · ");
+  if(layer.source==="legacy_journal")$("change"+id).textContent="历史记录回退，非最新逐次判决";
+  renderPlan("plan"+id,layer);
+}
+function renderPlan(id,layer){
+  const box=$(id);box.replaceChildren(macroText("b","结构进出场测算 · 非触发信号"));
+  const p=layer.plan;
+  if(!p){box.append(macroText("small",layer.plan_note||"没有可用入场计划，等待同向结构确认"));return;}
+  const grid=macroText("div","","plan-levels");
+  for(const [label,value] of [["参考位",p.entry],["失效 / 止损",p.sl],["目标一",p.tp1],["目标二",p.tp2]]){
+    const cell=macroText("div","");cell.append(macroText("small",label),macroText("span",`$${fmt(value)}`));grid.append(cell);
+  }
+  box.append(grid,macroText("small",p.rule||"等待确认条件"),macroText("small","按本周期K线计算；不是实盘成交价或已经验证的止损。"));
+}
+let journalSignature="";
+function renderJournal(entries){
+  const signature=JSON.stringify(entries||[]);if(signature===journalSignature)return;journalSignature=signature;
+  const cards=(entries||[]).slice().reverse().map(x=>{
+    const card=macroText("article","","journal-entry"),head=macroText("div","","journal-head");
+    const time=String(x.time||"时间未记录");
+    head.append(macroText("time",/[zZ]|[+-]\d\d:\d\d$/.test(time)?macroTime(time):time.replace("T"," ").slice(0,19)+" · 原记录时间"));
+    head.append(macroText("span",`4小时 ${dirText(x.dir4h)} / 15分钟 ${dirText(x.dir15m)}`));card.append(head);
+    const columns=macroText("div","","journal-columns");
+    for(const tf of ["4h","15m"]){
+      const old=x.reasons||[],part=macroText("section",""),reasons=x["reasons"+tf]||(old.length===3?(tf==="4h"?old.slice(0,2):old.slice(2,3)):[]);
+      part.append(macroText("b",tf==="4h"?"4小时依据":"15分钟依据"));
+      if(x["summary"+tf])part.append(macroText("p",x["summary"+tf]));
+      const list=macroText("ol","");for(const reason of reasons.length?reasons:["旧记录未保留该周期依据"])list.append(macroText("li",reason));part.append(list);columns.append(part);
+    }
+    card.append(columns);return card;
+  });
+  const older=macroText("details","","context-fold");older.append(macroText("summary",`更早记录（${Math.max(cards.length-2,0)}）`),...cards.slice(2));
+  $("journal").replaceChildren(...(cards.length?cards.slice(0,2):[macroText("p","暂无判决记录")]),...(cards.length>2?[older]:[]));
+}
 const researchSeen=new Set();
 const researchFlashes=new Map();
 let researchInitialized=false, researchAudio=null, researchSoundEnabled=false, researchLastUpdate=0, researchSignature="";
@@ -33,25 +80,50 @@ const researchTime=v=>new Date(v).toLocaleString("zh-CN",{timeZone:"Asia/Shangha
 function researchTone(preview=false){
   if(!researchAudio||researchAudio.state!=="running")return false;
   const start=researchAudio.currentTime;
-  for(const [delay,hz] of (preview?[[0,660]]:[[0,660],[.2,880]])){
+  for(const [delay,hz] of (preview?[[0,660]]:[[0,660],[.32,880],[.64,660]])){
     const oscillator=researchAudio.createOscillator(), gain=researchAudio.createGain();
     oscillator.type="sine";oscillator.frequency.value=hz;gain.gain.setValueAtTime(0,start+delay);
-    gain.gain.linearRampToValueAtTime(.09,start+delay+.015);gain.gain.exponentialRampToValueAtTime(.001,start+delay+.16);
-    oscillator.connect(gain);gain.connect(researchAudio.destination);oscillator.start(start+delay);oscillator.stop(start+delay+.18);
+    gain.gain.linearRampToValueAtTime(.18,start+delay+.02);gain.gain.exponentialRampToValueAtTime(.001,start+delay+.26);
+    oscillator.connect(gain);gain.connect(researchAudio.destination);oscillator.start(start+delay);oscillator.stop(start+delay+.28);
   }
   return true;
 }
+function syncResearchSound(){
+  const running=researchSoundEnabled&&researchAudio?.state==="running",button=$("research-sound");
+  button.textContent=running?"声音已开启":researchSoundEnabled?"声音暂停 · 点击恢复":"开启研究信号声音";
+  button.className=running?"pill":"pill muted";button.setAttribute("aria-pressed",String(running));
+  $("research-sound-note").textContent=running?"声音就绪 · 只提醒新信号；刷新后需重新开启，后台/静音仍可能漏提醒。":researchSoundEnabled?"浏览器已暂停音频；请点击恢复，错过的旧信号不补响。":"声音未开启；卡片仍会更新。可先试听检查设备音量。";
+}
+async function prepareResearchAudio(){
+  const Audio=window.AudioContext||window.webkitAudioContext;
+  if(!Audio)throw new Error("unsupported");
+  if(!researchAudio||researchAudio.state==="closed"){researchAudio=new Audio();researchAudio.onstatechange=syncResearchSound;}
+  await researchAudio.resume();
+  if(researchAudio.state!=="running")throw new Error("suspended");
+}
 async function toggleResearchSound(){
-  const button=$("research-sound");
-  if(researchSoundEnabled){researchSoundEnabled=false;button.textContent="开启研究信号声音";button.className="pill muted";button.setAttribute("aria-pressed","false");return;}
+  if(researchSoundEnabled&&researchAudio?.state==="running"){researchSoundEnabled=false;syncResearchSound();return;}
   try{
-    const Audio=window.AudioContext||window.webkitAudioContext;
-    if(!Audio)throw new Error("unsupported");
-    researchAudio=researchAudio||new Audio();await researchAudio.resume();
-    if(researchAudio.state!=="running")throw new Error("suspended");
-    researchSoundEnabled=true;button.textContent="研究信号声音已开启";button.className="pill";button.setAttribute("aria-pressed","true");researchTone(true);
-    $("research-sound-note").textContent="已试听提示音；只响新信号，不重播历史。刷新后需重新开启；后台休眠或静音可能漏提醒。";
-  }catch(_){researchSoundEnabled=false;button.setAttribute("aria-pressed","false");$("research-sound-note").textContent="声音未能开启，请检查浏览器声音权限；仍可查看卡片。";}
+    await prepareResearchAudio();researchSoundEnabled=true;syncResearchSound();researchTone(true);
+  }catch(_){researchSoundEnabled=false;syncResearchSound();$("research-sound-note").textContent="声音未能开启，请检查浏览器声音权限；仍可查看卡片。";}
+}
+async function testResearchSound(){
+  try{await prepareResearchAudio();researchTone();$("research-sound-note").textContent="已请求播放三声试听；请自己确认能否听到。试听不改变提醒开关。";}
+  catch(_){$("research-sound-note").textContent="试听失败，请检查浏览器权限和设备声音。";}
+}
+const researchAlertLog=[];
+function logResearchAlert(signal,outcome){
+  const label=`${researchTime(new Date().toISOString())} · ${signal.family||"研究"} ${signal.direction==="LONG"?"偏多":"偏空"} · ${outcome}`;
+  researchAlertLog.unshift(label);researchAlertLog.splice(20);
+  $("research-alert-log")?.replaceChildren(...researchAlertLog.map(text=>macroText("li",text)));
+}
+function researchAlertBlock(signal,live,serverAt){
+  if(!researchInitialized)return "初次载入，仅展示，不重播";
+  if(!live||signal.status==="unverified")return "数据未就绪或中断，不播放";
+  if(signal.status!=="new")return "回看 / 观察中 / 已结束，不作为新提醒";
+  if(!(serverAt<Date.parse(signal.entry_not_before)&&Date.now()<Date.parse(signal.entry_not_before)))return "到达时已过新提醒窗口，不追旧信号";
+  if(!(Date.now()-serverAt>=-5000&&Date.now()-serverAt<=20000))return "快照过期或设备时钟偏差，不播放";
+  return null;
 }
 function researchCard(signal){
   const active=signal.status==="new"||signal.status==="observing", card=document.createElement("article");
@@ -96,20 +168,23 @@ function researchTile(family){
 function renderResearch(data){
   if(!$("research-list"))return;
   const live=data?.collector?.status==="live", signals=data?.signals||[], serverAt=Date.parse(data?.updated_at);
-  let incoming=false;
+  const incoming=[];
   for(const signal of signals){
-    if(researchInitialized&&!researchSeen.has(signal.id)&&live&&signal.status==="new"&&serverAt<Date.parse(signal.entry_not_before)&&
-       Date.now()<Date.parse(signal.entry_not_before)&&Date.now()-serverAt>=-5000&&Date.now()-serverAt<=20000){
-      incoming=true;researchFlashes.set(signal.id,Date.now()+8000);
+    if(!researchSeen.has(signal.id)){
+      const conflict=signals.some(other=>other.family===signal.family&&other.available_at===signal.available_at&&other.direction!==signal.direction&&other.status==="new");
+      const blocked=researchAlertBlock(signal,live,serverAt)||(conflict?"同类同刻多空冲突，不播放":null);
+      if(blocked)logResearchAlert(signal,blocked);
+      else{incoming.push(signal);researchFlashes.set(signal.id,Date.now()+8000);}
     }
     researchSeen.add(signal.id);
   }
   while(researchSeen.size>1000)researchSeen.delete(researchSeen.values().next().value);
   for(const [id,until] of researchFlashes)if(until<=Date.now())researchFlashes.delete(id);
   if(data?.collector?.status!=="unavailable"&&data)researchInitialized=true;
-  if(incoming&&researchSoundEnabled&&!researchTone()){
-    researchSoundEnabled=false;$("research-sound").textContent="重新开启研究信号声音";$("research-sound").setAttribute("aria-pressed","false");
-    $("research-sound-note").textContent="有新研究信号，但浏览器暂停了声音；请重新点击开启。";
+  if(incoming.length){
+    const played=researchSoundEnabled&&researchTone();
+    for(const signal of incoming)logResearchAlert(signal,played?"已提交播放（设备是否发声无法确认）":researchSoundEnabled?"浏览器暂停音频，未播放":"声音开关未开启，未播放");
+    if(researchSoundEnabled&&!played)syncResearchSound();
   }
   researchLastUpdate=Date.now();
   $("research-health").textContent=data?.collector?.label||"研究数据暂不可用";
@@ -131,14 +206,14 @@ function render(s){
   renderResearch(s.research_signals);
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};
   $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=s.news;
-  $("direction4").textContent=dirText(t4.direction); $("direction4").className=dirClass(t4.direction); $("direction4").closest(".direction").className=`direction panel ${dirClass(t4.direction)}`; $("confidence4").textContent=t4.confidence == null ? "暂无判决" : `置信 ${t4.confidence}%`; $("reason4").textContent=t4.summary||((t4.latest_reasons||[]).join("；"))||"原因随下一次4h判决更新";
-  $("direction15").textContent=dirText(t15.direction); $("direction15").className=dirClass(t15.direction); $("direction15").closest(".direction").className=`direction panel ${dirClass(t15.direction)}`; $("confidence15").textContent=t15.confidence == null ? "暂无判决" : `置信 ${t15.confidence}%`; $("reason15").textContent=t15.summary||((t15.latest_reasons||[]).join("；"))||"原因随下一次15m判决更新";
+  renderDirection("4",t4);renderDirection("15",t15);
+  $("price-params").textContent=`15m量比 ${fmt(i15["量比"])} · 4h ATR ${fmt(i4.ATR)}%`;
+  $("price-updated").textContent=`页面快照 ${macroTime(s.updated_at)} · 非成交指令`;
   $("trend4").textContent=structureText(d4.trend_leg,t4.direction); $("squeeze").textContent=`挤压 ${fmt(c4.squeeze_pct)}% · ATR ${fmt(c4.atr4h_pct)}% · 4小时收线更新`;
   $("trend15").textContent=structureText(d15.trend_leg,t15.direction); $("bar15").textContent=`${(d15.bar_read||[]).join("；")||"暂无K线判断"} · 15分钟收线更新`;
   $("support").textContent=fmt(lv.swing_low); $("resistance").textContent=fmt(lv.swing_high);
+  $("support4").textContent=fmt(t4.levels?.support);$("resistance4").textContent=fmt(t4.levels?.resistance);
   $("risk4").textContent=d4.risk||"—"; $("risk15").textContent=d15.risk||"—";
-  const planText=(p,d,note)=>p?`进场参考 $${fmt(p.entry)} · 止损 $${fmt(p.sl)} · 一目标 $${fmt(p.tp1)} · 二目标 $${fmt(p.tp2)}<small>${p.rule}</small>`:`${note||`${dirText(d)}：暂不进场，不给虚假止盈止损点位`}`;
-  $("plan4").innerHTML=`<b>Brooks进出场计划</b>${planText(t4.plan,t4.direction,t4.plan_note)}`; $("plan15").innerHTML=`<b>Brooks进出场计划</b>${planText(t15.plan,t15.direction,t15.plan_note)}`;
   putModules("modules4",[
     ...evidenceRows(b4),
     ["核心 · Brooks",structureText(d4.trend_leg,t4.direction),[...(d4.bar_read||[]),...(d4.structure||[])].join("；")||"暂无结构结论"],
@@ -153,9 +228,9 @@ function render(s){
     ["动量",`RSI ${fmt(i15.RSI)} · ADX ${fmt(i15.ADX)}`,i15["RSI历史"]?.text||"暂无统计"],
     ["短线趋势",`EMA20 ${fmt(i15.EMA20)} · EMA50 ${fmt(i15.EMA50)}`,"只服务15分钟入场，不代替4小时方向"],
     ["量能与成本",`量比 ${fmt(i15["量比"])} · VWAP ${i15.VWAP?fmt(i15.VWAP[0]):"—"}`,i15.VWAP?`距VWAP ${fmt(i15.VWAP[1])}%`:"暂无VWAP"],
-    ["形态确认",(b15.setups||[]).join("；")||"无",`K线重叠 ${Math.round((d15.overlap||0)*100)}%`]
+    ["形态确认",(b15.setups||[]).join("；")||"无",`K线重叠 ${Number.isFinite(d15.overlap)?Math.round(d15.overlap*100)+"%":"—"}`]
   ]);
-  $("journal").innerHTML=(s.journal||[]).slice().reverse().map(x=>`<div>${x.time||""} · 4h ${x.dir4h||"观望"} / 15m ${x.dir15m||"观望"} · ${x.reasons||[]}</div>`).join("")||"暂无判决记录";
+  renderJournal(s.journal);
 }
 async function refresh(){try{const r=await fetch('/api/snapshot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);render(await r.json())}catch(e){$("health").textContent='通信中断';$("health").className='pill muted'}}
 let macroClock=null,macroSignature="";
@@ -202,17 +277,21 @@ function renderMacro(data){
   const server=Date.parse(data.updated_at);
   if(!Number.isFinite(server)){macroClock=null;$("macro-status").textContent="事件时间无效";$("macro-list").dataset.stale="true";return;}
   macroClock={server,started:performance.now()};
-  const events=data.events||[],hasQuotes=events.some(e=>e.metrics?.length);
+  const all=(data.events||[]).filter(e=>Number.isFinite(Date.parse(e.release_at))).sort((a,b)=>Date.parse(a.release_at)-Date.parse(b.release_at));
+  const near=all.filter(e=>Date.parse(e.release_at)>=server-7200000&&Date.parse(e.release_at)<=server+86400000);
+  const events=near.filter(e=>Date.parse(e.release_at)===Date.parse(near[0]?.release_at)),hasQuotes=events.some(e=>e.metrics?.length);
   const missing=events.some(e=>!e.metrics?.length||e.metrics.some(q=>q.forecast==null));
   const state=data.collector_status==="ok"?(hasQuotes?(missing?"部分预期已采集":"事前预期已采集"):"部分事件预期暂缺"):data.collector_status==="error"?"预期采集失败 · 保留旧参考":"预期尚未采集";
   $("macro-status").textContent=data.calendar_stale?"日历需复核 · 预期仅供参考":state;
+  if(!events.length&&data.collector_status==="ok"&&!data.calendar_stale)$("macro-status").textContent="暂无临近事件";
   if(events.some(e=>e.expectation_status==="conflict"))$("macro-status").textContent+=" · 部分前值待核对";
-  $("macro-note").textContent=`北京时间 · 未来7天及刚到公布时间的事件 · 展示 ${events.length}/${data.total_events??events.length} 项`;
+  const next=all.find(e=>Date.parse(e.release_at)>server);
+  $("macro-note").textContent=events.length?"北京时间 · 最近一组 · 同时公布分项合并；其余事件临近后展开":next?`下一组：${next.name} · ${macroTime(next.release_at)}，24小时内展开`:"未来24小时暂无已核验事件，不能据此排除突发消息";
   $("macro-source").textContent=`${data.source||"预期来源待确认"} · ${data.note||"不是实时实际值通道"}`;
   const signature=JSON.stringify(events.map(({seconds_to_release,...rest})=>rest));
   if(signature!==macroSignature){
     macroSignature=signature;
-    $("macro-list").replaceChildren(...(events.length?events.map(macroCard):[macroText("p","未来7天暂无已核验日程，不代表没有重要事件。","macro-missing")]));
+    $("macro-list").replaceChildren(...events.map(macroCard));
   }
   tickMacro();
 }
@@ -226,5 +305,6 @@ function connect(){
   socket.onclose=()=>{$("health").textContent="通信重连中";$("health").className="pill muted";setTimeout(connect,2000)};
 }
 $("research-sound")?.addEventListener("click",toggleResearchSound);
+$("research-test")?.addEventListener("click",testResearchSound);
 setInterval(()=>{if(researchLastUpdate&&Date.now()-researchLastUpdate>20000){$("research-health").textContent="页面通信过期 · 请勿追旧信号";$("research-health").className="pill muted";$("research-list").style.opacity=".55";$("research-list").setAttribute("data-stale","true");}else if($("research-list"))$("research-list").style.opacity="1";},2000);
 refresh(); connect(); setInterval(()=>{if(!socket||socket.readyState!==WebSocket.OPEN)refresh()},30000);

@@ -16,6 +16,7 @@ import vt_vote_bot as bot  # noqa: E402
 from analysis.tv_indicators.adx_di import adx_di  # noqa: E402
 from web.seven_signals import read_snapshot as research_snapshot  # noqa: E402
 from macro_expectations import snapshot as macro_snapshot  # noqa: E402
+from dashboard_state import display_layers  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = 8423
@@ -117,6 +118,7 @@ def snapshot():
         price = float(df15["close"].iloc[-1])
     journal = read_json("judge_journal.json", {}).get("entries", [])
     latest = next((x for x in reversed(journal) if x.get("symbol") == symbol), {})
+    decisions = display_layers(read_json("dashboard_decisions.json", {}), latest, symbol)
     stats = (read_json("market_stats.json", {}).get(symbol, {}) or {}).get("stats", {})
     rsi4 = float(ctx4.get("rsi4h", 0))
     rsi15 = float((bot.compute_levels(symbol, "LONG") or {}).get("rsi14", 0))
@@ -133,8 +135,8 @@ def snapshot():
                 "sample": row.get("n", 0)}
 
     levels15 = bot.compute_levels(symbol, "LONG") or {}
-    direction4 = latest.get("dir4h")
-    direction15 = latest.get("dir15m")
+    direction4 = decisions["4h"].get("direction")
+    direction15 = decisions["15m"].get("direction")
     conflict4 = plan_conflict(ctx4.get("brooks", {}), direction4)
     conflict15 = plan_conflict(ba15, direction15)
     plan4 = None if conflict4 else price_action_plan(df4, direction4)
@@ -145,8 +147,7 @@ def snapshot():
         "symbol": symbol,
         "price": price,
         "macro_events": macro_snapshot(),
-        "4h": {"direction": direction4, "confidence": latest.get("conf4h"),
-               "latest_reasons": latest.get("reasons", [])[:2], "summary": latest.get("summary4h", ""),
+        "4h": {**decisions["4h"],
                "context": ctx4, "brooks": ctx4.get("brooks", {}),
                "plan": plan4, "plan_note": conflict4,
                "levels": (ctx4.get("wyckoff") or {}),
@@ -155,8 +156,7 @@ def snapshot():
                               "ADX": adx4,
                               "挤压分位": ctx4.get("squeeze_pct"), "ATR": ctx4.get("atr4h_pct"),
                               "量比": ctx4.get("vol_ratio4h"), "Brooks": ctx4.get("brooks", {}).get("deep", {})}},
-        "15m": {"direction": direction15, "confidence": latest.get("conf15m"),
-                "latest_reasons": latest.get("reasons", [])[-2:], "summary": latest.get("summary15m", ""),
+        "15m": {**decisions["15m"],
                 "brooks": ba15, "levels": levels15,
                 "plan": plan15, "plan_note": conflict15,
                 "indicators": {"RSI": rsi15, "RSI历史": rsi_history(rsi15, stats.get("m15", {}).get("rsi")),
