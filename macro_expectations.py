@@ -9,6 +9,7 @@ from functools import lru_cache
 
 import requests
 import macro_events as macro
+import macro_playbook as playbook
 
 SOURCE = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 SOURCE_LABEL = "Forex Factory周历参考预期"
@@ -167,15 +168,29 @@ def delta_text(forecast, previous):
 
 
 def scenario_notes(kind):
-    if kind in ("cpi", "ppi", "pce", "eci"):
-        return ["高于预期：先看核心分项是否同步偏热，以及美债和ETH是否确认承压。",
-                "符合预期：不当成新增利空/利多，转看修正值及价格结构。",
-                "低于预期：观察利率压力是否缓解、ETH能否收复关键位；不自动做多。"]
-    if kind in ("fomc", "projections", "press_conference", "minutes", "fed_speech"):
-        return ["偏鹰/符合/偏鸽分别准备；声明、点阵图和讲话分开核实。",
-                "没有可比较的数值不强填预期，不能用降息赔率冒充利率决定。"]
-    return ["高于/符合/低于预期分别评估；强数据可能利好增长也可能推高利率，不机械对应涨跌。",
-            "检查分项与前值修正，再用ETH结构确认入场；方向倾向不等于现在追单。"]
+    return playbook.scenarios(kind)
+
+
+def event_group(event):
+    if event["kind"] in playbook.MEETING_STAGES:
+        return "fomc:" + event["release_at"].astimezone(macro.NEW_YORK).date().isoformat()
+    return event["id"]
+
+
+def grouped_events(now, limit):
+    groups = {}
+    for event in macro.EVENTS:
+        if event["priority"] != "C":
+            groups.setdefault(event_group(event), []).append(event)
+    near, later = [], []
+    for group in groups.values():
+        start, end = group[0]["release_at"], group[-1]["release_at"]
+        if end >= now - timedelta(hours=2) and start <= now + timedelta(hours=24):
+            near.extend(group)
+        elif now + timedelta(hours=24) < start <= now + timedelta(days=7):
+            later.extend(group)
+    # 临近事件不能因周历页数限制丢失；会议各阶段一起退出复核窗口。
+    return sorted(near if near else later[:limit], key=lambda e: (e["release_at"], e["id"]))
 
 
 def check_prior(event, quote, now):
@@ -200,11 +215,17 @@ def event_projection(event, batches, now):
         check_prior(event, quote, now)
     data_at = chosen[0] if chosen and quotes else None
     fresh = data_at is not None and (cutoff - data_at).total_seconds() <= STALE_SECONDS
+    review_until = max(e["release_at"] for e in macro.EVENTS if event_group(e) == event_group(event)) + timedelta(hours=2)
     return {"id": event["id"], "name": event["name"], "kind": event["kind"], "priority": event["priority"],
+            "group_id": event_group(event),
+            "group_name": "FOMC议息会议" if event["kind"] in playbook.MEETING_STAGES else event["name"],
+            "focus": event["components"], "qualitative": event["kind"] in playbook.QUALITATIVE,
+            "review_until": review_until.isoformat(),
             "release_at": event["release_at"].isoformat(), "phase": "upcoming" if before else "awaiting_actual",
             "seconds_to_release": int((event["release_at"] - now).total_seconds()), "metrics": quotes,
             "captured_at": data_at.isoformat() if data_at else None,
-            "expectation_status": "conflict" if any(q["prior_status"] == "conflict" for q in quotes) else
+            "expectation_status": "qualitative" if event["kind"] in playbook.QUALITATIVE else
+            "conflict" if any(q["prior_status"] == "conflict" for q in quotes) else
             "fresh" if fresh and before else "frozen" if fresh else "stale" if quotes else "missing",
             "calendar_source": event["source"], "scenarios": scenario_notes(event["kind"])}
 
@@ -212,15 +233,15 @@ def event_projection(event, batches, now):
 def snapshot(path=DATABASE, now=None, limit=4):
     now = stamp(now or utc_now())
     batches, storage = read_batches(path, now)
-    events = [e for e in macro.EVENTS if e["priority"] != "C"
-              and now - timedelta(hours=2) <= e["release_at"] <= now + timedelta(days=7)]
-    views = [event_projection(e, batches, now) for e in events[:limit]]
+    events = grouped_events(now, limit)
+    views = [event_projection(e, batches, now) for e in events]
     phase = "error" if batches and batches[-1][1] == "error" else storage
     return {"updated_at": now.isoformat(), "events": views, "total_events": len(events),
             "source": SOURCE_LABEL, "source_url": SOURCE, "collector_status": phase,
             "last_attempt_at": batches[-1][0].isoformat() if batches else None,
             "calendar_verified_at": macro.CALENDAR["verified_at"], "calendar_end": macro.CALENDAR["coverage_end"],
             "calendar_stale": now - stamp(macro.CALENDAR["verified_at"]) > timedelta(days=7),
+            "reaction_checklist": list(playbook.REACTION), "actual_status": "not_connected",
             "note": "公开周历参考预期，非官方预期；前值按该源口径，未独立复核。每30分钟尝试更新，非实时实际值通道。"}
 
 
@@ -228,18 +249,29 @@ def preparation_brief(path=DATABASE, now=None):
     view = snapshot(path, now, limit=20)
     lines = [view["note"], f"事前预期采集状态：{view['collector_status']}；失败或过期的记录只能作旧参考。"]
     for event in view["events"]:
-        label = "事前准备" if event["phase"] == "upcoming" else "公布前留档，等待核实实际值"
+        group_start = min(stamp(e["release_at"]) for e in view["events"] if e["group_id"] == event["group_id"])
+        if group_start > stamp(now or view["updated_at"]) + timedelta(hours=24):
+            continue
+        label = "事前准备" if event["phase"] == "upcoming" else "已到计划公布时间；实际结果待核实，不能当作已收到"
         lines.append(f"{event['name']} {event['release_at']}：{label}；预期状态{event['expectation_status']}。")
+        lines.append(f"核实重点：{event['focus']}；官方来源：{event['calendar_source']}")
         for q in event["metrics"]:
             previous = "待核对" if q["prior_status"] == "conflict" else q['previous'] or '未获取'
             lines.append(f"{q['label']}：预期{q['forecast'] or '未获取'}，前值{previous}；{q['comparison']}。")
-        if not event["metrics"]:
+        if event["qualitative"]:
+            lines.append("定性事件：比较原文和政策路径，不适用单一预期/前值数字。")
+        elif not event["metrics"]:
             lines.append("没有公布前抓到的预期，不允许用后来新闻倒填。")
+        lines.extend(event["scenarios"])
+    lines.extend(view.get("reaction_checklist", []))
+    lines.append("实际结果通道未接入：上文均为条件预案；新闻解读须核对原文、发布时间与来源，冲突/缺失时明确待核实。")
     lines.append("上述只说明预期相对前值的变化，不证明市场已经充分定价；缺美债/资金反应时明确未知。")
     return "\n".join(lines)
 
 
 def preparation_version(path=DATABASE, now=None):
     view = snapshot(path, now, limit=20)
-    material = [(e["id"], e["expectation_status"], e["metrics"]) for e in view["events"] if e["phase"] == "upcoming"]
+    material = [(e["id"], e["expectation_status"], e["metrics"], e["scenarios"], e["focus"])
+                for e in view["events"] if e["phase"] == "upcoming"]
+    material.append(view["reaction_checklist"])
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import macro_expectations as expectations
@@ -13,6 +13,28 @@ from web import server
 
 
 class TestMacroDashboard(unittest.TestCase):
+    def test_ai_preview_receives_full_meeting_playbook_without_unrelated_odds(self):
+        now = datetime.fromisoformat("2026-09-16T10:00:00-04:00")
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"message": {"content": "会议条件预案"}}]}
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            brief = expectations.preparation_brief(Path(directory) / "empty.sqlite3", now)
+            stack.enter_context(patch.object(bot.pd.Timestamp, "now", return_value=now))
+            for name, value in (("load_news_memory", {}), ("compute_levels", None), ("fetch_fast_price", 2400)):
+                stack.enter_context(patch.object(bot, name, return_value=value))
+            stack.enter_context(patch.object(bot.expectations, "preparation_brief", return_value=brief))
+            stack.enter_context(patch.object(bot.expectations, "preparation_version", return_value="test"))
+            odds = stack.enter_context(patch.object(bot, "polymarket_odds"))
+            post = stack.enter_context(patch.object(bot._http, "post", return_value=response))
+            save = stack.enter_context(patch.object(bot, "save_news_memory"))
+            self.assertEqual(bot.event_preview("ETHUSDC"), "会议条件预案")
+        messages = post.call_args.kwargs["json"]["messages"]
+        for word in ("加息", "点阵图", "问答", "失效", "待核实"):
+            self.assertIn(word, messages[1]["content"])
+        self.assertIn("路径", messages[0]["content"])
+        odds.assert_not_called()
+        save.assert_called_once()
+
     def test_snapshot_and_websocket_include_readonly_macro_data(self):
         empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         expected = {"events": [], "collector_status": "not_collected"}

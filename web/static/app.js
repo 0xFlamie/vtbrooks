@@ -296,7 +296,7 @@ function macroTime(value){
   const date=new Date(value);return Number.isFinite(date.getTime())?date.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}):"时间未知";
 }
 function macroCard(event){
-  const card=macroText("article","","macro-card");card.dataset.priority=event.priority;card.dataset.release=event.release_at;
+  const card=macroText("article","","macro-card");card.dataset.priority=event.priority;card.dataset.release=event.release_at;card.dataset.event=event.id;
   card.append(macroText("h3",event.name),macroText("div",`北京 ${macroTime(event.release_at)}`,"macro-time"),macroText("span","","macro-countdown"));
   const metrics=event.metrics||[];
   if(metrics.length){
@@ -306,13 +306,25 @@ function macroCard(event){
     const body=document.createElement("tbody");
     for(const q of metrics){const row=document.createElement("tr");for(const value of [q.label,q.forecast??"未获取",q.prior_status==="conflict"?"待核对 ⚠":q.previous??"未获取"])row.append(macroText("td",value));body.append(row);}
     table.append(body);card.append(table);
-  }else card.append(macroText("p","市场预期 — · 前值 —\n尚无已获取的事前数字","macro-missing"));
-  const state={fresh:"事前采集",frozen:"公布前留档",stale:"旧参考 · 抓取已过期",missing:"预期未获取",conflict:"前值口径冲突 · 禁止直接比较"};
+  }else card.append(macroText("p",event.qualitative?`核实重点：${event.focus||"原文、上下文与政策变化"}`:"市场预期 — · 前值 —\n尚无已获取的事前数字；条件预案仍可查看","macro-missing"));
+  const state={fresh:"事前采集",frozen:"公布前留档",stale:"旧参考 · 抓取已过期",missing:"预期未获取",qualitative:"定性核实 · 不适用单一数字预期",conflict:"前值口径冲突 · 禁止直接比较"};
   card.append(macroText("div",`${state[event.expectation_status]||"状态未知"}${event.captured_at?` · ${macroTime(event.captured_at)}`:""}`,"macro-capture"));
-  const detail=document.createElement("details");detail.append(macroText("summary","预案与依据"));
-  for(const text of [...metrics.map(q=>`${q.label}：${q.comparison}`),...(event.scenarios||[]),"预期相对前值的变化不代表市场已经定价；不是买卖指令。"]){detail.append(macroText("p",text));}
+  const detail=document.createElement("details");detail.className="macro-playbook";detail.append(macroText("summary","条件预案与核实依据"));
+  if(event.focus&&!event.qualitative)detail.append(macroText("p",`核实重点：${event.focus}`));
+  for(const text of [...metrics.map(q=>`${q.label}：${q.comparison}`),...(event.scenarios||[]),"条件预案，不代表结果已发生；预期相对前值的变化不证明市场已定价。"]){detail.append(macroText("p",text));}
   try{const url=new URL(event.calendar_source);if(url.protocol==="https:"){const a=macroText("a","日历来源");a.href=url.href;a.target="_blank";a.rel="noopener noreferrer";detail.append(a);}}catch(_){/* 无有效来源时不生成链接。 */}
   card.append(detail);return card;
+}
+function macroGroups(events){
+  const groups=new Map();
+  for(const event of events){const key=event.group_id||event.id;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(event);}
+  return [...groups.values()].sort((a,b)=>(a.some(e=>e.priority==="A")?0:1)-(b.some(e=>e.priority==="A")?0:1)||Date.parse(a[0].release_at)-Date.parse(b[0].release_at));
+}
+function macroGroup(events,open){
+  const first=events[0],group=macroText("details","","macro-group");group.dataset.group=first.group_id||first.id;group.open=open;
+  const summary=macroText("summary",`${first.priority==="A"?"重点 · ":""}${first.group_name||first.name}`);
+  summary.append(macroText("small",`北京 ${macroTime(first.release_at)}${events.length>1?` · ${events.length}个阶段，分别核实`:""}`));
+  group.append(summary,...events.map(macroCard));return group;
 }
 function tickMacro(){
   if(!macroClock||!$("macro-list"))return;
@@ -333,20 +345,27 @@ function renderMacro(data){
   if(!Number.isFinite(server)){macroClock=null;$("macro-status").textContent="事件时间无效";$("macro-list").dataset.stale="true";return;}
   macroClock={server,started:performance.now()};
   const all=(data.events||[]).filter(e=>Number.isFinite(Date.parse(e.release_at))).sort((a,b)=>Date.parse(a.release_at)-Date.parse(b.release_at));
-  const near=all.filter(e=>Date.parse(e.release_at)>=server-7200000&&Date.parse(e.release_at)<=server+86400000);
-  const events=near.filter(e=>Date.parse(e.release_at)===Date.parse(near[0]?.release_at)),hasQuotes=events.some(e=>e.metrics?.length);
-  const missing=events.some(e=>!e.metrics?.length||e.metrics.some(q=>q.forecast==null));
+  const groups=macroGroups(all).filter(group=>Date.parse(group[0].release_at)<=server+86400000&&group.some(e=>Date.parse(e.review_until||e.release_at)+(e.review_until?0:7200000)>=server));
+  const events=groups.flat(),numeric=events.filter(e=>!e.qualitative),hasQuotes=numeric.some(e=>e.metrics?.length);
+  const missing=numeric.some(e=>!e.metrics?.length||e.metrics.some(q=>q.forecast==null));
   const state=data.collector_status==="ok"?(hasQuotes?(missing?"部分预期已采集":"事前预期已采集"):"部分事件预期暂缺"):data.collector_status==="error"?"预期采集失败 · 保留旧参考":"预期尚未采集";
   $("macro-status").textContent=data.calendar_stale?"日历需复核 · 预期仅供参考":state;
+  if(events.length&&!numeric.length&&!data.calendar_stale)$("macro-status").textContent="定性事件 · 等待原文核实";
   if(!events.length&&data.collector_status==="ok"&&!data.calendar_stale)$("macro-status").textContent="暂无临近事件";
   if(events.some(e=>e.expectation_status==="conflict"))$("macro-status").textContent+=" · 部分前值待核对";
   const next=all.find(e=>Date.parse(e.release_at)>server);
-  $("macro-note").textContent=events.length?"北京时间 · 最近一组 · 同时公布分项合并；其余事件临近后展开":next?`下一组：${next.name} · ${macroTime(next.release_at)}，24小时内展开`:"未来24小时暂无已核验事件，不能据此排除突发消息";
-  $("macro-source").textContent=`${data.source||"预期来源待确认"} · ${data.note||"不是实时实际值通道"}`;
-  const signature=JSON.stringify(events.map(({seconds_to_release,...rest})=>rest));
+  $("macro-note").textContent=events.length?"北京时间 · 未来24小时与公布后复核 · 重点优先，会议分阶段；点击展开预案":next?`下一组：${next.name} · ${macroTime(next.release_at)}，24小时内展开`:"未来24小时暂无已核验事件，不能据此排除突发消息";
+  $("macro-source").textContent=`${data.source||"预期来源待确认"} · ${data.note||"不是实时实际值通道"} · 日历核验：${macroTime(data.calendar_verified_at)} · 实际结果尚未自动接入`;
+  const signature=JSON.stringify([events.map(({seconds_to_release,...rest})=>rest),data.reaction_checklist]);
   if(signature!==macroSignature){
+    const opened=new Map([...$("macro-list").querySelectorAll(".macro-group")].map(group=>[group.dataset.group,group.open]));
+    const plans=new Map([...$("macro-list").querySelectorAll(".macro-card")].map(card=>[card.dataset.event,card.querySelector(".macro-playbook").open]));
     macroSignature=signature;
-    $("macro-list").replaceChildren(...events.map(macroCard));
+    $("macro-list").replaceChildren(...groups.map((group,i)=>macroGroup(group,opened.get(group[0].group_id||group[0].id)??i===0)));
+    for(const card of $("macro-list").querySelectorAll(".macro-card"))card.querySelector(".macro-playbook").open=plans.get(card.dataset.event)||false;
+    if(events.length&&data.reaction_checklist?.length){
+      const reaction=macroText("details","","macro-reaction");reaction.append(macroText("summary","市场确认与预案失效条件"),...data.reaction_checklist.map(text=>macroText("p",text)));$("macro-list").append(reaction);
+    }
   }
   tickMacro();
 }

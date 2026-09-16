@@ -26,6 +26,58 @@ class TestMacroExpectations(unittest.TestCase):
         quotes = expectations.normalise(rows, self.before)
         self.assertEqual([q["label"] for q in quotes], ["总体环比", "核心环比"])
 
+    def test_busy_day_does_not_truncate_high_priority_events(self):
+        now = datetime.fromisoformat("2026-09-30T08:00:00-04:00")
+        view = expectations.snapshot(self.path, now, limit=1)
+        self.assertEqual({e["kind"] for e in view["events"]}, {"adp", "gdp", "pce"})
+
+    def test_meeting_stages_remain_together_until_last_stage_expires(self):
+        now = datetime.fromisoformat("2026-09-16T16:15:00-04:00")
+        events = expectations.snapshot(self.path, now)["events"]
+        meeting = [e for e in events if e["kind"] in ("fomc", "projections", "press_conference")]
+        self.assertEqual(len(meeting), 3)
+        self.assertEqual(len({e["group_id"] for e in meeting}), 1)
+        self.assertTrue(all(e["phase"] == "awaiting_actual" for e in meeting))
+        expired = expectations.snapshot(self.path, now + timedelta(minutes=16))["events"]
+        self.assertFalse(any(e["kind"] == "fomc" for e in expired))
+
+    def test_qualitative_stage_does_not_claim_missing_numeric_consensus(self):
+        now = datetime.fromisoformat("2026-09-16T10:00:00-04:00")
+        events = expectations.snapshot(self.path, now)["events"]
+        speech = next(e for e in events if e["kind"] == "press_conference")
+        decision = next(e for e in events if e["kind"] == "fomc")
+        self.assertEqual(speech["expectation_status"], "qualitative")
+        self.assertEqual(decision["expectation_status"], "missing")
+        self.assertIn("问答", speech["focus"])
+
+    def test_policy_playbook_covers_action_path_conflict_and_invalidation(self):
+        decision = " ".join(expectations.scenario_notes("fomc"))
+        for word in ("加息", "维持", "降息", "缩表", "预期"):
+            self.assertIn(word, decision)
+        self.assertIn("承诺", " ".join(expectations.scenario_notes("projections")))
+        self.assertIn("冲突", " ".join(expectations.scenario_notes("press_conference")))
+        self.assertIn("旧会议", " ".join(expectations.scenario_notes("minutes")))
+
+    def test_employment_cost_uses_wages_and_benefits_instead_of_cpi_components(self):
+        notes = " ".join(expectations.scenario_notes("eci"))
+        self.assertIn("工资与福利", notes)
+        self.assertIn("季度", notes)
+        self.assertNotIn("能源/住房", notes)
+
+    def test_ai_material_uses_same_playbook_and_only_nearby_events(self):
+        now = datetime.fromisoformat("2026-09-16T14:01:00-04:00")
+        brief = expectations.preparation_brief(self.path, now)
+        for word in ("加息", "点阵图", "问答", "失效", "来源", "待核实", "已到计划公布时间"):
+            self.assertIn(word, brief)
+        distant = expectations.preparation_brief(self.path, datetime.fromisoformat("2026-09-11T10:01:00-04:00"))
+        self.assertNotIn("零售销售", distant)
+
+    def test_preparation_version_changes_when_playbook_changes(self):
+        from unittest.mock import patch
+        version = expectations.preparation_version(self.path, self.before)
+        with patch.object(expectations, "scenario_notes", return_value=["新的解读条件"]):
+            self.assertNotEqual(version, expectations.preparation_version(self.path, self.before))
+
     def test_post_release_fetch_cannot_backfill_expectation(self):
         expectations.capture(self.path, self.rows, self.release)
         event = expectations.snapshot(self.path, self.release + timedelta(seconds=1))["events"][0]

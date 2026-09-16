@@ -79,8 +79,8 @@ def day_label(day):
 
 def pending(now=None):
     now = local_time(now)
-    return [e for e in events_on(now.date().isoformat())
-            if e["release_at"] > now and e["priority"] != "C"]
+    return [dict(e) for e in EVENTS
+            if now < e["release_at"] <= now + timedelta(hours=24) and e["priority"] != "C"]
 
 
 def pending_ids(now=None):
@@ -122,7 +122,7 @@ def brief(now=None):
     day = now.date().isoformat()
     if not CALENDAR["coverage_start"] <= day <= CALENDAR["coverage_end"]:
         return "宏观日历覆盖期外：不能判断今天无事件；需更新官方日历。"
-    rows = events_on(day)
+    rows = sorted({e["id"]: e for e in events_on(day) + pending(now)}.values(), key=lambda e: e["release_at"])
     lines = [f"宏观时间基准：北京{now.astimezone(BEIJING):%Y-%m-%d %H:%M:%S}。"]
     if now - datetime.fromisoformat(CALENDAR["verified_at"]) > timedelta(days=7):
         lines.append("日历快照超过7天，需重新核验，不能保证官方未调整时间。")
@@ -136,6 +136,6 @@ def brief(now=None):
     if missing:
         lines.append("后续日程待核验：" + "、".join(CATALOG[k]["name"] for k in missing) + "。")
     lines.extend(("本日历不提供实际值、前值或共识；市场预期以单独事前记录为准，未提供时不得编造或凭标题宣称超预期。",
-                  "公布前只做高于/符合/低于预期的条件预案；公布后不得再说等待公布，只能说明等待核实数据。",
+                  "公布前按事件类型做条件预案：数据对比预期，政策区分本次动作/后续路径/讲话；公布后不得再说等待公布，只能说明等待核实数据。",
                   "优先级是关注顺序，不是多空投票或胜率；不能把方向偏空等同于现在追空。"))
     return "\n".join(lines)

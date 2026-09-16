@@ -295,7 +295,7 @@ def news_editor(items, mem):
 
 
 def event_preview(sym):
-    """当日未公布事件的条件预案；公布前1h每半小时复核，不编造预期值。"""
+    """未来24h事件的条件预案；公布前1h每半小时复核，不编造预期值。"""
     try:
         now = pd.Timestamp.now(tz="America/New_York")
         rows = macro.pending(now)
@@ -312,18 +312,20 @@ def event_preview(sym):
         wv = (mem.get("world_view") or {}).get("text", "无")
         lv = compute_levels(sym, "LONG")
         lv_txt = f"摆动高${lv['swing_high']:.2f} 摆动低${lv['swing_low']:.2f}" if lv else "无"
-        pm = next((x for x in polymarket_odds() if x["topic"] == "联储降息"), None)
-        pm_txt = f"预测市场联储降息概率{pm['prob']}%" if pm else "无赔率数据"
         px = fetch_fast_price(sym)
-        sys_p = ("你是只交易ETH的加密交易员(BTC为联动参照)。为每个未公布事件写条件预案: "
-                 "高于/符合/低于预期时观察什么价格反应、给定结构位和失效条件。没有可靠预期值就写缺失，不能编数；"
-                 "降息赔率不是CPI/PPI/非农的市场预期。数据高低不机械等于ETH涨跌；总体/核心或增长/就业冲突时待确认。"
-                 "方向倾向与是否适合入场分开，不预先宣称实际值或必涨必跌。大白话，不给保证收益。")
+        sys_p = ("你是只交易ETH的事件分析员，BTC为联动参照。按重要性整理未来24h事件，相关会议阶段合并为一个预案。"
+                 "按提供的分类型清单写：已知与缺口→不同结果及相对预期的变化→价格确认→失效条件。"
+                 "议息必须区分本次动作、未来利率路径、经济预测、流动性安排及讲话；数据事件核对分项和修正。"
+                 "声明、预测与讲话冲突时保留不确定性；已到公布时间的阶段只写待核实，不冒充已收到结果。"
+                 "没有可靠预期值不能编数；单一赔率不代表完整政策概率分布，前值不等于共识。"
+                 "只引用输入中有来源/时间的事实和给定点位；未提供的美债/美元/资金反应写未知，盘面综述不当官方原文。"
+                 "不要把加息/降息或数据强弱机械映射为ETH涨跌。方向倾向、确认信号和入场时机分开，"
+                 "首波反转、关键位失守、后续讲话改变路径均需重评。大白话，重点优先，避免重复，不给保证收益。")
         user = (f"事件: {ev}\n{macro.brief(now)}\n{expectations.preparation_brief(now=now)}\n"
-                f"盘面综述: {wv}\n现价: ${px}\n关键位: {lv_txt}\n{pm_txt}")
+                f"盘面综述（仅作背景，非已核实政策原文）: {wv}\n现价: ${px}\n关键位: {lv_txt}")
         r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
             {"role": "system", "content": sys_p}, {"role": "user", "content": user}],
-            "max_tokens": 400, "temperature": 0.3},
+            "max_tokens": 1200, "temperature": 0.3},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=25)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"].strip()

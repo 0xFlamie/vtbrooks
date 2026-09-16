@@ -14,6 +14,11 @@ def at(value):
 
 
 class TestMacroEvents(unittest.TestCase):
+    def test_preparation_includes_next_us_day_within_24_hours(self):
+        now = at("2026-09-15T15:00:00-04:00")
+        self.assertIn("fomc", {e["kind"] for e in macro.pending(now)})
+        self.assertIn("09-17 02:00", macro.brief(now))
+
     def test_priority_and_components_are_explicit(self):
         catalog = macro.CATALOG
         for key in ("cpi", "ppi", "pce", "employment", "fomc", "projections", "press_conference"):
@@ -38,7 +43,7 @@ class TestMacroEvents(unittest.TestCase):
         kinds = {e["kind"] for e in macro.events_on("2026-09-16")}
         self.assertTrue({"retail", "fomc", "projections", "press_conference"} <= kinds)
         after_statement = macro.pending(at("2026-09-16T18:01:00+00:00"))
-        self.assertEqual([e["kind"] for e in after_statement], ["press_conference"])
+        self.assertEqual([e["kind"] for e in after_statement], ["press_conference", "claims"])
 
     def test_pce_and_gdp_are_independent_events(self):
         kinds = {e["kind"] for e in macro.events_on("2026-09-30")}
