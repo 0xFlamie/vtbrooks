@@ -4011,7 +4011,7 @@ MAG_TIER_FLOOR = [0.0, 1.0, 2.0, 3.0]  # 各档下限(%), 结算时用
 
 
 def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
-                temp=0.2, max_tok=400, req_timeout=35):
+                temp=0.2, max_tok=1000, req_timeout=35):  # 2026-10-13: deepseek-chat 改指 flash 模型, 输出变长, 400 会截断 JSON
     """单裁判调用: system+简报 → {direction, confidence, mag_tier, reasons}; 失败重试1次再回 JUDGE_UNAVAILABLE"""
     url = url or DS_API_URL
     key = key if key is not None else DS_API_KEY
@@ -4165,7 +4165,7 @@ def _research_call(brief):
     try:
         r = _http.post(DS_API_URL, json={"model": DS_MODEL, "messages": [
             {"role": "system", "content": RESEARCH_SYSTEM}, {"role": "user", "content": brief}],
-            "max_tokens": 700, "temperature": 0.1},
+            "max_tokens": 1200, "temperature": 0.1},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=35)
         if r.status_code != 200:
             return None
