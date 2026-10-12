@@ -22,13 +22,12 @@ class TestDashboardUI(unittest.TestCase):
         parser = IDs()
         parser.feed(text)
         self.assertEqual(len(parser.ids), len(set(parser.ids)))
-        for identity in ("support4", "support", "plan4", "plan15", "reasons4", "reasons15", "research-alert-log"):
+        for identity in ("price", "support4", "support", "plan4", "plan15", "reasons4", "reasons15", "journal"):
             self.assertIn(identity, parser.ids)
-        self.assertIn('<details class="panel section source-fold">', text)
+        # 简化版(2026-10-12): 宏观事件栏、七类雷达、指标明细已移除
+        for removed in ("macro-list", "research-list", "modules4", "modules15", "news"):
+            self.assertNotIn(removed, parser.ids)
         self.assertNotIn('<section class="metrics">', text)
-        self.assertIn('<details class="sound-options">', text)
-        self.assertIn('id="signal-alarm-countdown"', text)
-        self.assertIn('aria-label="停止本轮响铃"', text)
 
     @unittest.skipUnless(shutil.which("node"), "Node required")
     def test_event_scope_audio_state_reasons_and_safe_text(self):

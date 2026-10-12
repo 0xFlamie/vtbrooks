@@ -1,59 +1,17 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BROOKS ETH</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/direction.css"><link rel="stylesheet" href="/plan.css"><link rel="stylesheet" href="/compact.css"><style>.brand{display:block;gap:0;font:700 20px var(--mono);letter-spacing:.08em}.module-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0}.module-card{min-height:116px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--panel2)}.module-card span,.module-card small{display:block;color:var(--muted);font-size:11px}.module-card b{display:block;margin:7px 0;font:600 14px/1.45 var(--mono)}@media(max-width:520px){.module-grid{grid-template-columns:1fr}}</style><script src="/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BROOKS ETH</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/direction.css"><link rel="stylesheet" href="/plan.css"><link rel="stylesheet" href="/compact.css"><style>.brand{display:block;gap:0;font:700 20px var(--mono);letter-spacing:.08em}</style><script src="/app.js" defer></script></head>
 <body><div class="shell">
-  <aside><a class="brand" href="/">BROOKS ETH</a><a class="pill muted" href="/replay.html">识图回放</a><span id="health" class="pill"><i></i> 连接中</span></aside>
+  <aside><a class="brand" href="/">BROOKS ETH</a><span id="health" class="pill"><i></i> 连接中</span></aside>
   <main>
-  <link rel="stylesheet" href="/macro.css">
-  <section class="hero panel market-top">
-    <div class="market-price"><span class="eyebrow">以太坊 · USDC现货</span><h2 id="price">—</h2><div id="price-params" class="price-params">等待量能与波动数据</div><small id="price-updated">等待页面快照</small><details class="context-fold"><summary>市场背景</summary><p id="news">暂无盘面综述</p></details></div>
-    <div class="macro-events" aria-labelledby="macro-title">
-      <div class="macro-head"><h2 id="macro-title">临近事件</h2><span id="macro-status" class="pill muted" role="status">读取事前预期…</span></div>
-      <p id="macro-note">未来24小时重点事件与公布后复核；议息会议按决议、经济预测、发布会分阶段准备。</p>
-      <div id="macro-list"><p>正在读取事件日历…</p></div>
-      <details class="context-fold"><summary>来源与数据边界</summary><small id="macro-source"></small></details>
-    </div>
+  <!-- 简化版(2026-10-12 用户决策): 只保留价格、两层方向卡、最近判决 -->
+  <section class="hero panel">
+    <div class="market-price"><span class="eyebrow">以太坊 · USDC现货</span><h2 id="price">—</h2><div id="price-params" class="price-params">等待量能与波动数据</div><small id="price-updated">等待页面快照</small></div>
   </section>
   <section class="direction-grid">
-    <article class="direction panel"><div class="eyebrow">4小时方向 · 独立周期</div><strong id="direction4">观望</strong><span id="confidence4" class="pill muted">暂无判决</span><div id="decision-time4" class="decision-time"></div><p id="reason4">等待4小时判决</p><ol id="reasons4" class="decision-reasons"></ol><div id="change4" class="decision-change"></div><div class="direction-structure"><div><small>当前结构</small><b id="trend4">—</b></div><div><small>支撑 · 4h区间</small><b id="support4">—</b></div><div><small>压力 · 4h区间</small><b id="resistance4">—</b></div></div><small id="squeeze" class="structure-note">—</small><div id="risk4" class="risk-note">—</div><div id="plan4" class="trade-plan">—</div></article>
-    <article class="direction panel"><div class="eyebrow">15分钟方向 · 独立周期</div><strong id="direction15">观望</strong><span id="confidence15" class="pill muted">暂无判决</span><div id="decision-time15" class="decision-time"></div><p id="reason15">等待15分钟判决</p><ol id="reasons15" class="decision-reasons"></ol><div id="change15" class="decision-change"></div><div class="direction-structure"><div><small>当前结构</small><b id="trend15">—</b></div><div><small>支撑 · 15m摆动</small><b id="support">—</b></div><div><small>压力 · 15m摆动</small><b id="resistance">—</b></div></div><small id="bar15" class="structure-note">—</small><div id="risk15" class="risk-note">—</div><div id="plan15" class="trade-plan">—</div></article>
+    <article class="direction panel"><div class="eyebrow">4小时方向</div><strong id="direction4">观望</strong><span id="confidence4" class="pill muted">暂无判决</span><div id="decision-time4" class="decision-time"></div><p id="reason4">等待4小时判决</p><ol id="reasons4" class="decision-reasons"></ol><div id="change4" class="decision-change"></div><div class="direction-structure"><div><small>当前结构</small><b id="trend4">—</b></div><div><small>支撑 · 4h区间</small><b id="support4">—</b></div><div><small>压力 · 4h区间</small><b id="resistance4">—</b></div></div><small id="squeeze" class="structure-note">—</small><div id="risk4" class="risk-note">—</div><div id="plan4" class="trade-plan">—</div></article>
+    <article class="direction panel"><div class="eyebrow">15分钟方向</div><strong id="direction15">观望</strong><span id="confidence15" class="pill muted">暂无判决</span><div id="decision-time15" class="decision-time"></div><p id="reason15">等待15分钟判决</p><ol id="reasons15" class="decision-reasons"></ol><div id="change15" class="decision-change"></div><div class="direction-structure"><div><small>当前结构</small><b id="trend15">—</b></div><div><small>支撑 · 15m摆动</small><b id="support">—</b></div><div><small>压力 · 15m摆动</small><b id="resistance">—</b></div></div><small id="bar15" class="structure-note">—</small><div id="risk15" class="risk-note">—</div><div id="plan15" class="trade-plan">—</div></article>
   </section>
-  <section class="panel section" id="research-signals" aria-labelledby="research-title">
-    <style>
-      #research-list{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start;overflow-x:auto;padding:4px 2px 10px}
-      .research-tile{width:100%;min-width:0;min-height:210px;padding:10px 8px;border:1px solid var(--line);border-top:3px solid var(--line);border-radius:8px;background:var(--panel2);overflow-wrap:anywhere}
-      .research-tile.long{border-color:#478571;background:#e8f0e9;color:#275c47}.research-tile.short{border-color:#b76558;background:#f3e7e0;color:#953e35}
-      .research-tile .tile-name{font-size:12px;font-weight:700;min-height:26px}.research-tile strong{display:block;font-size:22px;line-height:1.2;margin:6px 0}.research-tile small{display:block;font-size:10px;line-height:1.45;color:var(--muted)}
-      .tile-price{font:600 12px var(--mono);margin-top:8px}.tile-rate{margin-top:8px}.research-tile details{font-size:10px;margin-top:7px}.research-tile summary{cursor:pointer}.research-tile details p{font-size:10px;line-height:1.5;margin:7px 0}
-      .research-flash{animation:research-pulse 1.6s ease-in-out 5}#research-list[data-stale="true"] .research-flash{animation:none}#research-list[data-stale="true"] .research-tile{filter:grayscale(1)}
-      @keyframes research-pulse{50%{box-shadow:inset 0 0 0 3px currentColor;filter:brightness(1.08)}}
-      @media(prefers-reduced-motion:reduce){.research-flash{animation:none;outline:2px solid currentColor;outline-offset:-4px}}
-      @media(max-width:1100px){#research-list{grid-template-columns:repeat(7,150px)}}
-      #research-sound{cursor:pointer}#research-signals .subtitle{font-size:12px;margin-top:8px}#research-sound-note{color:var(--muted)}
-    </style>
-    <div class="section-head"><div><div class="eyebrow">七类独立研究提醒</div><h2 id="research-title">Brooks 形态雷达 · 15M</h2></div><div class="research-controls"><span id="research-health" class="pill muted">连接中</span>
-      <div class="signal-dock" role="group" aria-label="Brooks形态声音控制">
-        <button id="research-sound" type="button" class="pill muted" aria-label="开启Brooks形态声音" aria-pressed="false">声音关</button>
-        <span id="signal-alarm-countdown" aria-label="本轮响铃剩余时间" hidden></span>
-        <button id="signal-alarm-stop" type="button" class="pill muted" aria-label="停止本轮响铃" title="停止本轮响铃，保留下次提醒" disabled hidden>停止</button>
-        <details class="sound-options"><summary aria-label="声音设置">设置</summary><div class="sound-popover"><b id="signal-alarm-status">等待新形态</b><small id="research-sound-note">只提醒Brooks新形态，方向卡不响；需点击开启声音。</small><button id="research-test" type="button" class="pill muted">试听</button></div></details>
-      </div>
-    </div></div>
-    <p id="research-rule" class="subtitle">七类独立触发，多绿空红；新信号闪烁。窄屏可左右滑动查看。</p>
-    <div id="research-list" aria-live="polite">
-      <article class="research-tile flat"><div class="tile-name">H2/L2二次入场</div><strong>—</strong><small>连接中</small></article>
-      <article class="research-tile flat"><div class="tile-name">突破首次回触</div><strong>—</strong><small>连接中</small></article>
-      <article class="research-tile flat"><div class="tile-name">外包K后突破</div><strong>—</strong><small>连接中</small></article>
-      <article class="research-tile flat"><div class="tile-name">区间假突破</div><strong>—</strong><small>连接中</small></article>
-      <article class="research-tile flat"><div class="tile-name">强突破第二腿</div><strong>—</strong><small>连接中</small></article>
-      <article class="research-tile flat"><div class="tile-name">双顶 / 双底</div><strong>—</strong><small>连接中</small></article>
-      <article class="research-tile flat"><div class="tile-name">楔形三推</div><strong>—</strong><small>连接中</small></article>
-    </div>
-    <p id="research-history" class="subtitle"></p><p id="research-source" class="subtitle">Coinbase ETH-USD · 点位不能混用主站OKX ETH-USDC报价</p>
-    <details class="context-fold"><summary>形态提醒记录 · 为什么响 / 没响</summary><ol id="research-alert-log"><li>尚未收到信号；仅记录本页打开后的到达，不回填历史。</li></ol></details>
-  </section>
-  <details class="panel section source-fold"><summary>指标依据 · 4小时 / 15分钟 <small>需要核对时展开，不再重复占据主屏</small></summary><div class="grid"><section><h2>4小时 · 结构与波动</h2><div class="module-grid" id="modules4"></div></section><section><h2>15分钟 · 行为与量能</h2><div class="module-grid" id="modules15"></div></section></div></details>
-  <details class="panel section source-fold"><summary>系统说明 <small>不是另一轮AI判决</small></summary><p>方向卡是AI观察判断，七类卡是独立Brooks研究提醒，两者不合并投票。指标用于核对依据；结构计划未验证成交，模型评分不是盈利胜率，概率模型尚未接管。</p></details>
   <section class="panel terminal"><div class="section-head"><div><div class="eyebrow">判决记录</div><h2>最近判决</h2></div></div><div id="journal" class="journal">—</div></section>
   <footer><span>BROOKS ETH · 不构成自动开单指令</span><span>WebSocket 实时更新</span></footer>
   </main></div></body></html>

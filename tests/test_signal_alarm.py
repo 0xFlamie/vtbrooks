@@ -18,7 +18,13 @@ class TestSignalAlarm(unittest.TestCase):
 
     def test_macro_veto_has_no_decorative_emoji_and_deduplicates_old_prefix(self):
         original = {"direction": "LONG", "confidence": 40, "reasons": ["🚨 宏观硬闸门:旧", "宏观硬闸门:旧2", "结构依据"]}
-        with patch.object(bot, "active_macro_veto", return_value={"direction": "SHORT", "event": "数据", "reason": "核对"}):
+        veto = {"direction": "SHORT", "event": "数据", "reason": "核对"}
+        # 技术主导(默认): 宏观闸门不改方向
+        with patch.object(bot, "active_macro_veto", return_value=veto), patch.object(bot, "MACRO_IN_JUDGE", False):
+            kept, _ = bot.apply_macro_veto(dict(original), dict(original))
+        self.assertEqual(kept, original)
+        # 打开 VT_MACRO_IN_JUDGE 时保持旧行为
+        with patch.object(bot, "active_macro_veto", return_value=veto), patch.object(bot, "MACRO_IN_JUDGE", True):
             result, _ = bot.apply_macro_veto(dict(original), dict(original))
         self.assertEqual(result["direction"], "SHORT")
         self.assertEqual(result["confidence"], 70)

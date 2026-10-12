@@ -12,6 +12,7 @@ const structureText = (trend, direction) => {
   return cnDir(trend);
 };
 function putModules(id, rows){
+  if(!$(id))return;  // 简化页面已移除指标明细
   $(id).replaceChildren(...rows.map(([k,t,v])=>{
     const card=document.createElement("article");card.className="module-card";
     for(const [tag,value] of [["span",k],["b",t],["small",v]]){const el=document.createElement(tag);el.textContent=value??"—";card.append(el);}
@@ -260,7 +261,7 @@ function render(s){
   renderMacro(s.macro_events);
   renderResearch(s.research_signals);
   const t4=s["4h"]||{}, t15=s["15m"]||{}, c4=t4.context||{}, b4=t4.brooks||{}, d4=b4.deep||{}, b15=t15.brooks||{}, d15=b15.deep||{}, lv=t15.levels||{}, i4=t4.indicators||{}, i15=t15.indicators||{};
-  $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; $("news").textContent=plainMacroText(s.news);
+  $("health").className="pill"; $("health").innerHTML="<i></i> 实时通信"; $("health").title=`最近快照 ${new Date(s.updated_at).toLocaleTimeString()}`; $("price").textContent=`$${fmt(s.price)}`; if($("news"))$("news").textContent=plainMacroText(s.news);
   renderDirection("4",t4);renderDirection("15",t15);
   $("price-params").textContent=`15m量比 ${fmt(i15["量比"])} · 4h ATR ${fmt(i4.ATR)}%`;
   $("price-updated").textContent=`页面快照 ${macroTime(s.updated_at)} · 非成交指令`;

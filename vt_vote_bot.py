@@ -216,6 +216,26 @@ def _threads_line(mem, limit=6):
                                      for k, v in items)
 
 
+# 技术面主导(2026-10-12 用户决策): 宏观/新闻/预测市场不进AI简报、不改方向, 只单独推送提醒
+# 设 VT_MACRO_IN_JUDGE=1 可恢复旧行为
+MACRO_IN_JUDGE = os.environ.get("VT_MACRO_IN_JUDGE", "0") == "1"
+
+
+def macro_brief_lines():
+    """两层简报的宏观/新闻/硬闸门行; 技术主导模式下为空"""
+    if not MACRO_IN_JUDGE:
+        return []
+    L = []
+    ml = _macro_line()
+    if ml:
+        L.append(ml)
+    L.extend(_recent_news_lines())
+    veto = active_macro_veto()
+    if veto:
+        L.append(f"宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
+    return L
+
+
 def active_macro_veto(mem=None):
     """读取短时宏观硬闸门；仅高影响数据出现明确实际/预期差时生效。"""
     try:
@@ -3787,13 +3807,7 @@ def build_brief_4h(result):
     """4h 层简报: 只含大周期数据(趋势/Brooks4h/挤压/威科夫/合约情绪), 判方向和幅度档"""
     sym = result["symbol"]; px = result["price"]
     L = [f"币种: {sym} | 现价: ${px:.2f}"]
-    ml = _macro_line()
-    if ml:
-        L.append(ml)
-    L.extend(_recent_news_lines())
-    veto = active_macro_veto()
-    if veto:
-        L.append(f"宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
+    L.extend(macro_brief_lines())
     sr = self_review_block()
     if sr:
         L.append(sr)
@@ -3871,7 +3885,7 @@ def build_brief_4h(result):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
-    fm = fred_macro()
+    fm = fred_macro() if MACRO_IN_JUDGE else None
     if fm:
         L.append(fm)
     liq = fetch_liquidations()
@@ -3880,7 +3894,7 @@ def build_brief_4h(result):
     lk = btc_link_line(sym)
     if lk:
         L.append(lk)
-    pm = polymarket_odds()
+    pm = polymarket_odds() if MACRO_IN_JUDGE else None
     if pm:
         L.append("预测市场(Polymarket赔率=市场预期的后续走势): " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
     return "\n".join(L)
@@ -3899,13 +3913,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
 
     L = []
     L.append(f"币种: {sym} | 现价: ${px:.2f}")
-    ml = _macro_line()
-    if ml:
-        L.append(ml)
-    L.extend(_recent_news_lines())
-    veto = active_macro_veto()
-    if veto:
-        L.append(f"宏观硬闸门: {veto.get('event','宏观数据')}出现高影响意外，{('只准做多' if veto['direction'] == 'LONG' else '只准做空')}；{veto.get('reason','')}")
+    L.extend(macro_brief_lines())
     sr = self_review_block()
     if sr:
         L.append(sr)
@@ -3972,7 +3980,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     st_line = _sentiment_text(sym)
     if st_line:
         L.append(st_line)
-    fm = fred_macro()
+    fm = fred_macro() if MACRO_IN_JUDGE else None
     if fm:
         L.append(fm)
     liq = fetch_liquidations()
@@ -3981,7 +3989,7 @@ def build_market_brief(result, plan=None, events=None, prev=None):
     lk = btc_link_line(sym)
     if lk:
         L.append(lk)
-    pm = polymarket_odds()
+    pm = polymarket_odds() if MACRO_IN_JUDGE else None
     if pm:
         L.append("预测市场(Polymarket赔率=市场预期的后续走势): " + " | ".join(f"{x['topic']}{x['prob']}%" for x in pm))
     if events:
@@ -4243,7 +4251,7 @@ def ai_judge_15m(result, prev=None, events=None):
 
 def apply_macro_veto(judge4, judge15):
     """高影响宏观意外推翻相反方向；无结构化闸门时不改变任何判决。"""
-    veto = active_macro_veto()
+    veto = active_macro_veto() if MACRO_IN_JUDGE else None
     if not veto:
         return judge4, judge15
     direction = veto["direction"]
