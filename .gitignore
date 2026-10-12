@@ -13,3 +13,4 @@ decision_audit.sqlite3*
 macro_expectations.sqlite3*
 dashboard_decisions.json
 .dashboard-*
+signal_scores.sqlite3*

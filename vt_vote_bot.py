@@ -17,6 +17,8 @@ from decision_audit import archive_decision, stamp_decision
 import macro_events as macro
 import macro_expectations as expectations
 from dashboard_state import save_current
+import threading
+import signal_tracker
 
 VT_PKG = None
 for p in sys.path:
@@ -2761,6 +2763,26 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
     L.append(f"💰 现价 ${result['price']:.2f}")
     ctx4 = compute_4h_context(sym)
     lv = compute_levels(sym, d4 or d15 or result["signal"])
+    # 波动预测行(2026-08-22 回测5年): 振幅自相关优先(前4h振幅→未来12h, +53%/-34%最强单特征),
+    # 失败 fallback 挤压映射。LightGBM 组合仅再降 8% RMSE, 不值得引入模型依赖
+    # 2026-10-13: 这是回测验证过最可靠的部分, 挪到现价下方并给出操作提示
+    amp_est = None
+    try:
+        df4r = fetch_klines(sym, "4h", 1)
+        last4 = df4r.iloc[-1]
+        rng = (last4["high"] - last4["low"]) / last4["open"] * 100
+        amp_est = 2.4 if rng < 1 else 3.5 if rng < 2 else 4.2 if rng < 3.5 else 5.6
+        L.append(f"🌊 波动: 未来12h预计振幅{amp_est:.1f}% (前4h振幅{rng:.1f}%)")
+    except Exception:
+        sq = (ctx4 or {}).get("squeeze_pct")
+        if sq is not None:
+            amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
+            L.append(f"🌊 波动: 未来12h预计振幅{amp_est:.1f}% (挤压{sq:.0f}%分位)")
+    if amp_est is not None:
+        tip = ("波动偏大: 止损放宽、仓位减小" if amp_est >= 4.2 else
+               "波动偏小: 目标放近, 别指望大行情" if amp_est <= 2.4 else "波动正常")
+        atr_txt = f", 15m常态波幅${lv['atr14']:.1f}" if lv else ""
+        L.append(f"   → {tip}{atr_txt}")
     # 交易员观点段(2026-08-20): 结论优先放最顶部, 观点→计划→仓位→失效→上次观点
     try:
         today_et = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
@@ -2772,19 +2794,6 @@ def format_layers(result, judge4, judge15, is_reversal=False, events=None, ew=No
                              event_day=ev_day)
     if ab:
         L.extend(ab)
-    # 波动预测行(2026-08-22 回测5年): 振幅自相关优先(前4h振幅→未来12h, +53%/-34%最强单特征),
-    # 失败 fallback 挤压映射。LightGBM 组合仅再降 8% RMSE, 不值得引入模型依赖
-    try:
-        df4r = fetch_klines(sym, "4h", 1)
-        last4 = df4r.iloc[-1]
-        rng = (last4["high"] - last4["low"]) / last4["open"] * 100
-        amp_est = 2.4 if rng < 1 else 3.5 if rng < 2 else 4.2 if rng < 3.5 else 5.6
-        L.append(f"🌊 波动: 前4h振幅{rng:.1f}%, 未来12h预计振幅{amp_est:.1f}%")
-    except Exception:
-        sq = (ctx4 or {}).get("squeeze_pct")
-        if sq is not None:
-            amp_est = 3.1 if sq < 20 else 3.3 if sq < 40 else 3.5 if sq < 70 else 4.4
-            L.append(f"🌊 波动: 挤压{sq:.0f}%分位, 未来12h预计振幅{amp_est:.1f}%")
     L.append("")
     # 交易笔记卡片版(2026-08-20 用户要求: 细节系统知道就行, 卡片只留主线+盯点); 事件预判并入笔记块
     others = [e for e in (events or []) if not e.startswith("📰")]
@@ -4029,8 +4038,13 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
                 if attempt == 1:
                     time.sleep(2)
                     continue
+                signal_tracker.judge_fail(name, f"HTTP {r.status_code} {r.text[:120]}")
                 return dict(JUDGE_UNAVAILABLE)
-            text = r.json()["choices"][0]["message"]["content"]
+            body = r.json()
+            text = body["choices"][0]["message"]["content"]
+            finish = body["choices"][0].get("finish_reason")
+            if finish == "length":
+                print(f"WARN: 裁判{name}输出被截断(max_tokens={max_tok}, 模型{body.get('model')})")
             # 容忍 ```json 围栏和前后多余文字; 贪婪匹配首尾大括号(dims 嵌套对象, 非贪婪会截断)
             m = re.search(r"\{.*\}", text, re.S)
             try:
@@ -4055,6 +4069,11 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
             if not isinstance(reasons, list) or not reasons:
                 reasons = list(dims.values()) if dims else [str(data.get("reason", "")).strip() or "无理由"]
             reasons = [str(x).strip() for x in reasons[:4]]
+            # 健康监控(2026-10-13): 截断/解析失败也算失败, 不再静默变成观望
+            if confidence >= 0:
+                signal_tracker.judge_ok(name, body.get("model"))
+            else:
+                signal_tracker.judge_fail(name, "输出被截断" if finish == "length" else "回答无法解析")
             return {"verdict": "执行" if direction else "观望", "direction": direction,
                     "confidence": confidence, "mag_tier": mag_tier, "reasons": reasons,
                     "summary": str(data.get("summary", "")).strip(), "dims": dims}
@@ -4063,6 +4082,7 @@ def _judge_call(system, brief, name="DS", url=None, key=None, model=None,
             if attempt == 1:
                 time.sleep(2)
                 continue
+            signal_tracker.judge_fail(name, f"{type(e).__name__}: {str(e)[:120]}")
             return dict(JUDGE_UNAVAILABLE)
 
 
@@ -4168,8 +4188,12 @@ def _research_call(brief):
             "max_tokens": 1200, "temperature": 0.1},
             headers={"Authorization": f"Bearer {DS_API_KEY}"}, timeout=35)
         if r.status_code != 200:
+            print(f"WARN: 多空研究组 HTTP {r.status_code}: {r.text[:120]}")
             return None
-        text = r.json()["choices"][0]["message"]["content"]
+        choice = r.json()["choices"][0]
+        if choice.get("finish_reason") == "length":
+            print("WARN: 多空研究组输出被截断")
+        text = choice["message"]["content"]
         match = re.search(r"\{.*\}", text, re.S)
         data = json.loads(match.group(0)) if match else None
         return data if isinstance(data, dict) and data.get("bull") and data.get("bear") else None
@@ -4233,6 +4257,7 @@ def ai_judge_4h(result, prev=None):
     """4h 层裁判: 大周期方向+幅度档; 历史胜率/判例不注入 prompt(用户决策 2026-08-05)
     prev: 上一根4h收线的判决, 注入简报让 AI 自己扛迟滞(2026-08-08 临界区翻转抖动)"""
     brief = build_brief_4h(result)
+    shadow_judge("4h", result["symbol"], brief)
     if prev and prev.get("direction"):
         d_cn = {"LONG": "做多", "SHORT": "做空"}.get(prev["direction"], "观望")
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
@@ -4245,8 +4270,44 @@ def ai_judge_4h(result, prev=None):
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
     brief = build_market_brief(result, events=events, prev=prev)
+    # 对照组不继承主裁判的上次判决, 去掉这一行后用自己的
+    shadow_judge("15m", result["symbol"], re.sub(r"\n上一次15m判决:[^\n]*", "", brief))
     brief += previous_decision_context(prev)
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "15m", brief)
+
+
+# 单独推送的关键事件: 入场窗口、关键位(逼近/突破/跌破)、高确信共振、新闻、宏观事件日
+PUSH_EVENT_KEYS = ("入场窗口", "逼近压力", "逼近支撑", "突破近20周期", "跌破近20周期",
+                   "突破摆动", "跌破摆动", "🔥", "📰", "🗓")
+
+
+# 对照实验(2026-10-13 用户决策): 8月风格单裁判, 同一份简报, 只记录成绩不推送; VT_SHADOW_JUDGE=0 关闭
+SHADOW_JUDGE = os.environ.get("VT_SHADOW_JUDGE", "1") == "1"
+SHADOW_PREV = {}  # (symbol, layer) → 对照组上次判决
+# 4h 提示词里"宏观必须进推理链"与技术主导冲突, 对照组去掉
+SYS_4H_TECH = re.sub(r"财政部/联储/地缘.*?不许只看技术面。", "", SYS_4H).replace("、宏观事件日提示", "")
+
+
+def shadow_judge(layer, symbol, brief):
+    """后台线程跑对照裁判, 不阻塞主流程; 结果只进成绩库"""
+    if not SHADOW_JUDGE:
+        return
+
+    def run():
+        try:
+            b = brief
+            prev = SHADOW_PREV.get((symbol, layer))
+            if prev and prev.get("direction"):
+                d_cn = "做多" if prev["direction"] == "LONG" else "做空"
+                b += f"\n上一次{layer}判决: {d_cn} 置信{prev.get('confidence')}。证据没有明显变化就维持这个方向。"
+            j = _judge(SYS_4H_TECH if layer == "4h" else SYS_15M, b)
+            if j.get("confidence", -1) >= 0:
+                SHADOW_PREV[(symbol, layer)] = j
+            signal_tracker.record("单裁判", layer, symbol, j)
+        except Exception as e:
+            print(f"WARN: 对照裁判异常 {type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def apply_macro_veto(judge4, judge15):
@@ -4305,6 +4366,7 @@ def main():
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARN: VT_TELEGRAM_TOKEN / VT_TELEGRAM_CHAT 未设置, Telegram 推送将失败")
+    signal_tracker.set_sender(lambda text: send_telegram(text))  # 告警/周报走同一推送(--test 时打印)
 
     print(f"BROOKS ETH v5.0 | 多空研究 + 风险审查 + 最终裁决 | 按K线收线更新 | 监控: {args.symbols}")
     print(f"{'='*60}")
@@ -4377,6 +4439,14 @@ def main():
         print(f"\n[{now.strftime('%H:%M:%S')}] {'15分钟定时' if is_15m else '3分钟'}扫描...")
         refresh_macro_expectations()
 
+        # ── 成绩结算 / 周报 / 余额检查(2026-10-13) ──
+        try:
+            signal_tracker.settle()
+            signal_tracker.maybe_weekly_report()
+            signal_tracker.check_balance(DS_API_KEY)
+        except Exception as e:
+            print(f"  成绩单/余额检查失败: {e}")
+
         # ── AI 叙事复盘(取代机械结算 2026-08-23) ──
         try:
             maybe_update_lessons()
@@ -4398,6 +4468,7 @@ def main():
                 if not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0 or ck[1].get("_src") == "kk":
                     judge4 = ai_judge_4h(result, prev=ck[1] if ck else None)
                     judge4_cache[sym] = (bar_key, judge4)
+                    signal_tracker.record("主裁判", "4h", sym, judge4)
                     print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
                 else:
                     judge4 = ck[1]
@@ -4478,6 +4549,7 @@ def main():
                     judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
                     judge15_cache[sym] = (bar15_key, judge15)
                     judge15_prev[sym] = judge15
+                    signal_tracker.record("主裁判", "15m", sym, judge15)
                     print(f"\n  {sym} 15m层重判: {judge15['direction'] or '观望'} 置信{judge15['confidence']}")
                 else:
                     judge15 = ck15[1]
@@ -4511,17 +4583,21 @@ def main():
                     events = events + [f"🔥高确信: 共振{conf_score}/6项同向, 双层{('做多' if judge4['direction'] == 'LONG' else '做空')}"]
                     prev_metrics[sym]["_hc"] = (conf_score, judge4["direction"])
 
-                if is_15m or reversal or events:
+                # 推送精简(2026-10-13 用户决策): 整点状态 + 方向变化 + 关键事件才推;
+                # 其余异动(RSI/量比/VWAP/布林等)照样喂给AI, 只是不单独推送
+                hourly = is_15m and slot % 4 == 0
+                if is_15m:
+                    last_timed_slot = slot
+                key_events = [e for e in events if any(k in e for k in PUSH_EVENT_KEYS)]
+                if hourly or reversal or key_events:
                     d_adv = judge4.get("direction") if (judge4.get("direction") and judge4.get("direction") == judge15.get("direction")) else (judge15.get("direction") or judge4.get("direction"))
                     plan_adv = calc_trade_plan(sym, d_adv or result["signal"], result["price"], result.get("brooks") or {}) if d_adv else None
-                    msg = format_layers(result, judge4, judge15, is_reversal=reversal and not is_15m,
+                    msg = format_layers(result, judge4, judge15, is_reversal=reversal and not hourly,
                                         events=events or None, ew=ew,
-                                        ptype="反转" if reversal and not is_15m else "定时" if is_15m else "异动",
+                                        ptype="反转" if reversal and not hourly else "整点" if hourly else "关键事件",
                                         plan=plan_adv, prev4=ck[1] if ck else None)
                     ok = send_telegram(msg)
-                    if is_15m:
-                        last_timed_slot = slot
-                    tag = "定时信号" if is_15m else "🔄反转加推" if reversal else "⚡异动加推"
+                    tag = "整点状态" if hourly else "🔄反转加推" if reversal else "⚡关键事件加推"
                     print(f"  {sym} {tag} (4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'}, 投票{result['votes']}) {'已推送' if ok else '推送FAIL(Telegram拒收)'}")
                 else:
                     print(f"4h:{dirs['4h'] or '观望'} 15m:{dirs['15m'] or '观望'} (投票{result['votes']})")
