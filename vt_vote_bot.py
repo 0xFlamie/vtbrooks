@@ -4502,8 +4502,11 @@ def main():
                 bar_key = str(df4.index[-1]) if not df4.empty else ""
                 ck = judge4_cache.get(sym)
                 # 缓存不可用判决(置信-1)或KK顶班判决都重判, 不让API故障/顶班污染整根4h(2026-08-10)
-                if not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0 or ck[1].get("_src") == "kk":
+                # 缓存不是当前推送裁判给的(切换裁判后)也重判
+                if (not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0 or ck[1].get("_src") == "kk"
+                        or ck[1].get("_judge") != PUSH_JUDGE):
                     judge4 = ai_judge_4h(result, prev=ck[1] if ck else None)
+                    judge4["_judge"] = PUSH_JUDGE  # 标记出自哪个裁判, 切换后缓存失效
                     judge4_cache[sym] = (bar_key, judge4)
                     signal_tracker.record(PUSH_LABEL, "4h", sym, judge4)
                     print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
@@ -4582,8 +4585,9 @@ def main():
                 bar15_key = str(df15.index[-1]) if not df15.empty else ""
                 ck15 = judge15_cache.get(sym)
                 if (not ck15 or ck15[0] != bar15_key or ck15[1].get("confidence", -1) < 0
-                        or ck15[1].get("_src") == "kk"):
+                        or ck15[1].get("_src") == "kk" or ck15[1].get("_judge") != PUSH_JUDGE):
                     judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
+                    judge15["_judge"] = PUSH_JUDGE
                     judge15_cache[sym] = (bar15_key, judge15)
                     judge15_prev[sym] = judge15
                     signal_tracker.record(PUSH_LABEL, "15m", sym, judge15)
