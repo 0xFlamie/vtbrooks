@@ -84,7 +84,8 @@ class TestDashboardState(unittest.TestCase):
 
     def test_15m_manager_receives_previous_thesis_not_only_direction(self):
         previous = {"direction": None, "summary": "上次等回踩", "reasons": ["上次量能不足"]}
-        with patch.object(bot, "build_market_brief", return_value="当前已回踩"), \
+        with patch.object(bot, "PUSH_JUDGE", "multi"), patch.object(bot, "SHADOW_JUDGE", False), \
+             patch.object(bot, "build_market_brief", return_value="当前已回踩"), \
              patch.object(bot, "multi_agent_judge", return_value={"direction": None}) as judge, \
              patch.object(bot, "audited_decision", side_effect=lambda symbol, result, tf, brief: result):
             bot.ai_judge_15m({"symbol": "ETHUSDC"}, prev=previous)

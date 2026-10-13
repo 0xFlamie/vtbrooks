@@ -4263,6 +4263,8 @@ def ai_judge_4h(result, prev=None):
         tier = {0: "<1%", 1: "1-2%", 2: "2-3%", 3: "3%+"}.get(prev.get("mag_tier"), "未知")
         brief += (f"\n上一次4h判决(上根收线): {d_cn} 置信{prev.get('confidence')} 幅度档{tier}。"
                   "证据没有明显变化就维持这个方向，别因一两根K线的噪音翻转。")
+    if PUSH_JUDGE == "single":
+        return audited_decision(result["symbol"], _judge(SYS_4H_TECH, brief), "4h", brief)
     brief += previous_decision_context(prev)
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "4h", brief)
 
@@ -4270,8 +4272,10 @@ def ai_judge_4h(result, prev=None):
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
     brief = build_market_brief(result, events=events, prev=prev)
-    # 对照组不继承主裁判的上次判决, 去掉这一行后用自己的
+    # 对照组不继承推送裁判的上次判决, 去掉这一行后用自己的
     shadow_judge("15m", result["symbol"], re.sub(r"\n上一次15m判决:[^\n]*", "", brief))
+    if PUSH_JUDGE == "single":
+        return audited_decision(result["symbol"], _judge(SYS_15M, brief), "15m", brief)
     brief += previous_decision_context(prev)
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "15m", brief)
 
@@ -4281,10 +4285,40 @@ PUSH_EVENT_KEYS = ("入场窗口", "逼近压力", "逼近支撑", "突破近20�
                    "突破摆动", "跌破摆动", "🔥", "📰", "🗓")
 
 
-# 对照实验(2026-10-13 用户决策): 8月风格单裁判, 同一份简报, 只记录成绩不推送; VT_SHADOW_JUDGE=0 关闭
+# 同类关键事件推送间隔(2026-10-13 用户决策: 逼近支撑等反复触发, 30分钟内只推一次)
+EVENT_PUSH_GAP = 30 * 60
+EVENT_PUSHED = {}  # (symbol, 事件关键词) → 上次推送时间
+
+
+def throttle_key_events(sym, events, now=None):
+    """筛出需要单独推送的关键事件; 同类事件 EVENT_PUSH_GAP 内只推一次"""
+    now = now or time.time()
+    out = []
+    for e in events:
+        k = next((k for k in PUSH_EVENT_KEYS if k in e), None)
+        last = EVENT_PUSHED.get((sym, k))
+        if k and (last is None or now - last >= EVENT_PUSH_GAP):
+            out.append(e)
+    return out
+
+
+def mark_events_pushed(sym, events, now=None):
+    now = now or time.time()
+    for e in events:
+        k = next((k for k in PUSH_EVENT_KEYS if k in e), None)
+        if k:
+            EVENT_PUSHED[(sym, k)] = now
+
+
+# 推送裁判(2026-10-13 用户决策): 研究员+经理在 10/13 凌晨下跌4%全程观望, 改为8月风格单裁判推送;
+# 另一个转后台只记成绩。VT_PUSH_JUDGE=multi 切回研究员+经理推送
+PUSH_JUDGE = os.environ.get("VT_PUSH_JUDGE", "single").lower()
+PUSH_LABEL = "单裁判" if PUSH_JUDGE == "single" else "主裁判"
+SHADOW_LABEL = "主裁判" if PUSH_JUDGE == "single" else "单裁判"
+# 对照实验: 同一份简报, 后台跑另一个裁判, 只记录成绩不推送; VT_SHADOW_JUDGE=0 关闭
 SHADOW_JUDGE = os.environ.get("VT_SHADOW_JUDGE", "1") == "1"
 SHADOW_PREV = {}  # (symbol, layer) → 对照组上次判决
-# 4h 提示词里"宏观必须进推理链"与技术主导冲突, 对照组去掉
+# 4h 提示词里"宏观必须进推理链"与技术主导冲突, 单裁判去掉
 SYS_4H_TECH = re.sub(r"财政部/联储/地缘.*?不许只看技术面。", "", SYS_4H).replace("、宏观事件日提示", "")
 
 
@@ -4300,10 +4334,13 @@ def shadow_judge(layer, symbol, brief):
             if prev and prev.get("direction"):
                 d_cn = "做多" if prev["direction"] == "LONG" else "做空"
                 b += f"\n上一次{layer}判决: {d_cn} 置信{prev.get('confidence')}。证据没有明显变化就维持这个方向。"
-            j = _judge(SYS_4H_TECH if layer == "4h" else SYS_15M, b)
+            if SHADOW_LABEL == "主裁判":  # 研究员+经理
+                j = stabilize_judge(multi_agent_judge(b + previous_decision_context(prev)), prev)
+            else:
+                j = _judge(SYS_4H_TECH if layer == "4h" else SYS_15M, b)
             if j.get("confidence", -1) >= 0:
                 SHADOW_PREV[(symbol, layer)] = j
-            signal_tracker.record("单裁判", layer, symbol, j)
+            signal_tracker.record(SHADOW_LABEL, layer, symbol, j)
         except Exception as e:
             print(f"WARN: 对照裁判异常 {type(e).__name__}: {e}")
 
@@ -4468,7 +4505,7 @@ def main():
                 if not ck or ck[0] != bar_key or ck[1].get("confidence", -1) < 0 or ck[1].get("_src") == "kk":
                     judge4 = ai_judge_4h(result, prev=ck[1] if ck else None)
                     judge4_cache[sym] = (bar_key, judge4)
-                    signal_tracker.record("主裁判", "4h", sym, judge4)
+                    signal_tracker.record(PUSH_LABEL, "4h", sym, judge4)
                     print(f"\n  {sym} 4h层重判: {judge4['direction'] or '观望'} 置信{judge4['confidence']} 档{judge4.get('mag_tier')}")
                 else:
                     judge4 = ck[1]
@@ -4549,7 +4586,7 @@ def main():
                     judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
                     judge15_cache[sym] = (bar15_key, judge15)
                     judge15_prev[sym] = judge15
-                    signal_tracker.record("主裁判", "15m", sym, judge15)
+                    signal_tracker.record(PUSH_LABEL, "15m", sym, judge15)
                     print(f"\n  {sym} 15m层重判: {judge15['direction'] or '观望'} 置信{judge15['confidence']}")
                 else:
                     judge15 = ck15[1]
@@ -4588,8 +4625,9 @@ def main():
                 hourly = is_15m and slot % 4 == 0
                 if is_15m:
                     last_timed_slot = slot
-                key_events = [e for e in events if any(k in e for k in PUSH_EVENT_KEYS)]
+                key_events = throttle_key_events(sym, events)
                 if hourly or reversal or key_events:
+                    mark_events_pushed(sym, events)
                     d_adv = judge4.get("direction") if (judge4.get("direction") and judge4.get("direction") == judge15.get("direction")) else (judge15.get("direction") or judge4.get("direction"))
                     plan_adv = calc_trade_plan(sym, d_adv or result["signal"], result["price"], result.get("brooks") or {}) if d_adv else None
                     msg = format_layers(result, judge4, judge15, is_reversal=reversal and not hourly,
