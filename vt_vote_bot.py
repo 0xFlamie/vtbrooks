@@ -4288,6 +4288,7 @@ PUSH_EVENT_KEYS = ("入场窗口", "逼近压力", "逼近支撑", "突破近20�
 # 同类关键事件推送间隔(2026-10-13 用户决策: 逼近支撑等反复触发, 30分钟内只推一次)
 EVENT_PUSH_GAP = 30 * 60
 EVENT_PUSHED = {}  # (symbol, 事件关键词) → 上次推送时间
+FAST_REJUDGE_GAP = 5 * 60  # 价格急动触发15m重判的最小间隔
 
 
 def throttle_key_events(sym, events, now=None):
@@ -4465,6 +4466,8 @@ def main():
 
     last_timed_slot = None  # 最后推过的15分钟槽, 防止慢扫描吞掉定时推送(2026-08-10)
     pending_fast = None     # 快检触发的事件, 注入下轮扫描必推+AI解读
+    fast_rejudge = False    # 价格类快检触发 → 本轮立即重判15m, 不等收线(2026-10-13 底部反弹晚20分钟才转多)
+    judge15_at = {}         # sym → 上次15m重判时间, 快检重判至少间隔 FAST_REJUDGE_GAP
     last_fast = {}          # (sym,触发类型) → 上次触发时间, 快检同向冷却用
     while True:
         now = pd.Timestamp.now()
@@ -4585,9 +4588,11 @@ def main():
                 bar15_key = str(df15.index[-1]) if not df15.empty else ""
                 ck15 = judge15_cache.get(sym)
                 if (not ck15 or ck15[0] != bar15_key or ck15[1].get("confidence", -1) < 0
-                        or ck15[1].get("_src") == "kk" or ck15[1].get("_judge") != PUSH_JUDGE):
+                        or ck15[1].get("_src") == "kk" or ck15[1].get("_judge") != PUSH_JUDGE
+                        or (fast_rejudge and time.time() - judge15_at.get(sym, 0) >= FAST_REJUDGE_GAP)):
                     judge15 = ai_judge_15m(result, prev=judge15_prev.get(sym), events=events or None)
                     judge15["_judge"] = PUSH_JUDGE
+                    judge15_at[sym] = time.time()
                     judge15_cache[sym] = (bar15_key, judge15)
                     judge15_prev[sym] = judge15
                     signal_tracker.record(PUSH_LABEL, "15m", sym, judge15)
@@ -4658,6 +4663,7 @@ def main():
             else:
                 collect_oi_snapshot(sym, result["price"])
 
+        fast_rejudge = False
         save_state()  # 每轮全扫后落盘, 重启/部署不丢判决连续性
         if args.loop == 0:
             break
@@ -4722,6 +4728,7 @@ def main():
             if trig:
                 print(f"\n  ⚡ {'NEWS' if tkey == 'news' else sym} 快检{trig}, 立即全扫")
                 pending_fast = f"{'NEWS' if tkey == 'news' else sym} {trig}"
+                fast_rejudge = tkey != "news"
                 break
 
 
