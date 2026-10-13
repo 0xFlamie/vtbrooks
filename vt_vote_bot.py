@@ -4142,12 +4142,16 @@ SYS_15M = ("你是只做ETH的专业加密交易员(BTC为联动参照), 看短�
            "异动要结合走势解读, 不复述事件本身: 同样的RSI超买, 强势趋势里是动能、区间顶部缩量时是回落前兆; "
            "放量+逼近压力, 突破失败和真突破含义完全相反。有异动时第一条必须先写异动解读。"
            "布林带只是位置参考之一, 最多提一次。证据没有明显变化就维持上次方向, 别因噪音翻转。"
+           "顺势第一(2026-10-13 连续逆势做空事故): 市场状态=上升趋势且Always In多时不许做空, 只能做多或观望, "
+           "超买/贴上轨/缩量/空头爆仓在上升趋势里是动能不是顶; 下降趋势且Always In空时同理不许做多。"
+           "价格连续突破摆动高点就是趋势在走, 不要每次都说假突破; 要转向必须先看到收盘跌破EMA20或前一个摆动低点。"
            "置信度校准(必须用满量程): 50-60=证据混合五五开; 60-75=单方占优; 75-85=多条件同向; 85-95=全共振的罕见机会, 该给就给。"
            "只输出 JSON: {\"direction\": \"做多\" 或 \"做空\" 或 \"观望\", "
            "\"confidence\": 0-100 整数, \"summary\": \"一句话结论\", \"reasons\": [2-4条理由]}。"
-           "summary不超过35字: 方向+概率+走势形态, 必须带具体点位, 如\"短线偏空(60%), 反弹到1918附近滞涨再跌\"。"
+           "summary不超过35字: 方向+概率+走势形态, 必须带具体点位, 如\"短线偏多(62%), 回踩1905不破继续上看1930\""
+           "或\"短线偏空(60%), 反弹到1918附近滞涨再跌\"。"
            "理由用交易员推演链写: 现象→谁被套/谁在出货→往哪走→如果…就…预案。"
-           "例: \"缩量反弹到布林上轨, 没人愿意在高位接, 这种反弹是用来出的不是追的, 站稳上轨再转多, 站不稳就继续看跌\"。"
+           "例: \"放量突破前高后回踩不破, 踏空的人在追, 空头止损盘还没烧完, 跌回突破位下方才认错\"。"
            "只挑最有信息量的2-4条把话说透, 没话说别硬凑。用大白话, 保留关键数字但不用术语缩写, 每条不超过40字。")
 
 
@@ -4269,13 +4273,28 @@ def ai_judge_4h(result, prev=None):
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "4h", brief)
 
 
+def trend_guard(judge, ba):
+    """逆势保护(2026-10-13 2408涨到2520全程推空): 15m上升趋势+Always In多时不推空, 反之亦然, 改为观望"""
+    up = ba.get("state") == "trend_up" and ba.get("always_in") == 1
+    down = ba.get("state") == "trend_down" and ba.get("always_in") == -1
+    d = judge.get("direction")
+    if (up and d == "SHORT") or (down and d == "LONG"):
+        trend = "上升" if up else "下降"
+        judge = dict(judge, direction=None, verdict="观望",
+                      summary=f"逆势保护: 15m{trend}趋势中不{'做空' if up else '做多'}, 等收盘破EMA20再说",
+                      reasons=[f"AI原判{'做空' if up else '做多'}{judge.get('confidence')}, 与15m{trend}趋势相反, 已拦截"]
+                      + list(judge.get("reasons") or [])[:3])
+    return judge
+
+
 def ai_judge_15m(result, prev=None, events=None):
     """15m 层裁判: 短周期入场方向; prev=上次判决(迟滞), events=本轮异动(规则检测, AI解读)"""
     brief = build_market_brief(result, events=events, prev=prev)
     # 对照组不继承推送裁判的上次判决, 去掉这一行后用自己的
     shadow_judge("15m", result["symbol"], re.sub(r"\n上一次15m判决:[^\n]*", "", brief))
     if PUSH_JUDGE == "single":
-        return audited_decision(result["symbol"], _judge(SYS_15M, brief), "15m", brief)
+        j = trend_guard(_judge(SYS_15M, brief), result.get("brooks") or {})
+        return audited_decision(result["symbol"], j, "15m", brief)
     brief += previous_decision_context(prev)
     return audited_decision(result["symbol"], stabilize_judge(multi_agent_judge(brief), prev), "15m", brief)
 

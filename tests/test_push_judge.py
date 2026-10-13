@@ -44,5 +44,18 @@ class TestEventThrottle(unittest.TestCase):
                          ["逼近支撑 $2400"])
 
 
+class TestTrendGuard(unittest.TestCase):
+    def test_counter_trend_short_blocked_in_uptrend(self):
+        up = {"state": "trend_up", "always_in": 1}
+        j = bot.trend_guard({"direction": "SHORT", "confidence": 62, "reasons": ["a"]}, up)
+        self.assertIsNone(j["direction"])
+        self.assertIn("逆势保护", j["summary"])
+        self.assertEqual(bot.trend_guard({"direction": "LONG", "confidence": 62}, up)["direction"], "LONG")
+
+    def test_range_not_touched(self):
+        j = bot.trend_guard({"direction": "SHORT", "confidence": 62}, {"state": "range", "always_in": 1})
+        self.assertEqual(j["direction"], "SHORT")
+
+
 if __name__ == "__main__":
     unittest.main()
